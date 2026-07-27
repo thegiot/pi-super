@@ -6,6 +6,7 @@ import { ensureToken } from "./auth.js";
 import { defaultClientDir, defaultMetaDir, helpText, parseArgs } from "./config.js";
 import { createServer } from "./server.js";
 import { Tmux } from "./tmux.js";
+import { PasskeyStore } from "./webauthn.js";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 
@@ -32,6 +33,25 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	if (args.listPasskeys || args.removePasskey || args.logout) {
+		const store = new PasskeyStore(args.stateDir);
+		if (args.removePasskey) {
+			const removed = store.removeCredential(args.removePasskey);
+			process.stdout.write(removed ? `removed ${args.removePasskey}\n` : `no such passkey: ${args.removePasskey}\n`);
+		}
+		if (args.logout) {
+			store.revokeAllSessions();
+			process.stdout.write("all passkey sessions revoked\n");
+		}
+		if (args.listPasskeys) {
+			if (store.credentials.length === 0) process.stdout.write("no passkeys enrolled\n");
+			for (const c of store.credentials) {
+				process.stdout.write(`${c.label}\t${c.id.slice(0, 16)}…\tadded ${c.createdAt}\tlast used ${c.lastUsedAt ?? "never"}\n`);
+			}
+		}
+		return;
+	}
+
 	const cfg = { ...args, clientDir: defaultClientDir(moduleDir), metaDir: defaultMetaDir(moduleDir) };
 	const tmux = new Tmux(cfg.socketArgs);
 	try {
@@ -50,6 +70,14 @@ async function main(): Promise<void> {
 	server.http.listen(cfg.port, cfg.host, () => {
 		process.stdout.write(`pi-super listening on http://${cfg.host}:${cfg.port}\n`);
 		process.stdout.write(`  open: http://${displayHost(cfg.host)}:${cfg.port}/?token=${token}\n`);
+		const store = new PasskeyStore(cfg.stateDir);
+		if (store.enrolled && cfg.authMode !== "token") {
+			process.stdout.write(
+				`  passkey required (${store.credentials.length} enrolled${cfg.allowToken ? ", token still accepted" : ""})\n`,
+			);
+		} else {
+			process.stdout.write("  no passkey enrolled yet — open the app and add one from the menu\n");
+		}
 		if (cfg.host !== "127.0.0.1" && cfg.host !== "localhost") {
 			process.stdout.write("  ! bound off-loopback: terminal access == shell access, use TLS/VPN\n");
 		}

@@ -118,6 +118,27 @@ away. Deliberately thin — the models already know tmux.
   audio, headset buttons) needs the M4 thin native wrapper that owns the audio session,
   reusing the same web UI.
 
+### 3b. Authentication (passkeys)
+
+A tailnet gives *reachability*; it does not give *authorization*. Any device on the
+tailnet — or anyone who ever saw the bearer token in a URL — would otherwise have a root
+shell. So pi-super supports WebAuthn:
+
+* Enrolment is authorized by the bearer token (or an existing session), so first run works
+  with the URL you already have.
+* Once any passkey exists, `--auth auto` flips the policy: only a passkey session opens the
+  app; the token is refused on both HTTP and the WebSocket. `--allow-token` opts out.
+* Verified server-side with `@simplewebauthn/server`; credentials, counters and sessions
+  live in `~/.pi-super/passkeys.json` (0600). Sessions are opaque 256-bit ids in an
+  HttpOnly/Secure/SameSite=Strict cookie, 30 days, revocable with `--logout`.
+* The app bundle (no secrets in it) is served unauthenticated once passkeys are required —
+  a login page has to be reachable by someone who cannot log in yet.
+* RP ID comes from the request host, so a passkey enrolled on the MagicDNS name is only
+  usable there. Counter regression is treated as a cloned authenticator.
+
+Tested by `tests/passkey-e2e.mjs` with Chrome's CDP virtual authenticator: real ceremonies,
+real signatures, and the load-bearing assertion that the token stops working afterwards.
+
 ### 4. Security
 
 Terminal access == shell access. Defaults: bind `127.0.0.1`, mandatory 256-bit bearer

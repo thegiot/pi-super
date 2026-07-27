@@ -35,6 +35,11 @@ the ones deliberately left for later.
 
 ## Hardening
 
+- Passkey enrolment is authorized by the bearer token, so the token is still a full
+  bootstrap credential until you roll it (`--reset-token`) after enrolling.
+- No per-passkey scopes (every passkey is equal), and no WebAuthn user handle/account
+  concept — this is a single-user tool.
+
 - Upload quota/TTL/count limits and a MIME allowlist (currently only size + sniffed ext).
 - WS message rate limiting per connection; `/api/capture` line caps are generous.
 - 413 for oversize uploads currently races socket destruction.

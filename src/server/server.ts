@@ -9,6 +9,7 @@ import { SESSION_PREFIX, sweepStaleSessions, TermConnection } from "./term.js";
 import { Tmux } from "./tmux.js";
 import { MAX_UPLOAD_BYTES, readBody, storeUpload } from "./uploads.js";
 import { detectVoiceConfig, negotiateOffer } from "./voice.js";
+import { PasskeyStore, rpIdFor } from "./webauthn.js";
 
 const MIME: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -33,6 +34,26 @@ export interface SuperServer {
 export function createServer(cfg: Config, token: string): SuperServer {
 	const tmux = new Tmux(cfg.socketArgs);
 	const live = new Set<TermConnection>();
+	const passkeys = new PasskeyStore(cfg.stateDir);
+
+	/**
+	 * Reachability (Tailscale, LAN, tunnel) is not authorization. Once a passkey is
+	 * enrolled, the bearer token alone stops being a way in — you need the phone.
+	 */
+	function passkeyRequired(): boolean {
+		if (cfg.authMode === "passkey") return true;
+		if (cfg.authMode === "token") return false;
+		return passkeys.enrolled; // auto
+	}
+
+	type AuthResult = { ok: true; via: "session" | "token" } | { ok: false; reason: "none" | "passkey-required" };
+
+	function authenticate(req: IncomingMessage, url: URL): AuthResult {
+		if (passkeys.sessionFor(req)) return { ok: true, via: "session" };
+		if (!isAuthed(req, url, token)) return { ok: false, reason: "none" };
+		if (passkeyRequired() && !cfg.allowToken) return { ok: false, reason: "passkey-required" };
+		return { ok: true, via: "token" };
+	}
 	const meta = new MetaAgent({
 		metaDir: cfg.metaDir,
 		socketArgs: cfg.socketArgs,
@@ -81,9 +102,28 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 
-		if (!isAuthed(req, url, token)) {
+		// The passkey ceremony itself must be reachable by a browser that has no session yet;
+		// it is protected by the bearer token (enrolment) or by the challenge (login).
+		if (url.pathname.startsWith("/api/auth/")) {
+			await handleAuth(req, res, url);
+			return;
+		}
+
+		const auth = authenticate(req, url);
+		if (!auth.ok) {
+			// A login page has to be reachable by someone who cannot log in yet: when passkeys
+			// are the gate, serve the (secret-free) app bundle so it can run the ceremony.
+			// Every API and WebSocket route stays shut.
+			if (passkeyRequired() && !url.pathname.startsWith("/api/")) {
+				serveStatic(res, url.pathname);
+				return;
+			}
 			res.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
-			res.end("pi-super: unauthorized (append ?token=… once, or send Authorization: Bearer …)\n");
+			res.end(
+				auth.reason === "passkey-required"
+					? "pi-super: a passkey is required (open the app and unlock with your phone)\n"
+					: "pi-super: unauthorized (append ?token=… once, or send Authorization: Bearer …)\n",
+			);
 			return;
 		}
 		// First visit with ?token= — pin it into an HttpOnly cookie and drop it from the URL.
@@ -104,6 +144,86 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			return;
 		}
 		serveStatic(res, url.pathname);
+	}
+
+	/** Passkey enrolment + login. Enrolment needs the bearer token; login needs a passkey. */
+	async function handleAuth(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+		const { rpID, origin, secure } = rpIdFor(req);
+		const route = `${req.method} ${url.pathname}`;
+		const body = async () => JSON.parse((await readBody(req, 256 * 1024)).toString("utf8") || "{}");
+		const tokenOk = isAuthed(req, url, token) || passkeys.sessionFor(req) !== undefined;
+
+		switch (route) {
+			case "GET /api/auth/state": {
+				const session = passkeys.sessionFor(req);
+				sendJson(res, 200, {
+					enrolled: passkeys.enrolled,
+					required: passkeyRequired(),
+					authenticated: session !== undefined || (tokenOk && !passkeyRequired()),
+					session: session ? { label: session.label, expiresAt: session.expiresAt } : undefined,
+					canEnroll: tokenOk,
+					supported: secure || rpID === "localhost" || rpID === "127.0.0.1",
+					rpID,
+					credentials: passkeys.credentials.map((c) => ({ id: c.id, label: c.label, createdAt: c.createdAt })),
+				});
+				return;
+			}
+			case "POST /api/auth/register/options": {
+				if (!tokenOk) {
+					sendJson(res, 401, { error: "enrolling a passkey needs the access token or an existing session" });
+					return;
+				}
+				if (!originAllowed(req, cfg.allowedOrigins)) {
+					sendJson(res, 403, { error: "bad origin" });
+					return;
+				}
+				const { label } = (await body()) as { label?: string };
+				sendJson(res, 200, await passkeys.registrationOptions(rpID, label ?? ""));
+				return;
+			}
+			case "POST /api/auth/register/verify": {
+				if (!tokenOk) {
+					sendJson(res, 401, { error: "unauthorized" });
+					return;
+				}
+				const { response, label } = (await body()) as { response: never; label?: string };
+				const result = await passkeys.verifyRegistration(rpID, origin, response, label ?? "");
+				if (!result.ok) {
+					sendJson(res, 400, { error: result.error });
+					return;
+				}
+				sendJson(res, 200, { ok: true, credential: { id: result.credential.id, label: result.credential.label } });
+				return;
+			}
+			case "POST /api/auth/login/options":
+				if (!passkeys.enrolled) {
+					sendJson(res, 409, { error: "no passkey enrolled yet" });
+					return;
+				}
+				sendJson(res, 200, await passkeys.authenticationOptions(rpID));
+				return;
+			case "POST /api/auth/login/verify": {
+				const { response } = (await body()) as { response: never };
+				const result = await passkeys.verifyAuthentication(rpID, origin, response, secure);
+				if (!result.ok) {
+					sendJson(res, 401, { error: result.error });
+					return;
+				}
+				res.writeHead(200, { "content-type": "application/json", "set-cookie": result.cookie });
+				res.end(JSON.stringify({ ok: true, label: result.label }));
+				return;
+			}
+			case "POST /api/auth/logout":
+				passkeys.revokeAllSessions();
+				res.writeHead(200, {
+					"content-type": "application/json",
+					"set-cookie": `${"pi_super_sid"}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+				});
+				res.end(JSON.stringify({ ok: true }));
+				return;
+			default:
+				sendJson(res, 404, { error: "not found" });
+		}
 	}
 
 	async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -213,8 +333,11 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		let url: URL;
 		try {
 			url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+			const session = passkeys.sessionFor(req);
 			const tok = requestToken(req, url);
-			if (!tok || !tokenEquals(tok, token) || !originAllowed(req, cfg.allowedOrigins)) {
+			const tokenOk =
+				!!tok && tokenEquals(tok, token) && (!passkeyRequired() || cfg.allowToken);
+			if ((!session && !tokenOk) || !originAllowed(req, cfg.allowedOrigins)) {
 				socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
 				socket.destroy();
 				return;

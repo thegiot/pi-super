@@ -51,11 +51,31 @@ Options:
       --url               Print the access URL and exit
 ```
 
-### Exposure
+### Exposure and passkeys
 
-Terminal access is shell access. Default bind is loopback. To reach it from a phone, pick
-one: `ssh -R`/`-L` tunnel, Tailscale, or a reverse proxy that terminates TLS. Off-loopback
-binds still require the token, but the token travels in plaintext over HTTP — use TLS.
+Terminal access is shell access, so pi-super separates *reachability* from *authorization*.
+
+Reachability: keep the default loopback bind and put a tunnel in front — Tailscale
+(`tailscale serve`), `ssh -L`, or a TLS reverse proxy. A VPN makes the box reachable by
+every device on your tailnet, which is not the same thing as authorizing them.
+
+Authorization: **enrol a passkey**. Open the app once with the token, menu (≡) → *+
+passkey*, and confirm with your phone's fingerprint/screen lock. From then on the bearer
+token alone opens nothing — HTTP and WebSocket both demand a passkey session, and a stolen
+token or a compromised tailnet device gets 401.
+
+```
+--auth auto      token until a passkey is enrolled, then passkey only (default)
+--auth token     never require a passkey
+--auth passkey   require one even before enrolment (locks you out; for recovery use --auth token)
+--allow-token    keep accepting the token alongside passkeys (scripts, CI)
+--list-passkeys / --remove-passkey <label> / --logout
+```
+
+Passkeys are bound to the hostname you enrol on (WebAuthn RP ID) and need HTTPS or
+localhost, so enrol over the name you will actually use — e.g. your MagicDNS
+`machine.tailXXXX.ts.net`, not `localhost`. Sessions live in `~/.pi-super/passkeys.json`
+and last 30 days; `--logout` revokes them all.
 
 ## How it works
 
@@ -104,4 +124,5 @@ npm run typecheck
 node tests/smoke.mjs http://127.0.0.1:8799 "$(cat ~/.pi-super/token)"   # e2e against live tmux
 npm run test:voice     # unattended voice call: fake mic + headless Chrome + recorded reply
 npm run test:mobile    # Pixel-metrics screenshots + layout checks -> /tmp/pi-super-shots/
+npm run test:passkey   # full WebAuthn flow via Chrome's virtual authenticator
 ```

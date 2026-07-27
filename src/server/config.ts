@@ -14,6 +14,10 @@ export interface Config {
 	metaModel: string | undefined;
 	metaEnabled: boolean;
 	metaInheritExtensions: boolean;
+	/** auto = token until a passkey is enrolled, then passkey only */
+	authMode: "auto" | "token" | "passkey";
+	/** keep accepting the bearer token even once passkeys are enrolled (scripts, tests) */
+	allowToken: boolean;
 	allowedOrigins: string[] | undefined; // undefined => same-host only
 }
 
@@ -21,6 +25,9 @@ export interface ParsedArgs extends Config {
 	printUrl: boolean;
 	help: boolean;
 	resetToken: boolean;
+	listPasskeys: boolean;
+	removePasskey: string | undefined;
+	logout: boolean;
 }
 
 const HELP = `pi-super — mobile meta-interface to an existing tmux server
@@ -40,6 +47,13 @@ Options:
       --meta-inherit-extensions
                           Load your globally installed pi packages into the meta agent
       --origin <url>      Extra allowed WebSocket Origin (repeatable)
+      --auth <mode>       auto (default) | token | passkey
+                          auto: the token works until you enrol a passkey, then it doesn't
+      --allow-token       Keep accepting the bearer token alongside passkeys
+      --list-passkeys     List enrolled passkeys and exit
+      --remove-passkey <id|label>
+                          Remove an enrolled passkey and exit
+      --logout            Revoke all passkey sessions and exit
       --reset-token       Generate a fresh access token and exit
       --url               Print the access URL and exit
   -h, --help              Show this help
@@ -58,7 +72,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		metaModel: process.env.PI_SUPER_META_MODEL,
 		metaEnabled: true,
 		metaInheritExtensions: false,
+		authMode: "auto",
+		allowToken: false,
 		allowedOrigins: undefined,
+		listPasskeys: false,
+		removePasskey: undefined,
+		logout: false,
 		printUrl: false,
 		help: false,
 		resetToken: false,
@@ -106,6 +125,26 @@ export function parseArgs(argv: string[]): ParsedArgs {
 				break;
 			case "--meta-inherit-extensions":
 				cfg.metaInheritExtensions = true;
+				break;
+			case "--auth": {
+				const mode = next();
+				if (mode !== "auto" && mode !== "token" && mode !== "passkey") {
+					throw new Error("--auth must be auto|token|passkey");
+				}
+				cfg.authMode = mode;
+				break;
+			}
+			case "--allow-token":
+				cfg.allowToken = true;
+				break;
+			case "--list-passkeys":
+				cfg.listPasskeys = true;
+				break;
+			case "--remove-passkey":
+				cfg.removePasskey = next();
+				break;
+			case "--logout":
+				cfg.logout = true;
 				break;
 			case "--origin":
 				origins.push(next());

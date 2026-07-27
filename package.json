@@ -12,6 +12,7 @@
     "build:server": "tsc -p tsconfig.server.json",
     "build:client": "vite build",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test:passkey": "npm run build && node tests/passkey-e2e.mjs",
     "test:mobile": "npm run build && node tests/mobile-shots.mjs",
     "test:voice": "npm run build && node tests/voice-e2e.mjs",
     "test": "npm run build:server && node --test tests/*.test.mjs",
@@ -19,6 +20,8 @@
     "start": "node dist/server/index.js"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.2",
     "node-pty": "^1.0.0",
     "ws": "^8.18.0"
   },

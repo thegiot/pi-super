@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { authState, enrollPasskey, gate, loginWithPasskey, logout } from "./auth.js";
 import { createMeta } from "./meta.js";
 import "./style.css";
 import { createVoice } from "./voice.js";
@@ -41,6 +42,7 @@ const el = {
 	windowList: $("window-list"),
 	newCwd: $<HTMLInputElement>("new-cwd"),
 	claim: $<HTMLInputElement>("chk-claim"),
+	passkeyInfo: $("passkey-info"),
 	sessionInfo: $("session-info"),
 	file: $<HTMLInputElement>("file"),
 };
@@ -342,7 +344,10 @@ function closeDrawer(): void {
 
 // --------------------------------------------------------------------- wiring
 
-$("btn-menu").onclick = openDrawer;
+$("btn-menu").onclick = () => {
+	openDrawer();
+	void refreshAuthUi();
+};
 $("btn-close-drawer").onclick = closeDrawer;
 el.drawer.onclick = (e) => {
 	if (e.target === el.drawer) closeDrawer();
@@ -484,8 +489,47 @@ if (new URLSearchParams(location.search).has("debug")) {
 		transcript.push({ role, text });
 		prevTranscript?.(role, text);
 	};
-	(window as unknown as Record<string, unknown>).piSuper = { voice, meta, state, events, spoken, transcript };
+	(window as unknown as Record<string, unknown>).piSuper = {
+		voice,
+		meta,
+		state,
+		events,
+		spoken,
+		transcript,
+		auth: { enroll: enrollPasskey, login: loginWithPasskey, state: authState, logout },
+	};
 }
+
+// Passkey gate: nothing connects until the lock screen is satisfied (no-op when no
+// passkey is enrolled yet, so first-run enrolment over the token still works).
+async function refreshAuthUi(): Promise<void> {
+	try {
+		const s = await authState();
+		el.passkeyInfo.textContent = s.enrolled
+			? `passkeys: ${s.credentials.map((c) => c.label).join(", ")}`
+			: s.supported
+				? "no passkey yet — the token alone lets anyone on your network in"
+				: "passkeys need HTTPS (Tailscale serve / a TLS proxy)";
+		$("btn-passkey").hidden = !s.canEnroll || !s.supported;
+		$("btn-lock").hidden = !s.enrolled;
+	} catch {
+		el.passkeyInfo.textContent = "passkeys: unavailable";
+	}
+}
+
+$("btn-passkey").onclick = () => {
+	const label = prompt("name this passkey", navigator.userAgent.includes("Android") ? "phone" : "laptop");
+	if (label === null) return;
+	enrollPasskey(label.trim() || "passkey")
+		.then((name) => {
+			status(`passkey "${name}" enrolled — the token alone no longer opens this`, 6000);
+			void refreshAuthUi();
+		})
+		.catch((e: Error) => status(`enrolment failed: ${e.message}`, 8000, true));
+};
+$("btn-lock").onclick = () => {
+	void logout().then(() => location.reload());
+};
 
 el.claim.checked = state.sizeMode === "claim";
 // On a phone the desktop-width raw terminal is unreadable at a glance, and reader mode is
@@ -493,4 +537,7 @@ el.claim.checked = state.sizeMode === "claim";
 // the first manual switch.
 const savedView = localStorage.getItem("view") as "raw" | "reader" | null;
 setView(savedView ?? (window.innerWidth < 600 ? "reader" : "raw"));
-connect();
+void gate().then(() => {
+	connect();
+	void refreshAuthUi();
+});
