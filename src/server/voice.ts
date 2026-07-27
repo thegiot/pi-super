@@ -20,7 +20,7 @@ const OPENAI_MODEL = process.env.PI_SUPER_VOICE_MODEL ?? "gpt-realtime-2.1-mini"
 // `marin` is rejected as `403 Voice session access denied`, which looks exactly like an
 // account-entitlement failure and is not one.
 const CODEX_VOICES = ["cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"];
-const CODEX_DEFAULT_VOICE = "cove";
+const CODEX_DEFAULT_VOICE = "sol";
 const OPENAI_DEFAULT_VOICE = "marin";
 
 function pickVoice(provider: "codex" | "openai"): string {
