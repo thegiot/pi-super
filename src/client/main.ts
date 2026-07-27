@@ -495,6 +495,11 @@ voice.onState = (s, detail) => {
 	el.call.hidden = s === "idle";
 	$("btn-call").classList.toggle("armed", s === "live");
 	$("btn-call").classList.toggle("busy", s === "connecting");
+	// a redial re-acquires the mic, so the mute button must not keep claiming otherwise
+	if (s !== "live") {
+		$("btn-mute").textContent = "mute";
+		$("btn-mute").classList.remove("armed");
+	}
 	if (s === "error" && detail) status(detail, 8000, true);
 };
 voice.onTranscript = (role, text) => {
@@ -510,6 +515,7 @@ $("btn-call").onclick = () => {
 	}
 };
 $("btn-hangup").onclick = () => voice.stop();
+$("btn-hush").onclick = () => voice.hush();
 $("btn-mute").onclick = () => {
 	const muted = voice.toggleMute();
 	$("btn-mute").textContent = muted ? "unmute" : "mute";

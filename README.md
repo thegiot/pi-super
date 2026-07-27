@@ -108,6 +108,24 @@ attaches auth plus the server-side instructions and returns only the answer.
 Voice runs on your ChatGPT subscription by default (`codex`, gpt-live). `OPENAI_API_KEY`
 is only used when no ChatGPT login is present.
 
+### Call handling
+
+The call is meant to behave like a phone call, within what a browser allows:
+
+* **hush** — the `hush` button, or a headset/steering-wheel play-pause press (via Media
+  Session), cuts super off mid-sentence. Interruption is always *deliberate*: we never
+  cancel a response just because voice activity was detected, because super talking over
+  you is frequently the right thing.
+* **redial** — a `disconnected` ICE state gets six seconds to heal itself (tunnels, wifi/5G
+  handovers), and a genuine failure redials with backoff up to five times instead of
+  dropping the call. A real incoming phone call, which takes the microphone away, is
+  survivable this way. The meta agent lives on the server, so super's memory spans the
+  gap; only the speech model's own short-term context is lost.
+* **not yet a real call** — with the screen off, Android suspends the tab and the call
+  dies. The screen wake lock we hold is the opposite of what a call wants. Genuine
+  screen-off, Bluetooth-routed, ducking-aware audio needs a native foreground service
+  (`microphone|phone_call`) or `ConnectionService` — see M4 in `docs/todo.md`.
+
 
 
 ## Development

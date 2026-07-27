@@ -35,6 +35,8 @@ export interface VoiceApi {
 	start(): Promise<void>;
 	stop(): void;
 	toggleMute(): boolean;
+	/** "stop talking" — an explicit interruption, never guessed from VAD */
+	hush(): void;
 	/** feed a spoken update from the meta agent into the live call */
 	pushUpdate(text: string, kind: string): void;
 	onState?: (state: VoiceState, detail?: string) => void;
@@ -46,6 +48,12 @@ export interface VoiceApi {
 }
 
 const MAX_CHUNK_BYTES = 400;
+/** how long ICE may sit in `disconnected` before we call it a dropped call */
+const DISCONNECT_GRACE_MS = 6000;
+/** redial attempts before we hang up for real */
+const MAX_RECONNECT = 5;
+/** an error arriving this soon after a hush is our own cancel bouncing, not a call fault */
+const HUSH_ERROR_WINDOW_MS = 1500;
 
 interface SpeechRecognitionEventLike {
 	resultIndex: number;
@@ -102,6 +110,10 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	let listening = false;
 	/** bumped by stop(); an in-flight start() checks it and aborts */
 	let generation = 0;
+	let reconnectAttempts = 0;
+	let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+	let graceTimer: ReturnType<typeof setTimeout> | undefined;
+	let hushedAt = 0;
 
 	const api: VoiceApi = {
 		config: undefined,
@@ -114,6 +126,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		start,
 		stop,
 		toggleMute,
+		hush,
 		pushUpdate,
 	};
 
@@ -143,9 +156,15 @@ export function createVoice(meta: MetaApi): VoiceApi {
 
 	async function start(): Promise<void> {
 		if (state === "connecting" || state === "live") return;
+		reconnectAttempts = 0;
+		await connect();
+	}
+
+	/** One dial attempt. `start()` owns the entry guard; reconnects re-enter here. */
+	async function connect(): Promise<void> {
 		const gen = ++generation;
 		const stale = () => gen !== generation;
-		setState("connecting");
+		setState("connecting", reconnectAttempts ? `reconnecting (${reconnectAttempts}/${MAX_RECONNECT})` : undefined);
 		try {
 			const cfg = await loadConfig();
 			if (!cfg.enabled) throw new Error("voice not configured on the server");
@@ -164,9 +183,27 @@ export function createVoice(meta: MetaApi): VoiceApi {
 			mic = stream;
 			pc = new RTCPeerConnection();
 			pc.oniceconnectionstatechange = () => {
-				if (pc && ["failed", "disconnected", "closed"].includes(pc.iceConnectionState) && state === "live") {
-					setState("error", `connection ${pc.iceConnectionState}`);
-					stop();
+				if (!pc || stale()) return;
+				const ice = pc.iceConnectionState;
+				if (ice === "connected" || ice === "completed") {
+					clearGrace();
+					reconnectAttempts = 0;
+					return;
+				}
+				// `disconnected` is usually a passing blip — a tunnel, a wifi/5G handover. Let
+				// ICE try to heal itself before we tear a working call down.
+				if (ice === "disconnected") {
+					if (!graceTimer) {
+						graceTimer = setTimeout(() => {
+							graceTimer = undefined;
+							if (pc && !stale() && pc.iceConnectionState === "disconnected") scheduleReconnect("connection lost");
+						}, DISCONNECT_GRACE_MS);
+					}
+					return;
+				}
+				if (ice === "failed") {
+					clearGrace();
+					scheduleReconnect("connection failed");
 				}
 			};
 			pc.ontrack = (ev) => {
@@ -215,8 +252,64 @@ export function createVoice(meta: MetaApi): VoiceApi {
 			setState("live");
 		} catch (err) {
 			if (stale()) return;
+			// Mid-reconnect we keep trying: the mic may simply be held by a real phone call,
+			// and getUserMedia will start working again the moment that call ends.
+			if (reconnectAttempts > 0) {
+				scheduleReconnect(String((err as Error).message));
+				return;
+			}
 			setState("error", String((err as Error).message));
 			stop();
+		}
+	}
+
+	function clearGrace(): void {
+		if (graceTimer) clearTimeout(graceTimer);
+		graceTimer = undefined;
+	}
+
+	/**
+	 * Drop the transport and redial after a backoff. The meta agent lives on the server and
+	 * is untouched by this, so super keeps its memory across the blip; only the speech
+	 * model's own short-term context is lost.
+	 */
+	function scheduleReconnect(reason: string): void {
+		if (reconnectTimer) return;
+		if (reconnectAttempts >= MAX_RECONNECT) {
+			setState("error", reason);
+			stop();
+			return;
+		}
+		const gen = generation;
+		const wait = Math.min(1000 * 2 ** reconnectAttempts, 8000);
+		reconnectAttempts++;
+		teardown();
+		setState("connecting", `reconnecting (${reconnectAttempts}/${MAX_RECONNECT})`);
+		reconnectTimer = setTimeout(() => {
+			reconnectTimer = undefined;
+			if (gen !== generation) return; // hung up or restarted while we waited
+			void connect();
+		}, wait);
+	}
+
+	/**
+	 * "Stop talking." Deliberate and user-initiated only — we never cancel the model on our
+	 * own guess that speech started, because super talking over you is often the right call.
+	 */
+	function hush(): void {
+		if (state !== "live") return;
+		hushedAt = Date.now();
+		// local mode: cancel() fires the utterance's onend, which resumes listening
+		if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
+		if (api.config?.provider === "local") return;
+		sendEvent({ type: "response.cancel" });
+		sendEvent({ type: "output_audio_buffer.clear" });
+		// the server stops sending immediately, but a jitter-buffer tail is already local
+		if (audio) {
+			audio.muted = true;
+			setTimeout(() => {
+				if (audio) audio.muted = false;
+			}, 300);
 		}
 	}
 
@@ -245,6 +338,13 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		}
 		if ("mediaSession" in navigator) {
 			navigator.mediaSession.metadata = new MediaMetadata({ title: "super", artist: "pi-super" });
+			navigator.mediaSession.playbackState = "playing";
+			// A headset / steering-wheel button press arrives as play-pause. Mapping it to
+			// "shut up" gives the one interruption that needs no screen at all.
+			navigator.mediaSession.setActionHandler("pause", () => hush());
+			navigator.mediaSession.setActionHandler("play", () => {
+				navigator.mediaSession.playbackState = "playing";
+			});
 			navigator.mediaSession.setActionHandler("stop", () => stop());
 		}
 	}
@@ -319,10 +419,12 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		speechSynthesis.speak(utter);
 	}
 
-	function stop(): void {
-		generation++;
-		muted = false;
+	/** Drop the transport but keep the call's identity — used by reconnect and by stop(). */
+	function teardown(): void {
+		clearGrace();
 		listening = false;
+		// the mic itself is going away, so nothing is muted any more
+		muted = false;
 		if (recognition) {
 			recognition.onend = null;
 			try {
@@ -334,16 +436,38 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		}
 		speaking = false;
 		if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
-		dc?.close();
-		dc = undefined;
-		pc?.close();
-		pc = undefined;
+		if (dc) {
+			dc.onmessage = null;
+			dc.close();
+			dc = undefined;
+		}
+		if (pc) {
+			// silence the handlers first: closing the peer fires them one last time
+			pc.oniceconnectionstatechange = null;
+			pc.ontrack = null;
+			pc.close();
+			pc = undefined;
+		}
 		for (const t of mic?.getTracks() ?? []) t.stop();
 		mic = undefined;
-		if (audio) audio.srcObject = null;
+		if (audio) {
+			audio.srcObject = null;
+			audio.muted = false;
+		}
+		// a redial is a new realtime session, so the old delegation handle is void
+		delegationId = undefined;
+	}
+
+	function stop(): void {
+		generation++;
+		if (reconnectTimer) clearTimeout(reconnectTimer);
+		reconnectTimer = undefined;
+		reconnectAttempts = 0;
+		teardown();
+		// the wake lock spans reconnects, so it is only released on a real hang-up
 		void wakeLock?.release().catch(() => {});
 		wakeLock = undefined;
-		delegationId = undefined;
+		if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "none";
 		if (state !== "error") setState("idle");
 	}
 
@@ -440,6 +564,9 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				api.onTranscript?.("user", String(ev.transcript ?? ""));
 				break;
 			case "error":
+				// Our own hush bouncing back ("no active response", or an event this backend
+				// does not know) must not present itself as a broken call.
+				if (Date.now() - hushedAt < HUSH_ERROR_WINDOW_MS) break;
 				setState("error", JSON.stringify(ev.error ?? ev).slice(0, 200));
 				break;
 		}

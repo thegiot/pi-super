@@ -32,6 +32,27 @@ the ones deliberately left for later.
   `commentary`, everything else to `speakable`. Only `speakable` has been observed live.
 - The 500-byte chunking of `delegation.context.append` has never been exercised (real
   updates have been one chunk).
+- `hush` sends `response.cancel` + `output_audio_buffer.clear`; the second is documented
+  for the standard Realtime API and only assumed for gpt-live. Errors within 1.5 s of a
+  hush are swallowed so a rejected event cannot masquerade as a broken call — which also
+  means we would not notice if gpt-live rejected it every time.
+- Redial is a *new* realtime session: the speech model forgets the conversation so far
+  (super does not). It does not announce this, so a redial mid-topic can feel like
+  amnesia.
+- Mute is invisible to the model: it just hears silence and may trip `idle_timeout_ms`
+  into "are you still there?".
+
+## Voice — call-mode gaps (M4)
+
+The browser cannot be a phone call. What is missing, and needs the native wrapper:
+
+- **Screen off kills the call** — `wakeLock("screen")` keeps the display lit (the opposite
+  of a call) and is released as soon as the page hides; the tab is then frozen.
+- **No audio routing control** — no `setSinkId`, no earpiece/speaker/Bluetooth SCO choice.
+- **No audio focus** — we neither duck other apps nor yield to a real incoming call; the
+  best we do is redial afterwards.
+- **No in-call notification / lock-screen surface** beyond Media Session metadata.
+- **No voice hang-up** — ending the call still requires the screen.
 
 ## Hardening
 
@@ -48,4 +69,5 @@ the ones deliberately left for later.
 
 - `tmux -CC … -f ignore-size,no-output` observer instead of the 1 s window poll.
 - Push notifications (tmux bell / meta `speak` while the tab is closed).
-- Native Android wrapper (M4) for real call-mode audio with the screen off.
+- Native Android wrapper (M4) for real call-mode audio with the screen off — see the
+  call-mode gaps above for what it has to cover.
