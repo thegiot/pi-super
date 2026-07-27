@@ -33,6 +33,8 @@ Android suspends the tab when the screen goes off (details in [DESIGN.md](DESIGN
 
 ## Driving, or delegating
 
+Two ways to work:
+
 * **Drive it yourself — the terminal** (📖 toggles raw ↔ reader). Your tmux, one tab per
   window, real keys into a real PTY.
 * **Hand it to super — the agent** (📞). Opens the chat and places the call in one press.
