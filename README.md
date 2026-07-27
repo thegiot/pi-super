@@ -33,26 +33,16 @@ Android suspends the tab when the screen goes off (details in [DESIGN.md](DESIGN
 
 ## Driving, or delegating
 
-Two ways to work, and you switch between them constantly:
-
 * **Drive it yourself — the terminal** (📖 toggles raw ↔ reader). Your tmux, one tab per
-  window, real keys into a real PTY. This is the mode where you already know which window
-  you want and what to type in it.
-* **Hand it to super — the agent** (📞). Say what you want and let something else find the
-  window: "what's the status of the grand endeavors work?", "tell it to run the tests",
-  "open the kitchen radio project and find out why it stopped working". Super reads panes,
-  sends prompts, opens windows and waits on builds, then reports back in the chat and, via
-  its `speak` tool, out loud.
+  window, real keys into a real PTY.
+* **Hand it to super — the agent** (📞). Opens the chat and places the call in one press.
+  Ask for anything on the machine: "what's the status of the grand endeavors work?", "tell
+  it to run the tests", "open the kitchen radio project and find out why it stopped
+  working". Super reads panes, sends prompts, opens windows and waits on builds, then
+  answers in the chat and out loud.
 
-Delegating is one mode, not two: pressing 📞 opens the transcript *and* places the call,
-because on a phone you never want the transcript without the option to speak — and when
-you don't want to talk, *mute* and *hush* (or the headset button) already say so. The
-speech model only listens and talks; it delegates every real question to super, so the
-voice is disposable and the thinking is not.
-
-The two modes overlap on purpose: pressing 📞 again drops you back into the terminal
-**without hanging up**, so you can watch the window super is working in while it works.
-The call bar stays on screen; hang up from there.
+📞 again returns to the terminal and keeps the call up; hang up from the call bar. *mute*
+and *hush* (or the headset button) shut super up without ending anything.
 
 ## Quick start
 
