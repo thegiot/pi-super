@@ -12,9 +12,9 @@ copy, not a sync: the *same* session, live. Your desktop keeps showing exactly w
 always showed; your phone just gets a seat at the table too.
 
 And because you're not always in a typing mood, there's *super* — a meta agent, i.e. an
-agent whose job is your other agents. It can peek into every window and act for you. Text it from the garden — "what's the status
-of the grand endeavors work?" — dictate an order from the kitchen — "tell it to run the
-tests" — or call it hands-free from the car. It inspects, it steers, it reports back.
+agent whose job is your other agents. It can peek into every window and act for you:
+text it from the garden, dictate an order from the kitchen, or call it hands-free from
+the car. It inspects, it steers, it reports back.
 
 * **Nothing moves.** pi-super attaches to your running tmux server, never replaces it.
   Your desktop client keeps working at the same time, on the same windows.
@@ -31,19 +31,28 @@ login (gpt-live) when pi has one, an `OPENAI_API_KEY` otherwise, and falls back 
 browser's own speech engine when there is neither. What it is not yet is a *real* call:
 Android suspends the tab when the screen goes off (details in [DESIGN.md](DESIGN.md)).
 
-## The two buttons
+## Driving, or delegating
 
-* **terminal** (📖 toggles raw ↔ reader) — your tmux, one tab per window.
-* **super** (📞) — one press opens the chat *and* places the call. Ask it anything about
-  the machine: "what's the status of the grand endeavors work?", "tell it to run the
-  tests", "open the kitchen radio project and find out why it stopped working". It
-  answers in the chat and, via its `speak` tool, out loud. The speech model only talks
-  and delegates; super does the work and reports back mid-call.
+Two ways to work, and you switch between them constantly:
 
-  Chat and call are deliberately one thing — on a phone you never want the transcript
-  without the option to speak, and *mute* / *hush* (or the headset button) already mean
-  "not now". Pressing 📞 again returns to the terminal **without hanging up**: the call bar
-  stays on screen, which is the state you want while super works. Hang up from there.
+* **Drive it yourself — the terminal** (📖 toggles raw ↔ reader). Your tmux, one tab per
+  window, real keys into a real PTY. This is the mode where you already know which window
+  you want and what to type in it.
+* **Hand it to super — the agent** (📞). Say what you want and let something else find the
+  window: "what's the status of the grand endeavors work?", "tell it to run the tests",
+  "open the kitchen radio project and find out why it stopped working". Super reads panes,
+  sends prompts, opens windows and waits on builds, then reports back in the chat and, via
+  its `speak` tool, out loud.
+
+Delegating is one mode, not two: pressing 📞 opens the transcript *and* places the call,
+because on a phone you never want the transcript without the option to speak — and when
+you don't want to talk, *mute* and *hush* (or the headset button) already say so. The
+speech model only listens and talks; it delegates every real question to super, so the
+voice is disposable and the thinking is not.
+
+The two modes overlap on purpose: pressing 📞 again drops you back into the terminal
+**without hanging up**, so you can watch the window super is working in while it works.
+The call bar stays on screen; hang up from there.
 
 ## Quick start
 
