@@ -199,7 +199,7 @@ function connect(): void {
 					state.restorePending = false;
 					const want = localStorage.getItem("lastWindow");
 					if (want && want !== active?.id && state.windows.some((w) => w.id === want)) {
-						send({ t: "select", window: want });
+						selectWindow(want);
 					}
 				} else if (active) {
 					localStorage.setItem("lastWindow", active.id);
@@ -295,13 +295,25 @@ function activeWindow(): WindowInfo | undefined {
 	return state.windows.find((w) => w.active);
 }
 
+/** Optimistic switch: flip the UI immediately, let the server's push confirm. */
+function selectWindow(id: string): void {
+	send({ t: "select", window: id });
+	if (state.windows.some((w) => w.id === id)) {
+		for (const w of state.windows) w.active = w.id === id;
+		localStorage.setItem("lastWindow", id);
+		renderTabs();
+		renderWindowList();
+		if (state.view === "reader") void refreshReader();
+	}
+}
+
 function renderTabs(): void {
 	el.tabs.replaceChildren(
 		...state.windows.map((w) => {
 			const b = document.createElement("button");
 			b.className = `tab${w.active ? " active" : ""}${w.activity || w.bell ? " activity" : ""}`;
 			b.textContent = `${w.index}:${w.name}`;
-			b.onclick = () => send({ t: "select", window: w.id });
+			b.onclick = () => selectWindow(w.id);
 			return b;
 		}),
 	);
@@ -323,7 +335,7 @@ function renderWindowList(): void {
 			path.textContent = w.paneCwd;
 			meta.append(name, path);
 			meta.onclick = () => {
-				send({ t: "select", window: w.id });
+				selectWindow(w.id);
 				closeDrawer();
 			};
 			row.append(meta);

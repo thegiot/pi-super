@@ -445,18 +445,21 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		send({ t: "hello", base, session: term.sessionName, mode: term.mode, ...term.geometry });
 
 		let lastWindows = "";
+		const pushWindows = async () => {
+			const windows = await tmux.listWindows(term.sessionName);
+			const json = JSON.stringify(windows);
+			if (json !== lastWindows) {
+				lastWindows = json;
+				send({ t: "windows", windows });
+			}
+		};
 		let polling = false;
 		poll = setInterval(() => {
 			if (polling) return; // never overlap: a slow tmux would spawn children forever
 			polling = true;
 			void (async () => {
 				try {
-					const windows = await tmux.listWindows(term.sessionName);
-					const json = JSON.stringify(windows);
-					if (json !== lastWindows) {
-						lastWindows = json;
-						send({ t: "windows", windows });
-					}
+					await pushWindows();
 					await term.syncGeometry();
 				} catch {
 					/* transient tmux errors are fine */
@@ -479,7 +482,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 					return;
 				}
 				try {
-					await onControl(term, msg, send);
+					await onControl(term, msg, send, pushWindows);
 				} catch (err) {
 					send({ t: "error", error: String((err as Error).message) });
 				}
@@ -492,6 +495,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		term: TermConnection,
 		msg: Record<string, unknown>,
 		send: (m: unknown) => void,
+		refresh: () => Promise<void>,
 	): Promise<void> {
 		const s = term.sessionName;
 		switch (msg.t) {
@@ -507,6 +511,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				return;
 			case "select":
 				await tmux.selectWindow(s, String(msg.window));
+				await refresh(); // don't make the tab highlight wait for the next poll
 				return;
 			case "newWindow": {
 				const windows = await tmux.listWindows(s);
@@ -518,6 +523,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 					index,
 				});
 				send({ t: "newWindow", window: id });
+				await refresh();
 				return;
 			}
 			case "killWindow": {
@@ -529,10 +535,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 					return;
 				}
 				await tmux.killWindow(`${s}:${String(msg.window)}`);
+				await refresh();
 				return;
 			}
 			case "renameWindow":
 				await tmux.renameWindow(`${s}:${String(msg.window)}`, String(msg.name ?? ""));
+				await refresh();
 				return;
 			case "paste":
 				await tmux.pasteText(`${s}:`, String(msg.text ?? ""), { bracketed: msg.bracketed !== false });
