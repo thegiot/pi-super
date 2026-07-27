@@ -310,15 +310,7 @@ function renderWindowList(): void {
 				send({ t: "select", window: w.id });
 				closeDrawer();
 			};
-			const kill = document.createElement("button");
-			kill.textContent = "✕";
-			kill.onclick = () => {
-				// windows are shared with the desktop client — this really kills them
-				if (confirm(`kill window ${w.index}:${w.name} for ALL clients (incl. your desktop)?`)) {
-					send({ t: "killWindow", window: w.id });
-				}
-			};
-			row.append(meta, kill);
+			row.append(meta);
 			return row;
 		}),
 	);

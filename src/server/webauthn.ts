@@ -152,7 +152,7 @@ export class PasskeyStore {
 		return entry.challenge;
 	}
 
-	async registrationOptions(rpID: string, label: string): Promise<unknown> {
+	async registrationOptions(rpID: string, label: string, anyAuthenticator = false): Promise<unknown> {
 		const options = await generateRegistrationOptions({
 			rpName: RP_NAME,
 			rpID,
@@ -164,8 +164,10 @@ export class PasskeyStore {
 			// platform + required UV: the passkey must live in the enrolling device's own
 			// authenticator behind its biometric/screen-lock. Without this, Android offers
 			// a confusing "NFC/USB security key" chooser instead of the fingerprint prompt.
+			// anyAuthenticator is the client's fallback when the device's credential manager
+			// is broken (Xiaomi…): UV stays required, only the attachment pin is dropped.
 			authenticatorSelection: {
-				authenticatorAttachment: "platform",
+				...(anyAuthenticator ? {} : { authenticatorAttachment: "platform" as const }),
 				residentKey: "required",
 				userVerification: "required",
 			},

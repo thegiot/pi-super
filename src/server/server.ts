@@ -196,8 +196,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 					sendJson(res, 403, { error: "bad origin" });
 					return;
 				}
-				const { label } = (await body()) as { label?: string };
-				sendJson(res, 200, await passkeys.registrationOptions(rpID, label ?? ""));
+				const { label, anyAuthenticator } = (await body()) as { label?: string; anyAuthenticator?: boolean };
+				sendJson(res, 200, await passkeys.registrationOptions(rpID, label ?? "", anyAuthenticator === true));
 				return;
 			}
 			case "POST /api/auth/register/verify": {

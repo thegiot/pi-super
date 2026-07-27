@@ -32,10 +32,23 @@ const api = async <T>(path: string, body?: unknown): Promise<T> => {
 export const authState = (): Promise<AuthState> => api<AuthState>("/api/auth/state");
 
 export async function enrollPasskey(label: string): Promise<string> {
-	const options = await api<Parameters<typeof startRegistration>[0]["optionsJSON"]>("/api/auth/register/options", {
-		label,
-	});
-	const response = await startRegistration({ optionsJSON: options });
+	const create = async (anyAuthenticator: boolean) => {
+		const options = await api<Parameters<typeof startRegistration>[0]["optionsJSON"]>("/api/auth/register/options", {
+			label,
+			anyAuthenticator,
+		});
+		return startRegistration({ optionsJSON: options });
+	};
+	let response: Awaited<ReturnType<typeof create>>;
+	try {
+		response = await create(false); // the device's own authenticator (biometrics)
+	} catch (e) {
+		// NotAllowedError is the user cancelling — respect it. Anything else (e.g. Xiaomi's
+		// NotReadableError from a broken credential manager) gets one retry that lets the
+		// user pick any UV-capable authenticator (hybrid/QR, security key).
+		if ((e as DOMException).name === "NotAllowedError") throw e;
+		response = await create(true);
+	}
 	const result = await api<{ credential: { label: string } }>("/api/auth/register/verify", { response, label });
 	return result.credential.label;
 }
