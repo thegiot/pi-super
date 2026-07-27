@@ -323,6 +323,19 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		}
 	}
 
+	/**
+	 * Identity of the client bundle we are serving (its hashed asset name). Sent in
+	 * hello/pong so a phone that keeps the old bundle open across a redeploy notices
+	 * and reloads itself — drafts and window selection survive reloads by design.
+	 */
+	function clientBuild(): string {
+		try {
+			return readFileSync(join(cfg.clientDir, "index.html"), "utf8").match(/assets\/index-[\w-]+\.js/)?.[0] ?? "";
+		} catch {
+			return "";
+		}
+	}
+
 	function serveStatic(res: ServerResponse, pathname: string): void {
 		const rel = normalize(decodeURIComponent(pathname)).replace(/^(\.\.[/\\])+/, "");
 		let file = join(cfg.clientDir, rel);
@@ -442,7 +455,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			return;
 		}
 		if (closed) return; // browser gave up while we were attaching
-		send({ t: "hello", base, session: term.sessionName, mode: term.mode, ...term.geometry });
+		send({ t: "hello", base, session: term.sessionName, mode: term.mode, build: clientBuild(), ...term.geometry });
 
 		let lastWindows = "";
 		const pushWindows = async () => {
@@ -507,7 +520,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				return;
 			case "mode":
 				await term.setSizeMode(msg.mode === "claim" ? "claim" : "ignore", Number(msg.cols), Number(msg.rows));
-				send({ t: "hello", session: s, mode: term.mode, ...term.geometry });
+				send({ t: "hello", session: s, mode: term.mode, build: clientBuild(), ...term.geometry });
 				return;
 			case "select":
 				await tmux.selectWindow(s, String(msg.window));
@@ -550,7 +563,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				await tmux.sendKeys(`${s}:`, (msg.keys as string[] | undefined) ?? []);
 				return;
 			case "ping":
-				send({ t: "pong" });
+				send({ t: "pong", build: clientBuild() });
 				return;
 			default:
 				send({ t: "error", error: `unknown message: ${String(msg.t)}` });

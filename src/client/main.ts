@@ -71,6 +71,21 @@ const nearBottom = (e: HTMLElement): boolean => e.scrollTop + e.clientHeight >= 
 const toBottom = (e: HTMLElement): void => {
 	e.scrollTop = e.scrollHeight;
 };
+/**
+ * Self-update: the server tells us which bundle it serves (hello/pong `build`); when
+ * ours is stale, reload once — drafts, view and window selection all survive reloads.
+ * In dev (vite serves main.ts, no hashed asset) this stays inert.
+ */
+const myBuild = Array.from(document.scripts)
+	.map((s) => s.src.match(/assets\/index-[\w-]+\.js/)?.[0])
+	.find(Boolean);
+function maybeReload(build: unknown): void {
+	if (!myBuild || typeof build !== "string" || !build || build === myBuild) return;
+	if (sessionStorage.getItem("reloadedFor") === build) return; // never loop
+	sessionStorage.setItem("reloadedFor", build);
+	location.reload();
+}
+
 /** The scroll container of whatever view is on screen — hidden ones must be left alone. */
 const activeScroller = (): HTMLElement =>
 	state.view === "reader" ? el.reader : state.view === "meta" ? el.meta : el.term;
@@ -177,8 +192,10 @@ function connect(): void {
 			case "pong":
 				clearTimeout(pongTimer as ReturnType<typeof setTimeout>);
 				pongTimer = undefined;
+				maybeReload(msg.build);
 				break;
 			case "hello":
+				maybeReload(msg.build);
 				state.restorePending = true;
 				state.session = String(msg.session ?? "");
 				if (msg.base) state.base = String(msg.base);
