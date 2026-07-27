@@ -11,8 +11,8 @@ agents, side-agents, shells and editors — and puts the whole thing on your pho
 copy, not a sync: the *same* session, live. Your desktop keeps showing exactly what it
 always showed; your phone just gets a seat at the table too.
 
-And because you're not always in a typing mood, there's *super*: a supervisor agent that
-can peek into every window and act for you. Text it from the garden — "what's the status
+And because you're not always in a typing mood, there's *super* — a meta agent, i.e. an
+agent whose job is your other agents. It can peek into every window and act for you. Text it from the garden — "what's the status
 of the grand endeavors work?" — dictate an order from the kitchen — "tell it to run the
 tests" — or call it hands-free from the car. It inspects, it steers, it reports back.
 
@@ -24,18 +24,18 @@ tests" — or call it hands-free from the car. It inspects, it steers, it report
   session to phone width, a key ribbon, a prompt composer (so Gboard dictation just
   works), and image paste that lands as a real file path in the session.
 
-Where things stand: the terminal and the supervisor work today; the voice call is wired
+Where things stand: the terminal and the meta agent work today; the voice call is wired
 up but its speech backends need credentials this box doesn't have yet (details in
 [DESIGN.md](DESIGN.md)).
 
 ## The three views
 
 * **terminal** (📖 toggles raw ↔ reader) — your tmux, one tab per window.
-* **supervisor** (🜲) — chat with *super*, which inspects and steers every window for
+* **meta agent** (🜲) — chat with *super*, which inspects and steers every window for
   you: "what's the status of the grand endeavors work?", "tell it to run the tests",
   "open the kitchen radio project and find out why it stopped working". It answers in
   chat and, via its `speak` tool, out loud.
-* **voice call** (📞) — the same supervisor, hands free. The speech model only talks
+* **voice call** (📞) — the same meta agent, hands free. The speech model only talks
   and delegates; super does the work and reports back mid-call.
 
 ## Quick start
