@@ -16,11 +16,13 @@
 			<button id="btn-menu" class="icon" title="windows">≡</button>
 			<div id="tabs"></div>
 			<button id="btn-view" class="icon" title="raw / reader">📖</button>
+			<button id="btn-meta" class="icon" title="meta agent">🜲</button>
 		</header>
 
 		<main>
 			<div id="term"></div>
 			<div id="reader" hidden><pre id="reader-text"></pre></div>
+			<div id="meta" hidden></div>
 			<div id="status"></div>
 		</main>
 
@@ -50,6 +52,7 @@
 					enterkeyhint="send"
 				></textarea>
 				<button id="btn-insert" title="insert without Enter">↳</button>
+				<button id="btn-abort" title="interrupt meta agent" hidden>■</button>
 				<button id="btn-send" title="send + Enter">➤</button>
 			</div>
 		</footer>

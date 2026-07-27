@@ -10,6 +10,10 @@ export interface Config {
 	stateDir: string;
 	statusLine: boolean;
 	clientDir: string;
+	metaDir: string;
+	metaModel: string | undefined;
+	metaEnabled: boolean;
+	metaInheritExtensions: boolean;
 	allowedOrigins: string[] | undefined; // undefined => same-host only
 }
 
@@ -31,6 +35,10 @@ Options:
   -L, --socket-name <n>   tmux socket name (tmux -L)
       --state-dir <dir>   State/uploads/token dir (default ~/.pi-super)
       --status-line       Show tmux's own status line inside the terminal view
+      --meta-model <m>    Model for the meta agent (default: your pi default)
+      --no-meta           Disable the meta agent
+      --meta-inherit-extensions
+                          Load your globally installed pi packages into the meta agent
       --origin <url>      Extra allowed WebSocket Origin (repeatable)
       --reset-token       Generate a fresh access token and exit
       --url               Print the access URL and exit
@@ -46,6 +54,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		stateDir: process.env.PI_SUPER_STATE_DIR ?? join(homedir(), ".pi-super"),
 		statusLine: false,
 		clientDir: "",
+		metaDir: "",
+		metaModel: process.env.PI_SUPER_META_MODEL,
+		metaEnabled: true,
+		metaInheritExtensions: false,
 		allowedOrigins: undefined,
 		printUrl: false,
 		help: false,
@@ -86,6 +98,15 @@ export function parseArgs(argv: string[]): ParsedArgs {
 			case "--status-line":
 				cfg.statusLine = true;
 				break;
+			case "--meta-model":
+				cfg.metaModel = next();
+				break;
+			case "--no-meta":
+				cfg.metaEnabled = false;
+				break;
+			case "--meta-inherit-extensions":
+				cfg.metaInheritExtensions = true;
+				break;
 			case "--origin":
 				origins.push(next());
 				break;
@@ -116,5 +137,12 @@ export function helpText(): string {
 export function defaultClientDir(moduleDir: string): string {
 	const candidates = [join(moduleDir, "..", "client"), join(moduleDir, "..", "..", "dist", "client")];
 	for (const c of candidates) if (existsSync(join(c, "index.html"))) return c;
+	return candidates[0]!;
+}
+
+/** dist/server/config.js -> src/meta (pi loads the extension as TypeScript source) */
+export function defaultMetaDir(moduleDir: string): string {
+	const candidates = [join(moduleDir, "..", "..", "src", "meta"), join(moduleDir, "..", "meta")];
+	for (const c of candidates) if (existsSync(join(c, "super-meta.ts"))) return c;
 	return candidates[0]!;
 }

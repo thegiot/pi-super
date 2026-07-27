@@ -4,6 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { COOKIE_NAME, isAuthed, originAllowed, requestToken, tokenEquals } from "./auth.js";
 import type { Config } from "./config.js";
+import { type ChatItem, MetaAgent } from "./meta.js";
 import { SESSION_PREFIX, sweepStaleSessions, TermConnection } from "./term.js";
 import { Tmux } from "./tmux.js";
 import { MAX_UPLOAD_BYTES, readBody, storeUpload } from "./uploads.js";
@@ -30,6 +31,22 @@ export interface SuperServer {
 export function createServer(cfg: Config, token: string): SuperServer {
 	const tmux = new Tmux(cfg.socketArgs);
 	const live = new Set<TermConnection>();
+	const meta = new MetaAgent({
+		metaDir: cfg.metaDir,
+		socketArgs: cfg.socketArgs,
+		model: cfg.metaModel,
+		inheritExtensions: cfg.metaInheritExtensions,
+	});
+	const metaClients = new Set<WebSocket>();
+
+	const broadcastMeta = (msg: unknown) => {
+		const data = JSON.stringify(msg);
+		for (const ws of metaClients) if (ws.readyState === WebSocket.OPEN) ws.send(data);
+	};
+	meta.on("item", (item: ChatItem) => broadcastMeta({ t: "item", item }));
+	meta.on("state", (state) => broadcastMeta({ t: "state", state }));
+	meta.on("speak", (speak) => broadcastMeta({ t: "speak", ...(speak as object) }));
+	meta.on("exit", () => broadcastMeta({ t: "state", state: meta.state }));
 
 	/** Base session to mirror: explicit config, else the first real (non-ours) session. */
 	async function resolveBase(requested?: string | null): Promise<string> {
@@ -164,6 +181,15 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		if (!tok || !tokenEquals(tok, token) || !originAllowed(req, cfg.allowedOrigins)) {
 			socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
 			socket.destroy();
+			return;
+		}
+		if (url.pathname === "/ws/meta") {
+			if (!cfg.metaEnabled) {
+				socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n");
+				socket.destroy();
+				return;
+			}
+			wss.handleUpgrade(req, socket, head, (ws) => onMetaConnection(ws));
 			return;
 		}
 		if (url.pathname !== "/ws") {
@@ -316,11 +342,57 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		}
 	}
 
+	function onMetaConnection(ws: WebSocket): void {
+		metaClients.add(ws);
+		const send = (msg: unknown) => {
+			if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+		};
+		send({ t: "init", transcript: meta.transcript, state: meta.state });
+		ws.on("message", (data) => {
+			let msg: Record<string, unknown>;
+			try {
+				msg = JSON.parse(String(data)) as Record<string, unknown>;
+			} catch {
+				return;
+			}
+			try {
+				switch (msg.t) {
+					case "prompt":
+						meta.prompt(
+							String(msg.text ?? ""),
+							msg.images as Array<{ data: string; mimeType: string }> | undefined,
+						);
+						break;
+					case "abort":
+						meta.abort();
+						break;
+					case "newSession":
+						meta.newSession();
+						send({ t: "init", transcript: meta.transcript, state: meta.state });
+						break;
+					case "start":
+						meta.start();
+						send({ t: "state", state: meta.state });
+						break;
+					case "stop":
+						meta.stop();
+						break;
+				}
+			} catch (err) {
+				send({ t: "error", error: String((err as Error).message) });
+			}
+		});
+		const drop = () => metaClients.delete(ws);
+		ws.on("close", drop);
+		ws.on("error", drop);
+	}
+
 	void sweepStaleSessions(tmux, new Set()).catch(() => {});
 
 	return {
 		http,
 		async close() {
+			meta.stop();
 			for (const term of live) await term.dispose();
 			live.clear();
 			wss.close();

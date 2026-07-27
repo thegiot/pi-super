@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { createMeta } from "./meta.js";
 import "./style.css";
 
 interface WindowInfo {
@@ -28,6 +29,8 @@ const el = {
 	term: $("term"),
 	reader: $("reader"),
 	readerText: $("reader-text"),
+	meta: $("meta"),
+	abort: $("btn-abort"),
 	status: $("status"),
 	input: $<HTMLTextAreaElement>("input"),
 	ribbon: $("ribbon"),
@@ -42,7 +45,8 @@ const el = {
 const state = {
 	ws: undefined as WebSocket | undefined,
 	windows: [] as WindowInfo[],
-	view: "raw" as "raw" | "reader",
+	view: "raw" as "raw" | "reader" | "meta",
+	lastTermView: "raw" as "raw" | "reader",
 	sizeMode: (localStorage.getItem("sizeMode") as "ignore" | "claim" | null) ?? "ignore",
 	fontSize: Number(localStorage.getItem("fontSize") ?? 13),
 	session: "",
@@ -240,25 +244,33 @@ async function refreshReader(): Promise<void> {
 	if (keepBottom) el.reader.scrollTop = el.reader.scrollHeight;
 }
 
-function setView(view: "raw" | "reader"): void {
+function setView(view: "raw" | "reader" | "meta"): void {
 	state.view = view;
-	el.reader.hidden = view === "raw";
+	if (view !== "meta") state.lastTermView = view;
+	el.reader.hidden = view !== "reader";
+	el.meta.hidden = view !== "meta";
 	el.term.style.visibility = view === "raw" ? "visible" : "hidden";
-	$("btn-view").textContent = view === "raw" ? "📖" : "▣";
+	el.ribbon.hidden = view === "meta";
+	el.abort.hidden = view !== "meta";
+	el.input.placeholder = view === "meta" ? "ask super…" : "prompt…";
+	$("btn-view").textContent = view === "reader" ? "▣" : "📖";
+	$("btn-meta").classList.toggle("armed", view === "meta");
 	clearInterval(state.readerTimer as ReturnType<typeof setInterval>);
 	if (view === "reader") {
 		void refreshReader();
 		state.readerTimer = setInterval(() => void refreshReader(), 2500);
-	} else {
+	} else if (view === "raw") {
 		refit();
 	}
+	if (view === "meta") el.meta.scrollTop = el.meta.scrollHeight;
 }
 
 // -------------------------------------------------------------------- input
 
 function sendText(text: string, enter: boolean): void {
 	if (!text) return;
-	send({ t: "paste", text, enter });
+	if (state.view === "meta") meta.send(text);
+	else send({ t: "paste", text, enter });
 	el.input.value = "";
 	autogrow();
 }
@@ -301,7 +313,15 @@ $("btn-close-drawer").onclick = closeDrawer;
 el.drawer.onclick = (e) => {
 	if (e.target === el.drawer) closeDrawer();
 };
-$("btn-view").onclick = () => setView(state.view === "raw" ? "reader" : "raw");
+$("btn-view").onclick = () => setView(state.view === "reader" ? "raw" : "reader");
+$("btn-meta").onclick = () => setView(state.view === "meta" ? state.lastTermView : "meta");
+el.abort.onclick = () => meta.abort();
+
+const meta = createMeta(el.meta);
+meta.onState = (s) => $("btn-meta").classList.toggle("busy", s.busy);
+meta.onSpeak = ({ message }) => {
+	if (state.view !== "meta") status(`🔊 ${message}`, 6000);
+};
 
 $("btn-send").onclick = () => sendText(el.input.value, true);
 $("btn-insert").onclick = () => sendText(el.input.value, false);

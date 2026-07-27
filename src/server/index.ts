@@ -3,7 +3,7 @@ import { networkInterfaces } from "node:os";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureToken } from "./auth.js";
-import { defaultClientDir, helpText, parseArgs } from "./config.js";
+import { defaultClientDir, defaultMetaDir, helpText, parseArgs } from "./config.js";
 import { createServer } from "./server.js";
 import { Tmux } from "./tmux.js";
 
@@ -32,7 +32,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	const cfg = { ...args, clientDir: defaultClientDir(moduleDir) };
+	const cfg = { ...args, clientDir: defaultClientDir(moduleDir), metaDir: defaultMetaDir(moduleDir) };
 	const tmux = new Tmux(cfg.socketArgs);
 	try {
 		await tmux.version();
