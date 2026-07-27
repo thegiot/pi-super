@@ -73,16 +73,24 @@ const toBottom = (e: HTMLElement): void => {
 };
 /**
  * Self-update: the server tells us which bundle it serves (hello/pong `build`); when
- * ours is stale, reload once — drafts, view and window selection all survive reloads.
- * In dev (vite serves main.ts, no hashed asset) this stays inert.
+ * ours is stale, reload — but only while the app is backgrounded, so the refresh is
+ * never visible: the user just always finds a fresh UI when they come back. Drafts,
+ * view and window selection all survive reloads. In dev (vite serves main.ts, no
+ * hashed asset) this stays inert.
  */
 const myBuild = Array.from(document.scripts)
 	.map((s) => s.src.match(/assets\/index-[\w-]+\.js/)?.[0])
 	.find(Boolean);
+let pendingBuild: string | undefined;
 function maybeReload(build: unknown): void {
 	if (!myBuild || typeof build !== "string" || !build || build === myBuild) return;
 	if (sessionStorage.getItem("reloadedFor") === build) return; // never loop
-	sessionStorage.setItem("reloadedFor", build);
+	pendingBuild = build;
+	if (document.hidden) applyPendingReload();
+}
+function applyPendingReload(): void {
+	if (!pendingBuild) return;
+	sessionStorage.setItem("reloadedFor", pendingBuild);
 	location.reload();
 }
 
@@ -276,7 +284,10 @@ setInterval(() => probe(8000), 30_000);
 // Coming back to the app (unlock, tab switch) must not sit out the backoff timer,
 // nor trust a possibly-stale socket.
 document.addEventListener("visibilitychange", () => {
-	if (document.hidden) return;
+	if (document.hidden) {
+		applyPendingReload();
+		return;
+	}
 	if (!state.ws) {
 		state.backoff = 500;
 		connect();
