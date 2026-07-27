@@ -176,6 +176,19 @@ export class Tmux {
 		await this.run(["send-keys", "-t", target, ...keys]);
 	}
 
+	/**
+	 * PageUp with tmux's own smarts: for pi/shell panes enter copy mode scrolled up a
+	 * page (`-e`: PageDown past the bottom exits copy mode again); when already in copy
+	 * mode keep paging; full-screen apps on the alternate screen (vim, htop) want the
+	 * key itself.
+	 */
+	async smartPageUp(target: string): Promise<void> {
+		const flags = (await this.run(["display-message", "-p", "-t", target, "#{alternate_on} #{pane_in_mode}"])).trim();
+		const [alt, inMode] = flags.split(" ");
+		if (alt === "1" || inMode === "1") await this.sendKeys(target, ["PageUp"]);
+		else await this.run(["copy-mode", "-eu", "-t", target]);
+	}
+
 	async newSessionGrouped(name: string, base: string): Promise<void> {
 		await this.run(["new-session", "-d", "-s", name, "-t", `=${base}`]);
 	}

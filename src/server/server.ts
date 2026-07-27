@@ -559,9 +559,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				await tmux.pasteText(`${s}:`, String(msg.text ?? ""), { bracketed: msg.bracketed !== false });
 				if (msg.enter) await tmux.sendKeys(`${s}:`, ["Enter"]);
 				return;
-			case "keys":
-				await tmux.sendKeys(`${s}:`, (msg.keys as string[] | undefined) ?? []);
+			case "keys": {
+				const keys = (msg.keys as string[] | undefined) ?? [];
+				if (keys.length === 1 && keys[0] === "PageUp") await tmux.smartPageUp(`${s}:`);
+				else await tmux.sendKeys(`${s}:`, keys);
 				return;
+			}
 			case "ping":
 				send({ t: "pong", build: clientBuild() });
 				return;
