@@ -37,8 +37,11 @@ export class MetaAgent extends EventEmitter {
 	private assistant: ChatItem | undefined;
 	/** tool_execution_end carries no args, so keep them from the start event */
 	private readonly pendingTools = new Map<string, { item: ChatItem; args: unknown }>();
+	private patchTimer: ReturnType<typeof setTimeout> | undefined;
 	readonly transcript: ChatItem[] = [];
 	busy = false;
+	/** a prompt was sent but agent_start has not arrived yet */
+	private turnPending = false;
 
 	constructor(private readonly opts: MetaOptions) {
 		super();
@@ -88,21 +91,48 @@ export class MetaAgent extends EventEmitter {
 		proc.stderr.setEncoding("utf8");
 		proc.stderr.on("data", (chunk: string) => this.emit("log", chunk));
 		proc.on("exit", (code, signal) => {
+			// only react if this is still *our* child (a restart may have replaced it)
+			if (this.proc !== proc) return;
 			this.proc = undefined;
-			this.busy = false;
+			this.resetTurnState();
 			this.push({ kind: "system", id: 0, text: `meta agent exited (${code ?? signal})` });
 			this.emit("exit", { code, signal });
 		});
 		proc.on("error", (err) => {
+			if (this.proc !== proc) return;
+			this.proc = undefined;
+			this.resetTurnState();
 			this.push({ kind: "system", id: 0, text: `meta agent failed to start: ${err.message}` });
 			this.emit("exit", { code: -1 });
 		});
+		proc.stdin.on("error", (err) => this.emit("log", `meta stdin: ${err.message}\n`));
 		this.push({ kind: "system", id: 0, text: "meta agent started" });
 	}
 
-	stop(): void {
-		this.proc?.kill("SIGTERM");
+	private resetTurnState(): void {
+		this.busy = false;
+		this.assistant = undefined;
+		this.pendingTools.clear();
+		this.emit("state", this.state);
+	}
+
+	/** SIGTERM, then SIGKILL if it does not go away; resolves once the child is gone. */
+	async stop(): Promise<void> {
+		const proc = this.proc;
 		this.proc = undefined;
+		this.resetTurnState();
+		if (!proc || proc.exitCode !== null) return;
+		await new Promise<void>((resolve) => {
+			const timer = setTimeout(() => {
+				proc.kill("SIGKILL");
+				resolve();
+			}, 2000);
+			proc.once("exit", () => {
+				clearTimeout(timer);
+				resolve();
+			});
+			proc.kill("SIGTERM");
+		});
 	}
 
 	/** RPC framing is strict JSONL: split on \n only. */
@@ -123,16 +153,30 @@ export class MetaAgent extends EventEmitter {
 		}
 	}
 
-	private push(item: ChatItem): void {
-		const withId = { ...item, id: item.id || ++this.nextId } as ChatItem;
-		this.transcript.push(withId);
+	/** Assign an id in place (callers keep the reference and patch it later). */
+	private push(item: ChatItem): ChatItem {
+		if (!item.id) item.id = ++this.nextId;
+		this.transcript.push(item);
 		if (this.transcript.length > 500) this.transcript.splice(0, this.transcript.length - 500);
-		this.emit("item", withId);
-		return;
+		this.emit("item", item);
+		return item;
 	}
 
-	private patch(item: ChatItem): void {
-		this.emit("item", item);
+	/** Streaming text: coalesce patches so a fast stream can't flood slow clients. */
+	private patch(item: ChatItem, throttle = false): void {
+		if (!throttle) {
+			if (this.patchTimer) {
+				clearTimeout(this.patchTimer);
+				this.patchTimer = undefined;
+			}
+			this.emit("item", item);
+			return;
+		}
+		if (this.patchTimer) return;
+		this.patchTimer = setTimeout(() => {
+			this.patchTimer = undefined;
+			this.emit("item", item);
+		}, 100);
 	}
 
 	private onEvent(ev: Record<string, unknown>): void {
@@ -144,6 +188,7 @@ export class MetaAgent extends EventEmitter {
 				break;
 			case "agent_settled":
 				this.busy = false;
+				this.turnPending = false;
 				if (this.assistant && this.assistant.kind === "assistant") {
 					this.assistant.done = true;
 					this.patch(this.assistant);
@@ -159,7 +204,7 @@ export class MetaAgent extends EventEmitter {
 					this.transcript.push(this.assistant);
 				}
 				this.assistant.text += delta.delta;
-				this.patch(this.assistant);
+				this.patch(this.assistant, true);
 				break;
 			}
 			case "tool_execution_start": {
@@ -210,7 +255,10 @@ export class MetaAgent extends EventEmitter {
 		this.push({ kind: "user", id: 0, text: message });
 		const cmd: Record<string, unknown> = { type: "prompt", message };
 		if (images?.length) cmd.images = images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
-		if (this.busy) cmd.streamingBehavior = "steer";
+		// Always steer: agent_start may not have arrived yet for a turn that is already
+		// under way, and a rejected prompt would be silently lost.
+		if (this.busy || this.turnPending) cmd.streamingBehavior = "steer";
+		this.turnPending = true;
 		this.write(cmd);
 	}
 
@@ -224,8 +272,8 @@ export class MetaAgent extends EventEmitter {
 			return;
 		}
 		this.transcript.length = 0;
-		this.assistant = undefined;
-		this.pendingTools.clear();
+		this.resetTurnState();
+		this.turnPending = false;
 		this.write({ type: "new_session" });
 	}
 }

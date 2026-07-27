@@ -1,6 +1,11 @@
 #!/usr/bin/env node
-// Manual end-to-end smoke test against a live tmux server.
+// Manual end-to-end smoke test.
 //   node tests/smoke.mjs <baseUrl> <token>
+//
+// Point it at a pi-super started on a THROWAWAY tmux session, e.g.
+//   tmux -L smoke new-session -d -s smoke
+//   node dist/server/index.js -L smoke -s smoke --port 8799 --no-meta
+// It types into panes and kills windows, so never aim it at your real session.
 import { WebSocket } from "ws";
 
 const base = process.argv[2] ?? "http://127.0.0.1:8799";
@@ -35,11 +40,13 @@ if (!out.includes("hello-from-pi-super")) throw new Error("pty input did not rou
 log("pty input round-trip ok");
 
 // out-of-band: create a window, list windows, select it, kill it
+const beforeIds = new Set((seen.filter((m) => m.t === "windows").pop()?.windows ?? []).map((w) => w.id));
 ws.send(JSON.stringify({ t: "newWindow", cwd: process.env.HOME, name: "smoke" }));
 await wait(1500);
 const windows = seen.filter((m) => m.t === "windows").pop();
 log("windows:", windows?.windows.map((w) => `${w.index}:${w.name}`).join(" "));
-const created = windows?.windows.find((w) => w.name === "smoke");
+// identify by window id, never by name: names are not unique
+const created = windows?.windows.find((w) => !beforeIds.has(w.id));
 if (!created) throw new Error("newWindow did not show up");
 ws.send(JSON.stringify({ t: "select", window: created.id }));
 await wait(600);

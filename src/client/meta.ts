@@ -31,16 +31,24 @@ export function createMeta(container: HTMLElement): MetaApi {
 	let ws: WebSocket | undefined;
 	let backoff = 500;
 
+	// Voice/chat input must survive a reconnect rather than vanish into a closed socket.
+	const outbox: string[] = [];
+	function post(msg: object): void {
+		const data = JSON.stringify(msg);
+		if (ws?.readyState === WebSocket.OPEN) ws.send(data);
+		else if (outbox.length < 50) outbox.push(data);
+	}
+
 	const api: MetaApi = {
 		send(text) {
 			if (!text.trim()) return;
-			ws?.send(JSON.stringify({ t: "prompt", text }));
+			post({ t: "prompt", text });
 		},
 		abort() {
-			ws?.send(JSON.stringify({ t: "abort" }));
+			post({ t: "abort" });
 		},
 		newSession() {
-			ws?.send(JSON.stringify({ t: "newSession" }));
+			post({ t: "newSession" });
 		},
 	};
 
@@ -79,6 +87,7 @@ export function createMeta(container: HTMLElement): MetaApi {
 		ws = new WebSocket(`${proto}//${location.host}/ws/meta`);
 		ws.onopen = () => {
 			backoff = 500;
+			while (outbox.length > 0 && ws?.readyState === WebSocket.OPEN) ws.send(outbox.shift() as string);
 		};
 		ws.onmessage = (ev) => {
 			const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;

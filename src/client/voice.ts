@@ -20,6 +20,7 @@ import type { MetaApi } from "./meta.js";
 
 export interface VoiceConfig {
 	enabled: boolean;
+	meta?: boolean;
 	provider: "codex" | "openai" | "none" | "local";
 	model: string;
 	voice: string;
@@ -54,6 +55,7 @@ interface SpeechRecognitionLike {
 	onresult: ((ev: SpeechRecognitionEventLike) => void) | null;
 	onerror: ((ev: { error?: string }) => void) | null;
 	onend: (() => void) | null;
+	onstart: (() => void) | null;
 	start(): void;
 	stop(): void;
 }
@@ -87,10 +89,14 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	let audio: HTMLAudioElement | undefined;
 	let wakeLock: { release(): Promise<void> } | undefined;
 	let delegationId: string | undefined;
+	let muted = false;
 	let state: VoiceState = "idle";
 	let assistantLine = "";
 	let recognition: SpeechRecognitionLike | undefined;
 	let speaking = false;
+	let listening = false;
+	/** bumped by stop(); an in-flight start() checks it and aborts */
+	let generation = 0;
 
 	const api: VoiceApi = {
 		config: undefined,
@@ -115,7 +121,8 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	async function loadConfig(): Promise<VoiceConfig> {
 		if (api.config) return api.config;
 		const cfg = (await (await fetch("/api/voice/config")).json()) as VoiceConfig;
-		if (!cfg.enabled && speechRecognitionCtor()) {
+		// no meta agent => nothing to delegate to, so no fallback either
+		if (!cfg.enabled && cfg.meta !== false && speechRecognitionCtor()) {
 			cfg.provider = "local";
 			cfg.enabled = true;
 			cfg.delegation = "tool";
@@ -126,6 +133,8 @@ export function createVoice(meta: MetaApi): VoiceApi {
 
 	async function start(): Promise<void> {
 		if (state === "connecting" || state === "live") return;
+		const gen = ++generation;
+		const stale = () => gen !== generation;
 		setState("connecting");
 		try {
 			const cfg = await loadConfig();
@@ -135,9 +144,14 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				return;
 			}
 
-			mic = await navigator.mediaDevices.getUserMedia({
+			const stream = await navigator.mediaDevices.getUserMedia({
 				audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
 			});
+			if (stale()) {
+				for (const t of stream.getTracks()) t.stop();
+				return;
+			}
+			mic = stream;
 			pc = new RTCPeerConnection();
 			pc.oniceconnectionstatechange = () => {
 				if (pc && ["failed", "disconnected", "closed"].includes(pc.iceConnectionState) && state === "live") {
@@ -155,8 +169,9 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				audio.srcObject = ev.streams[0] ?? new MediaStream([ev.track]);
 				void audio.play().catch(() => {});
 			};
+			// addTrack already creates the sendrecv audio transceiver — adding another
+			// would put a second m-line in the offer.
 			for (const track of mic.getTracks()) pc.addTrack(track, mic);
-			pc.addTransceiver("audio", { direction: "sendrecv" });
 
 			dc = pc.createDataChannel("oai-events");
 			dc.onmessage = (ev) => onEvent(JSON.parse(String(ev.data)) as Record<string, unknown>);
@@ -174,11 +189,18 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				const err = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string };
 				throw new Error(err.error ?? `offer rejected (${res.status})`);
 			}
-			await pc.setRemoteDescription({ type: "answer", sdp: await res.text() });
+			const answer = await res.text();
+			if (stale()) return;
+			await pc.setRemoteDescription({ type: "answer", sdp: answer });
+			if (stale()) {
+				stop();
+				return;
+			}
 
 			await keepAwake();
 			setState("live");
 		} catch (err) {
+			if (stale()) return;
 			setState("error", String((err as Error).message));
 			stop();
 		}
@@ -235,16 +257,21 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		recog.onerror = (ev: { error?: string }) => {
 			if (ev.error === "no-speech" || ev.error === "aborted") return;
 			setState("error", `speech: ${ev.error ?? "unknown"}`);
+			stop();
 		};
 		// Chrome ends recognition on its own every so often; keep it alive.
 		recog.onend = () => {
-			if (state === "live" && !speaking) {
+			listening = false;
+			if (state === "live" && !speaking && !muted) {
 				try {
 					recog.start();
 				} catch {
 					/* already starting */
 				}
 			}
+		};
+		recog.onstart = () => {
+			listening = true;
 		};
 		recognition = recog;
 		recog.start();
@@ -262,8 +289,10 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		const utter = new SpeechSynthesisUtterance(text);
 		utter.lang = navigator.language || "en-US";
 		const resume = () => {
+			// more queued utterances: stay in "speaking" until the queue drains
+			if (speechSynthesis.speaking || speechSynthesis.pending) return;
 			speaking = false;
-			if (state !== "live") return;
+			if (state !== "live" || muted || listening) return;
 			try {
 				recognition?.start();
 			} catch {
@@ -277,6 +306,9 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	}
 
 	function stop(): void {
+		generation++;
+		muted = false;
+		listening = false;
 		if (recognition) {
 			recognition.onend = null;
 			try {
@@ -303,14 +335,14 @@ export function createVoice(meta: MetaApi): VoiceApi {
 
 	function toggleMute(): boolean {
 		if (api.config?.provider === "local") {
-			if (speaking) return true;
+			muted = !muted;
 			try {
-				recognition?.stop();
-				speaking = true; // reuse the flag as "not listening"
+				if (muted) recognition?.stop();
+				else if (!speaking) recognition?.start();
 			} catch {
-				/* ignore */
+				/* transitional state; onend will settle it */
 			}
-			return true;
+			return muted;
 		}
 		const track = mic?.getAudioTracks()[0];
 		if (!track) return false;

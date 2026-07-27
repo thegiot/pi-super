@@ -224,7 +224,10 @@ function renderWindowList(): void {
 			const kill = document.createElement("button");
 			kill.textContent = "✕";
 			kill.onclick = () => {
-				if (confirm(`kill window ${w.index}:${w.name}?`)) send({ t: "killWindow", window: w.id });
+				// windows are shared with the desktop client — this really kills them
+				if (confirm(`kill window ${w.index}:${w.name} for ALL clients (incl. your desktop)?`)) {
+					send({ t: "killWindow", window: w.id });
+				}
 			};
 			row.append(meta, kill);
 			return row;
@@ -232,19 +235,28 @@ function renderWindowList(): void {
 	);
 }
 
+let readerBusy = false;
 async function refreshReader(): Promise<void> {
 	const w = activeWindow();
-	if (!w) return;
+	if (!w || readerBusy) return; // never let refreshes overlap and land out of order
+	readerBusy = true;
+	const pane = w.paneId;
 	const keepBottom = el.reader.scrollTop + el.reader.clientHeight >= el.reader.scrollHeight - 40;
-	const res = await fetch(`/api/capture?target=${encodeURIComponent(w.paneId)}&lines=3000`, {
-		cache: "no-store",
-	});
-	if (!res.ok) {
-		status(`capture failed: ${res.status}`, 3000, true);
-		return;
+	try {
+		const res = await fetch(`/api/capture?target=${encodeURIComponent(pane)}&lines=3000`, { cache: "no-store" });
+		if (!res.ok) {
+			status(`capture failed: ${res.status}`, 3000, true);
+			return;
+		}
+		const body = (await res.text()).replace(/\n+$/, "");
+		if (state.view !== "reader" || activeWindow()?.paneId !== pane) return; // stale
+		el.readerText.textContent = body;
+		if (keepBottom) el.reader.scrollTop = el.reader.scrollHeight;
+	} catch (err) {
+		status(`capture failed: ${String((err as Error).message)}`, 3000, true);
+	} finally {
+		readerBusy = false;
 	}
-	el.readerText.textContent = (await res.text()).replace(/\n+$/, "");
-	if (keepBottom) el.reader.scrollTop = el.reader.scrollHeight;
 }
 
 function setView(view: "raw" | "reader" | "meta"): void {

@@ -40,7 +40,23 @@ async function query(args: string[], fields: string[]): Promise<string[][]> {
 	return rows;
 }
 
-const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
+// pi's extension guidance: keep tool output out of "blow up the context" territory.
+const MAX_TOOL_BYTES = 50_000;
+const MAX_TOOL_LINES = 2000;
+
+function clamp(s: string): string {
+	let out = s;
+	const lines = out.split("\n");
+	if (lines.length > MAX_TOOL_LINES) {
+		out = `[…${lines.length - MAX_TOOL_LINES} earlier lines omitted…]\n${lines.slice(-MAX_TOOL_LINES).join("\n")}`;
+	}
+	if (Buffer.byteLength(out, "utf8") > MAX_TOOL_BYTES) {
+		out = `[…truncated…]\n${Buffer.from(out, "utf8").subarray(-MAX_TOOL_BYTES).toString("utf8")}`;
+	}
+	return out;
+}
+
+const text = (s: string) => ({ content: [{ type: "text" as const, text: clamp(s) }] });
 const json = (v: unknown) => text(JSON.stringify(v, null, 2));
 const fail = (err: unknown) => text(JSON.stringify({ ok: false, error: String((err as Error)?.message ?? err) }));
 
@@ -140,9 +156,13 @@ export default function superMeta(pi: ExtensionAPI) {
 					body = body.slice(1);
 				}
 				if (body) {
-					const buffer = `pi-super-meta-${process.pid}`;
+					const buffer = `pi-super-meta-${Math.random().toString(36).slice(2, 10)}`;
 					await tmux(["load-buffer", "-b", buffer, "-"], body);
-					await tmux(["paste-buffer", "-d", "-p", "-b", buffer, "-t", params.window]);
+					try {
+						await tmux(["paste-buffer", "-d", "-p", "-b", buffer, "-t", params.window]);
+					} finally {
+						await tmux(["delete-buffer", "-b", buffer]).catch(() => {});
+					}
 					if (params.submit !== false) {
 						await sleep(150);
 						await tmux(["send-keys", "-t", params.window, "Enter"]);

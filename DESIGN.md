@@ -22,9 +22,9 @@ Named after hbomberguy's *super*: one remote that drives everything.
 ```
                     ┌───────────────────────── Android (PWA, later TWA/Capacitor) ────────┐
                     │  Terminal view      Meta chat view       Voice call view            │
-                    │  xterm.js + ribbon  DOM chat             WebRTC ↔ OpenAI Realtime    │
+                    │  xterm.js + ribbon  DOM chat             WebRTC ↔ realtime model     │
                     └───────┬───────────────────┬────────────────────┬───────────────────-┘
-                            │ WSS (bytes)       │ WSS (json)         │ ephemeral secret + events
+                            │ WSS (bytes)       │ WSS (json)         │ SDP offer/answer proxy
                     ┌───────┴───────────────────┴────────────────────┴───────────────────┐
                     │                      pi-super server (node)                        │
                     │  auth · uploads · tmux control · pty broker · meta RPC · voice mint │
@@ -95,13 +95,14 @@ away. Deliberately thin — the models already know tmux.
 
 ### 3. Voice plane (M3)
 
-* Browser **WebRTC** to the OpenAI Realtime API (`gpt-realtime-2.1[-mini]`), with an
-  **ephemeral client secret** minted by pi-super (`POST /api/voice/token`); the real API
-  key never leaves the server.
+* Browser **WebRTC** to a realtime speech model. The phone POSTs its SDP offer to
+  `POST /api/voice/offer`; pi-super attaches the credential and the server-side
+  instructions and returns only the answer, so no secret ever reaches the browser.
 * **Eco/delegation pattern** (as in `pi-realtime`, and morally what pi-codex-conversion's
   Codex `delegation.created` does, minus the private `quicksilver` protocol): the realtime
   model does turn-taking, barge-in and short chat, and has exactly one substantive tool —
-  `ask_meta(text)` — which enqueues a turn on the meta agent and returns immediately.
+  `ask_super(request)` (or, on the Codex path, the `delegation.created` event) — which
+  enqueues a turn on the meta agent and returns immediately.
   Progress/results come back **asynchronously** as `conversation.item.create` +
   `response.create` injected from `speak()` events. So it is model-agnostic: swap Claude,
   GPT, Gemini, whatever behind the meta agent; only the ~200 lines of realtime wiring are

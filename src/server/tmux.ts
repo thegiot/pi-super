@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
 // tmux >= 3.4 escapes control characters (\037 etc.) in non-tty output, so a control
 // separator is unusable. Newline works instead: tmux sanitises control chars *inside*
@@ -44,7 +45,8 @@ export class Tmux {
 			const child = execFile(
 				"tmux",
 				argv,
-				{ maxBuffer: 64 * 1024 * 1024, encoding: "utf8" },
+				// bounded: a wedged tmux server must not pile up children or buffers
+				{ maxBuffer: 16 * 1024 * 1024, encoding: "utf8", timeout: 15000, killSignal: "SIGKILL" },
 				(err, stdout, stderr) => {
 					if (err) {
 						reject(new TmuxError(`tmux ${argv.join(" ")}: ${String(stderr || err.message).trim()}`));
@@ -156,11 +158,16 @@ export class Tmux {
 
 	/** Paste arbitrary text into a pane using a tmux buffer (safe for any bytes). */
 	async pasteText(target: string, text: string, opts: { bracketed?: boolean } = {}): Promise<void> {
-		const buffer = `pi-super-${process.pid}`;
+		// per-operation buffer name: two clients pasting at once must not interleave
+		const buffer = `pi-super-${randomBytes(6).toString("hex")}`;
 		await this.run(["load-buffer", "-b", buffer, "-"], text);
 		const args = ["paste-buffer", "-d", "-b", buffer, "-t", target];
 		if (opts.bracketed !== false) args.push("-p");
-		await this.run(args);
+		try {
+			await this.run(args);
+		} finally {
+			await this.tryRun(["delete-buffer", "-b", buffer]);
+		}
 	}
 
 	/** Send tmux key names (Enter, C-c, Up, Escape, ...). */
@@ -177,8 +184,9 @@ export class Tmux {
 		await this.tryRun(["kill-session", "-t", `=${name}`]);
 	}
 
-	async setOption(session: string, option: string, value: string): Promise<void> {
-		await this.tryRun(["set-option", "-t", `=${session}`, option, value]);
+	/** Session-scoped option. The trailing colon matters: `-t =name` is not a valid target here. */
+	async setOption(session: string, option: string, value: string): Promise<string | null> {
+		return this.tryRun(["set-option", "-t", `=${session}:`, option, value]);
 	}
 
 	async selectWindow(session: string, windowId: string): Promise<void> {

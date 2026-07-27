@@ -33,20 +33,30 @@ export function parseCookies(header: string | undefined): Record<string, string>
 		if (idx < 0) continue;
 		const k = part.slice(0, idx).trim();
 		const v = part.slice(idx + 1).trim();
-		if (k) out[k] = decodeURIComponent(v);
+		if (!k) continue;
+		try {
+			out[k] = decodeURIComponent(v);
+		} catch {
+			// malformed percent-encoding: keep the raw value rather than throwing
+			// (this runs before authentication, so a throw here would be a free DoS)
+			out[k] = v;
+		}
 	}
 	return out;
 }
 
-/** Token from cookie, Authorization: Bearer, or ?token= (first visit / QR link). */
+/**
+ * Token from ?token= (fresh link / QR), Authorization: Bearer, or the cookie.
+ *
+ * Explicit credentials win over the cookie on purpose: after `--reset-token` a stale
+ * cookie must not be able to lock the browser out of a link carrying the new token.
+ */
 export function requestToken(req: IncomingMessage, url: URL): string | undefined {
-	const cookies = parseCookies(req.headers.cookie);
-	const cookie = cookies[COOKIE_NAME];
-	if (cookie) return cookie;
+	const q = url.searchParams.get("token");
+	if (q) return q;
 	const auth = req.headers.authorization;
 	if (auth?.startsWith("Bearer ")) return auth.slice(7).trim();
-	const q = url.searchParams.get("token");
-	return q ?? undefined;
+	return parseCookies(req.headers.cookie)[COOKIE_NAME];
 }
 
 export function isAuthed(req: IncomingMessage, url: URL, token: string): boolean {
@@ -65,7 +75,10 @@ export function originAllowed(req: IncomingMessage, allowed: string[] | undefine
 	try {
 		const o = new URL(origin);
 		const host = req.headers.host;
-		return !!host && o.host === host;
+		if (!host || o.host !== host) return false;
+		// If we were reached over TLS, an http:// origin on the same host is not us.
+		const secure = (req.socket as { encrypted?: boolean }).encrypted === true;
+		return !secure || o.protocol === "https:";
 	} catch {
 		return false;
 	}

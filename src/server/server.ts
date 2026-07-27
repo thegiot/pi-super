@@ -23,6 +23,7 @@ const MIME: Record<string, string> = {
 };
 
 const WINDOW_POLL_MS = 1000;
+const MAX_WS_BUFFER = 2 * 1024 * 1024;
 
 export interface SuperServer {
 	http: Server;
@@ -69,9 +70,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	}
 
 	const http = createHttpServer((req, res) => {
-		handle(req, res).catch((err) => {
-			sendJson(res, 500, { error: String(err?.message ?? err) });
-		});
+		try {
+			handle(req, res).catch((err) => sendJson(res, 500, { error: String(err?.message ?? err) }));
+		} catch (err) {
+			// e.g. a malformed Host header making URL parsing throw, pre-auth
+			sendJson(res, 400, { error: String((err as Error).message) });
+		}
 	});
 
 	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -86,8 +90,9 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		if (url.searchParams.has("token") && !req.headers.cookie?.includes(`${COOKIE_NAME}=`)) {
 			const clean = new URL(url);
 			clean.searchParams.delete("token");
+			const secure = (req.socket as { encrypted?: boolean }).encrypted === true ? " Secure;" : "";
 			res.writeHead(302, {
-				"set-cookie": `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`,
+				"set-cookie": `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly;${secure} SameSite=Strict; Path=/; Max-Age=31536000`,
 				location: `${clean.pathname}${clean.search}`,
 			});
 			res.end();
@@ -129,7 +134,13 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			}
 			case "GET /api/voice/config": {
 				const voice = detectVoiceConfig();
-				sendJson(res, 200, { ...voice, enabled: voice.provider !== "none" && cfg.metaEnabled });
+				sendJson(res, 200, {
+					...voice,
+					enabled: voice.provider !== "none" && cfg.metaEnabled,
+					// without a meta agent there is nothing for a voice front end to delegate to,
+					// so the client must not fall back to browser speech either
+					meta: cfg.metaEnabled,
+				});
 				return;
 			}
 			case "POST /api/voice/offer": {
@@ -198,10 +209,18 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
 
 	http.on("upgrade", (req, socket, head) => {
-		const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-		const tok = requestToken(req, url);
-		if (!tok || !tokenEquals(tok, token) || !originAllowed(req, cfg.allowedOrigins)) {
-			socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+		// Everything in here runs before authentication: a throw would kill the process.
+		let url: URL;
+		try {
+			url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+			const tok = requestToken(req, url);
+			if (!tok || !tokenEquals(tok, token) || !originAllowed(req, cfg.allowedOrigins)) {
+				socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+				socket.destroy();
+				return;
+			}
+		} catch {
+			socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
 			socket.destroy();
 			return;
 		}
@@ -242,7 +261,11 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			statusLine: cfg.statusLine,
 			socketArgs: cfg.socketArgs,
 			onData: (chunk) => {
-				if (ws.readyState === WebSocket.OPEN) ws.send(chunk, { binary: true });
+				// Backpressure: a phone on a bad link must not make us buffer a noisy pane
+				// without bound. tmux will redraw, so dropping frames is safe.
+				if (ws.readyState !== WebSocket.OPEN) return;
+				if (ws.bufferedAmount > MAX_WS_BUFFER) return;
+				ws.send(chunk, { binary: true });
 			},
 			onGeometry: (cols, rows) => send({ t: "geometry", cols, rows }),
 			onExit: () => {
@@ -252,6 +275,19 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		});
 		live.add(term);
 
+		// Install teardown *before* any await: the socket can die mid-startup.
+		let poll: ReturnType<typeof setInterval> | undefined;
+		let closed = false;
+		const cleanup = () => {
+			if (closed) return;
+			closed = true;
+			if (poll) clearInterval(poll);
+			live.delete(term);
+			void term.dispose();
+		};
+		ws.on("close", cleanup);
+		ws.on("error", cleanup);
+
 		const cols = Number(url.searchParams.get("cols") ?? 80);
 		const rows = Number(url.searchParams.get("rows") ?? 24);
 		const mode = url.searchParams.get("mode") === "claim" ? "claim" : "ignore";
@@ -259,14 +295,18 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			await term.start(cols, rows, mode);
 		} catch (err) {
 			send({ t: "fatal", error: `tmux attach failed: ${String((err as Error).message)}` });
-			live.delete(term);
+			cleanup();
 			ws.close();
 			return;
 		}
+		if (closed) return; // browser gave up while we were attaching
 		send({ t: "hello", base, session: term.sessionName, mode: term.mode, ...term.geometry });
 
 		let lastWindows = "";
-		const poll = setInterval(() => {
+		let polling = false;
+		poll = setInterval(() => {
+			if (polling) return; // never overlap: a slow tmux would spawn children forever
+			polling = true;
 			void (async () => {
 				try {
 					const windows = await tmux.listWindows(term.sessionName);
@@ -278,6 +318,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 					await term.syncGeometry();
 				} catch {
 					/* transient tmux errors are fine */
+				} finally {
+					polling = false;
 				}
 			})();
 		}, WINDOW_POLL_MS);
@@ -302,13 +344,6 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			})();
 		});
 
-		const cleanup = () => {
-			clearInterval(poll);
-			live.delete(term);
-			void term.dispose();
-		};
-		ws.on("close", cleanup);
-		ws.on("error", cleanup);
 	}
 
 	async function onControl(
@@ -343,9 +378,17 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				send({ t: "newWindow", window: id });
 				return;
 			}
-			case "killWindow":
+			case "killWindow": {
+				// Grouped sessions share real windows: killing one kills it for the desktop
+				// client too, and killing the last one would take the whole session down.
+				const windows = await tmux.listWindows(s);
+				if (windows.length <= 1) {
+					send({ t: "error", error: "refusing to kill the last window of the session" });
+					return;
+				}
 				await tmux.killWindow(`${s}:${String(msg.window)}`);
 				return;
+			}
 			case "renameWindow":
 				await tmux.renameWindow(`${s}:${String(msg.window)}`, String(msg.name ?? ""));
 				return;
@@ -414,9 +457,11 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	return {
 		http,
 		async close() {
-			meta.stop();
+			await meta.stop();
+			for (const ws of wss.clients) ws.terminate();
 			for (const term of live) await term.dispose();
 			live.clear();
+			metaClients.clear();
 			wss.close();
 			await new Promise<void>((resolve) => http.close(() => resolve()));
 		},

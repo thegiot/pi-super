@@ -31,6 +31,8 @@ export class TermConnection {
 	private rows = 24;
 	private sizeMode: SizeMode = "ignore";
 	private disposed = false;
+	/** whether `status off` actually took effect (it frees one row for content) */
+	private statusHidden = false;
 
 	constructor(
 		private readonly tmux: Tmux,
@@ -53,7 +55,10 @@ export class TermConnection {
 		this.sizeMode = sizeMode;
 		await this.tmux.newSessionGrouped(this.sessionName, this.opts.base);
 		// Session-scoped options: they only affect clients attached to *our* session.
-		if (!this.opts.statusLine) await this.tmux.setOption(this.sessionName, "status", "off");
+		this.statusHidden = false;
+		if (!this.opts.statusLine) {
+			this.statusHidden = (await this.tmux.setOption(this.sessionName, "status", "off")) !== null;
+		}
 		await this.tmux.setOption(this.sessionName, "detach-on-destroy", "on");
 		await this.spawn();
 	}
@@ -64,7 +69,7 @@ export class TermConnection {
 			const geom = await this.windowGeometry();
 			if (geom) {
 				this.cols = geom.cols;
-				this.rows = geom.rows + (this.opts.statusLine ? 1 : 0);
+				this.rows = geom.rows + (this.statusHidden ? 0 : 1);
 			}
 		}
 		const args = [...this.opts.socketArgs, "-u", "attach-session", "-t", `=${this.sessionName}`];
@@ -143,7 +148,7 @@ export class TermConnection {
 		if (this.sizeMode !== "ignore" || !this.proc) return;
 		const geom = await this.windowGeometry();
 		if (!geom) return;
-		const rows = geom.rows + (this.opts.statusLine ? 1 : 0);
+		const rows = geom.rows + (this.statusHidden ? 0 : 1);
 		if (geom.cols === this.cols && rows === this.rows) return;
 		this.cols = geom.cols;
 		this.rows = rows;
@@ -167,14 +172,22 @@ export class TermConnection {
 	}
 }
 
-/** Kill leftover pi-super sessions with no client attached (from crashes/reloads). */
-export async function sweepStaleSessions(tmux: Tmux, keep: Set<string>): Promise<number> {
+/**
+ * Kill leftover pi-super mirror sessions from crashes/reloads.
+ *
+ * Deliberately conservative: only our own prefix, only with no client attached, and only
+ * if it has existed for a while — a session belonging to *another* pi-super instance is
+ * either attached or younger than the grace period while it is being set up.
+ */
+export async function sweepStaleSessions(tmux: Tmux, keep: Set<string>, graceSeconds = 60): Promise<number> {
+	const now = Date.now() / 1000;
 	const sessions = await tmux.listSessions();
 	let killed = 0;
 	for (const s of sessions) {
 		if (!s.name.startsWith(SESSION_PREFIX)) continue;
 		if (keep.has(s.name)) continue;
 		if (s.attached > 0) continue;
+		if (s.created && now - s.created < graceSeconds) continue;
 		await tmux.killSession(s.name);
 		killed++;
 	}

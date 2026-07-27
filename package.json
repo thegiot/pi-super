@@ -12,7 +12,7 @@
     "build:server": "tsc -p tsconfig.server.json",
     "build:client": "vite build",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "node --test tests/*.test.mjs",
+    "test": "npm run build:server && node --test tests/*.test.mjs",
     "dev": "npm run build && node dist/server/index.js",
     "start": "node dist/server/index.js"
   },
