@@ -59,6 +59,14 @@ const state = {
 	base: "",
 	backoff: 500,
 	readerTimer: 0 as number | ReturnType<typeof setInterval>,
+	reconnectTimer: 0 as number | ReturnType<typeof setTimeout>,
+	/** a sticky "disconnected" notice is showing; the next open says "reconnected" */
+	wasDown: false,
+};
+
+const nearBottom = (e: HTMLElement): boolean => e.scrollTop + e.clientHeight >= e.scrollHeight - 40;
+const toBottom = (e: HTMLElement): void => {
+	e.scrollTop = e.scrollHeight;
 };
 
 // ------------------------------------------------------------------ terminal
@@ -138,6 +146,8 @@ function viewport(): { cols: number; rows: number } {
 // ----------------------------------------------------------------- transport
 
 function connect(): void {
+	clearTimeout(state.reconnectTimer as ReturnType<typeof setTimeout>);
+	if (state.ws) return;
 	const { cols, rows } = viewport();
 	const proto = location.protocol === "https:" ? "wss:" : "ws:";
 	const url = `${proto}//${location.host}/ws?cols=${cols}&rows=${rows}&mode=${state.sizeMode}`;
@@ -147,7 +157,8 @@ function connect(): void {
 
 	ws.onopen = () => {
 		state.backoff = 500;
-		status("connected", 1200);
+		status(state.wasDown ? "reconnected" : "connected", 1200);
+		state.wasDown = false;
 	};
 	ws.onmessage = (ev) => {
 		if (typeof ev.data !== "string") {
@@ -183,17 +194,32 @@ function connect(): void {
 	};
 	ws.onclose = () => {
 		state.ws = undefined;
-		status("disconnected — reconnecting…", 0, true);
-		setTimeout(connect, state.backoff);
+		// The first retry runs silently: sub-second blips (network switch, phone lock)
+		// resolve on their own, and a red "disconnected" flash for those only alarms.
+		if (state.backoff > 500) {
+			state.wasDown = true;
+			status("disconnected — reconnecting…", 0, true);
+		}
+		state.reconnectTimer = setTimeout(connect, state.backoff);
 		state.backoff = Math.min(state.backoff * 2, 8000);
 	};
 	ws.onerror = () => ws.close();
 }
 
+// Coming back to the app (unlock, tab switch) must not sit out the backoff timer.
+document.addEventListener("visibilitychange", () => {
+	if (document.hidden || state.ws) return;
+	state.backoff = 500;
+	connect();
+});
+
 function resizeTerm(cols: number, rows: number): void {
 	if (!cols || !rows) return;
 	if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
 	applyScale();
+	// The newest output is at the *bottom* of the remote screen; when the scaled canvas
+	// overflows the container (phone), start there instead of showing the top.
+	toBottom(el.term);
 }
 
 let statusTimer: ReturnType<typeof setTimeout> | undefined;
@@ -297,6 +323,7 @@ function setView(view: "raw" | "reader" | "meta"): void {
 		state.readerTimer = setInterval(() => void refreshReader(), 2500);
 	} else if (view === "raw") {
 		refit();
+		toBottom(el.term);
 	}
 	if (view === "meta") el.meta.scrollTop = el.meta.scrollHeight;
 }
@@ -467,7 +494,13 @@ el.claim.onchange = () => {
 };
 
 const onViewportChange = () => {
-	requestAnimationFrame(refit);
+	// Keyboard/URL-bar resizes squeeze the layout; whoever was reading the tail of a
+	// view must stay pinned to it, or the newest output vanishes under the composer.
+	const stick = [el.term, el.reader, el.meta].filter(nearBottom);
+	requestAnimationFrame(() => {
+		refit();
+		for (const e of stick) toBottom(e);
+	});
 };
 window.addEventListener("resize", onViewportChange);
 window.visualViewport?.addEventListener("resize", onViewportChange);
