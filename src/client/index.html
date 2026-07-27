@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no"
+		/>
+		<meta name="theme-color" content="#101216" />
+		<meta name="mobile-web-app-capable" content="yes" />
+		<link rel="manifest" href="./manifest.webmanifest" />
+		<title>pi-super</title>
+	</head>
+	<body>
+		<header id="bar">
+			<button id="btn-menu" class="icon" title="windows">≡</button>
+			<div id="tabs"></div>
+			<button id="btn-view" class="icon" title="raw / reader">📖</button>
+		</header>
+
+		<main>
+			<div id="term"></div>
+			<div id="reader" hidden><pre id="reader-text"></pre></div>
+			<div id="status"></div>
+		</main>
+
+		<footer>
+			<div id="ribbon">
+				<button data-key="Escape">esc</button>
+				<button data-key="Tab">tab</button>
+				<button data-key="C-c">^C</button>
+				<button data-key="C-d">^D</button>
+				<button data-key="Up">↑</button>
+				<button data-key="Down">↓</button>
+				<button data-key="Left">←</button>
+				<button data-key="Right">→</button>
+				<button data-key="PageUp">pgup</button>
+				<button data-key="PageDown">pgdn</button>
+				<button data-key="Enter">⏎</button>
+				<button id="btn-img" title="attach image">🖼</button>
+				<button id="btn-font-dec">A-</button>
+				<button id="btn-font-inc">A+</button>
+			</div>
+			<div id="composer">
+				<textarea
+					id="input"
+					rows="1"
+					placeholder="prompt…"
+					autocapitalize="sentences"
+					enterkeyhint="send"
+				></textarea>
+				<button id="btn-insert" title="insert without Enter">↳</button>
+				<button id="btn-send" title="send + Enter">➤</button>
+			</div>
+		</footer>
+
+		<div id="drawer" hidden>
+			<div class="sheet">
+				<div class="row title">
+					<span>windows</span><button id="btn-close-drawer" class="icon">✕</button>
+				</div>
+				<div id="window-list"></div>
+				<div class="row">
+					<input id="new-cwd" placeholder="cwd for new window (blank = ~)" />
+					<button id="btn-new">＋ window</button>
+				</div>
+				<div class="row">
+					<label><input type="checkbox" id="chk-claim" /> claim terminal size (resizes it for everyone)</label>
+				</div>
+				<div class="row">
+					<span id="session-info"></span>
+				</div>
+			</div>
+		</div>
+
+		<input type="file" id="file" accept="image/*" hidden />
+		<script type="module" src="./main.ts"></script>
+	</body>
+</html>

@@ -1,0 +1,78 @@
+#!/usr/bin/env node
+import { networkInterfaces } from "node:os";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ensureToken } from "./auth.js";
+import { defaultClientDir, helpText, parseArgs } from "./config.js";
+import { createServer } from "./server.js";
+import { Tmux } from "./tmux.js";
+
+const moduleDir = dirname(fileURLToPath(import.meta.url));
+
+async function main(): Promise<void> {
+	let args: ReturnType<typeof parseArgs>;
+	try {
+		args = parseArgs(process.argv.slice(2));
+	} catch (err) {
+		process.stderr.write(`pi-super: ${String((err as Error).message)}\n\n${helpText()}`);
+		process.exit(2);
+	}
+	if (args.help) {
+		process.stdout.write(helpText());
+		return;
+	}
+
+	const token = ensureToken(args.stateDir, args.resetToken);
+	if (args.resetToken) {
+		process.stdout.write(`new token: ${token}\n`);
+		return;
+	}
+	if (args.printUrl) {
+		process.stdout.write(`http://${args.host}:${args.port}/?token=${token}\n`);
+		return;
+	}
+
+	const cfg = { ...args, clientDir: defaultClientDir(moduleDir) };
+	const tmux = new Tmux(cfg.socketArgs);
+	try {
+		await tmux.version();
+	} catch {
+		process.stderr.write("pi-super: cannot talk to tmux — is a tmux server running?\n");
+		process.exit(1);
+	}
+	const sessions = await tmux.listSessions();
+	if (sessions.length === 0) {
+		process.stderr.write("pi-super: no tmux sessions found — start tmux first\n");
+		process.exit(1);
+	}
+
+	const server = createServer(cfg, token);
+	server.http.listen(cfg.port, cfg.host, () => {
+		process.stdout.write(`pi-super listening on http://${cfg.host}:${cfg.port}\n`);
+		process.stdout.write(`  open: http://${displayHost(cfg.host)}:${cfg.port}/?token=${token}\n`);
+		if (cfg.host !== "127.0.0.1" && cfg.host !== "localhost") {
+			process.stdout.write("  ! bound off-loopback: terminal access == shell access, use TLS/VPN\n");
+		}
+	});
+
+	const shutdown = () => {
+		void server.close().then(() => process.exit(0));
+	};
+	process.on("SIGINT", shutdown);
+	process.on("SIGTERM", shutdown);
+}
+
+function displayHost(host: string): string {
+	if (host !== "0.0.0.0" && host !== "::") return host;
+	for (const addrs of Object.values(networkInterfaces())) {
+		for (const a of addrs ?? []) {
+			if (a.family === "IPv4" && !a.internal) return a.address;
+		}
+	}
+	return "localhost";
+}
+
+main().catch((err) => {
+	process.stderr.write(`pi-super: ${String(err?.stack ?? err)}\n`);
+	process.exit(1);
+});
