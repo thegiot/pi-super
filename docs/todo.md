@@ -79,10 +79,20 @@ The browser cannot be a phone call. What is missing, and needs the native wrappe
 
 ## Hardening
 
-- Passkey enrolment is authorized by the bearer token, so the token is still a full
-  bootstrap credential until you roll it (`--reset-token`) after enrolling.
+- The bearer token is still the *bootstrap* credential: with no passkey on file it can
+  enrol the first one (there is nothing else it could be). Roll it (`--reset-token`) once
+  you have enrolled, or the QR/link you shared is an enrolment ticket.
 - No per-passkey scopes (every passkey is equal), and no WebAuthn user handle/account
   concept — this is a single-user tool.
+- `X-Forwarded-Proto` is trusted for the "were we reached over TLS" decision. Safe while
+  we bind loopback (only a local process could forge it); an explicit trusted-proxy
+  setting is needed before binding anywhere else.
+- Live sockets are revalidated every 15 s, so a revoked session keeps its shell for up to
+  that long. Pushing it lower is free; killing it instantly needs the revoker to signal
+  the server.
+- The stall watchdog only remembers the *newest* prompt (text only, no images): if two
+  questions are queued behind a wedged turn, the older one is lost on rescue. Proper
+  recovery needs a correlated pending-prompt queue drained by `queue_update`.
 
 - Upload quota/TTL/count limits and a MIME allowlist (currently only size + sniffed ext).
 - WS message rate limiting per connection; `/api/capture` line caps are generous.

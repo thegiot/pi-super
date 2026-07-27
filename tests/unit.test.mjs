@@ -149,6 +149,56 @@ setInterval(() => {}, 1000);
 	assert.ok(systems.some((t) => /silent for .* mid-turn — restarting/.test(t)), systems.join(" | "));
 	assert.ok(spoken.some((m) => /stuck/.test(m)), "the user is told out loud, not left in silence");
 	const asked = readFileSync(log, "utf8").trim().split("\n");
-	assert.equal(asked.length, 2, "the stalled question is asked again after the restart");
-	assert.equal(asked[0], asked[1]);
+	assert.equal(asked.length, 2, "the stalled question is picked up again after the restart");
+	// not a replay: a re-sent raw prompt would re-run whatever the killed turn already did
+	assert.notEqual(asked[0], asked[1]);
+	assert.match(asked[1], /do NOT repeat anything that already happened/);
+	assert.ok(asked[1].includes(asked[0]), "the recovery prompt still carries the original request");
+});
+
+// --- passkey store ---------------------------------------------------------
+
+test("a second process's revocation is honoured, not overwritten", async () => {
+	const { PasskeyStore } = await import("../dist/server/webauthn.js");
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-pk-"));
+	const server = new PasskeyStore(dir);
+	// hand-write a credential + session, as a real enrolment would leave behind
+	writeFileSync(
+		join(dir, "passkeys.json"),
+		JSON.stringify({
+			credentials: [{ id: "cred1", publicKey: "x", counter: 0, label: "phone", createdAt: "now" }],
+			sessions: [{ id: "sid1", credentialId: "cred1", label: "phone", createdAt: 0, expiresAt: Date.now() + 3600_000 }],
+		}),
+	);
+	assert.equal(server.enrolled, true, "the running server picks up the file it did not write");
+	assert.equal(server.sessionAlive("sid1"), true);
+
+	// `pi-super --remove-passkey` is a *different process* on the same file
+	const cli = new PasskeyStore(dir);
+	assert.equal(cli.removeCredential("phone"), true);
+
+	assert.equal(server.enrolled, false, "revocation must reach the running server");
+	assert.equal(server.sessionAlive("sid1"), false, "the credential's sessions go with it");
+	server.revokeAllSessions(); // any save must not resurrect the removed credential
+	assert.equal(new PasskeyStore(dir).credentials.length, 0);
+});
+
+test("one session logs out without evicting the others", async () => {
+	const { PasskeyStore } = await import("../dist/server/webauthn.js");
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-pk2-"));
+	const store = new PasskeyStore(dir);
+	const sessions = ["a", "b"].map((id) => ({
+		id,
+		credentialId: "cred1",
+		label: id,
+		createdAt: 0,
+		expiresAt: Date.now() + 3600_000,
+	}));
+	writeFileSync(
+		join(dir, "passkeys.json"),
+		JSON.stringify({ credentials: [{ id: "cred1", publicKey: "x", counter: 0, label: "phone", createdAt: "now" }], sessions }),
+	);
+	store.revokeSession("a");
+	assert.equal(store.sessionAlive("a"), false);
+	assert.equal(store.sessionAlive("b"), true);
 });

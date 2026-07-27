@@ -9,7 +9,7 @@ import { SESSION_PREFIX, sweepStaleSessions, TermConnection } from "./term.js";
 import { Tmux } from "./tmux.js";
 import { MAX_UPLOAD_BYTES, readBody, storeUpload } from "./uploads.js";
 import { detectVoiceConfig, negotiateOffer } from "./voice.js";
-import { PasskeyStore, rpIdFor } from "./webauthn.js";
+import { PasskeyStore, rpIdFor, SESSION_COOKIE } from "./webauthn.js";
 
 const MIME: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -76,6 +76,38 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		return fwd || req.socket.remoteAddress || "?";
 	};
 	const metaClients = new Set<WebSocket>();
+
+	/** crude per-IP bucket for the endpoints anyone can reach: 30 hits a minute */
+	const authHits = new Map<string, { count: number; resetAt: number }>();
+	function rateLimit(ip: string, limit = 30, windowMs = 60_000): boolean {
+		const now = Date.now();
+		for (const [k, v] of authHits) if (v.resetAt < now) authHits.delete(k);
+		const hit = authHits.get(ip) ?? { count: 0, resetAt: now + windowMs };
+		hit.count++;
+		authHits.set(ip, hit);
+		return hit.count <= limit;
+	}
+
+	/**
+	 * A live WebSocket *is* the shell, and it was only ever authenticated at the upgrade.
+	 * Revoking a passkey (or a session simply expiring) has to reach the sockets it opened,
+	 * or revocation is a lie for as long as the tab stays open.
+	 */
+	const socketSessions = new Map<WebSocket, string>();
+	const revalidate = setInterval(() => {
+		for (const [ws, sid] of socketSessions) {
+			if (ws.readyState === WebSocket.CLOSED) {
+				socketSessions.delete(ws);
+				continue;
+			}
+			if (passkeys.sessionAlive(sid)) continue;
+			log("auth: session revoked or expired — closing its socket");
+			socketSessions.delete(ws);
+			ws.close(4001, "session revoked");
+			setTimeout(() => ws.terminate(), 1000).unref?.();
+		}
+	}, 15_000);
+	revalidate.unref?.();
 
 	const broadcastMeta = (msg: unknown) => {
 		const data = JSON.stringify(msg);
@@ -184,31 +216,59 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		serveStatic(res, url.pathname);
 	}
 
-	/** Passkey enrolment + login. Enrolment needs the bearer token; login needs a passkey. */
+	/**
+	 * Passkey enrolment + login.
+	 *
+	 * Enrolment is a *grant of shell access*, so under a passkey policy the bearer token
+	 * must not be able to mint one: a leaked token would otherwise re-enrol its way in and
+	 * the policy would be decoration. The one exception is bootstrap — with no passkey on
+	 * file the token is all there is, and that is exactly how the first one gets added.
+	 */
 	async function handleAuth(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
 		const { rpID, origin, secure } = rpIdFor(req);
 		const route = `${req.method} ${url.pathname}`;
 		const body = async () => JSON.parse((await readBody(req, 256 * 1024)).toString("utf8") || "{}");
-		const tokenOk = isAuthed(req, url, token) || passkeys.sessionFor(req) !== undefined;
+		const session = passkeys.sessionFor(req);
+		const tokenOk = isAuthed(req, url, token);
+		const tokenMayEnroll = tokenOk && (!passkeyRequired() || cfg.allowToken || !passkeys.enrolled);
+		const canEnroll = session !== undefined || tokenMayEnroll;
+		const nonce = PasskeyStore.challengeNonce(req);
+		// Public ceremonies are cheap to ask for and not cheap to serve; a peer that can reach
+		// us must not be able to spin them (or the log) at will.
+		if (route.endsWith("/options") || route.endsWith("/verify")) {
+			if (!rateLimit(clientIp(req))) {
+				sendJson(res, 429, { error: "too many auth attempts, wait a minute" });
+				return;
+			}
+		}
 
 		switch (route) {
 			case "GET /api/auth/state": {
-				const session = passkeys.sessionFor(req);
+				const authed = session !== undefined || (tokenOk && !passkeyRequired());
 				sendJson(res, 200, {
 					enrolled: passkeys.enrolled,
 					required: passkeyRequired(),
-					authenticated: session !== undefined || (tokenOk && !passkeyRequired()),
+					authenticated: authed,
 					session: session ? { label: session.label, expiresAt: session.expiresAt } : undefined,
-					canEnroll: tokenOk,
+					canEnroll,
 					supported: secure || rpID === "localhost" || rpID === "127.0.0.1",
 					rpID,
-					credentials: passkeys.credentials.map((c) => ({ id: c.id, label: c.label, createdAt: c.createdAt })),
+					// which devices the owner enrolled, and when, is nobody else's business:
+					// the lock screen only needs to know that a passkey exists
+					credentials:
+						authed || canEnroll
+							? passkeys.credentials.map((c) => ({ id: c.id, label: c.label, createdAt: c.createdAt }))
+							: [],
 				});
 				return;
 			}
 			case "POST /api/auth/register/options": {
-				if (!tokenOk) {
-					sendJson(res, 401, { error: "enrolling a passkey needs the access token or an existing session" });
+				if (!canEnroll) {
+					sendJson(res, 401, {
+						error: passkeys.enrolled
+							? "enrolling another passkey needs an unlocked session (unlock with an existing passkey first)"
+							: "enrolling a passkey needs the access token",
+					});
 					return;
 				}
 				if (!originAllowed(req, cfg.allowedOrigins)) {
@@ -216,16 +276,25 @@ export function createServer(cfg: Config, token: string): SuperServer {
 					return;
 				}
 				const { label, anyAuthenticator } = (await body()) as { label?: string; anyAuthenticator?: boolean };
-				sendJson(res, 200, await passkeys.registrationOptions(rpID, label ?? "", anyAuthenticator === true));
+				const { options, nonce: issued } = await passkeys.registrationOptions(
+					rpID,
+					label ?? "",
+					anyAuthenticator === true,
+				);
+				sendJson(res, 200, options, { "set-cookie": passkeys.challengeCookie(issued, secure) });
 				return;
 			}
 			case "POST /api/auth/register/verify": {
-				if (!tokenOk) {
+				if (!canEnroll) {
 					sendJson(res, 401, { error: "unauthorized" });
 					return;
 				}
+				if (!originAllowed(req, cfg.allowedOrigins)) {
+					sendJson(res, 403, { error: "bad origin" });
+					return;
+				}
 				const { response, label } = (await body()) as { response: never; label?: string };
-				const result = await passkeys.verifyRegistration(rpID, origin, response, label ?? "");
+				const result = await passkeys.verifyRegistration(rpID, origin, response, label ?? "", nonce);
 				if (!result.ok) {
 					log(`auth: passkey enrolment failed from ${clientIp(req)}: ${result.error}`);
 					sendJson(res, 400, { error: result.error });
@@ -235,16 +304,18 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				sendJson(res, 200, { ok: true, credential: { id: result.credential.id, label: result.credential.label } });
 				return;
 			}
-			case "POST /api/auth/login/options":
+			case "POST /api/auth/login/options": {
 				if (!passkeys.enrolled) {
 					sendJson(res, 409, { error: "no passkey enrolled yet" });
 					return;
 				}
-				sendJson(res, 200, await passkeys.authenticationOptions(rpID));
+				const { options, nonce: issued } = await passkeys.authenticationOptions(rpID);
+				sendJson(res, 200, options, { "set-cookie": passkeys.challengeCookie(issued, secure) });
 				return;
+			}
 			case "POST /api/auth/login/verify": {
 				const { response } = (await body()) as { response: never };
-				const result = await passkeys.verifyAuthentication(rpID, origin, response, secure);
+				const result = await passkeys.verifyAuthentication(rpID, origin, response, secure, nonce);
 				if (!result.ok) {
 					log(`auth: passkey login failed from ${clientIp(req)}: ${result.error}`);
 					sendJson(res, 401, { error: result.error });
@@ -255,14 +326,29 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				res.end(JSON.stringify({ ok: true, label: result.label }));
 				return;
 			}
-			case "POST /api/auth/logout":
-				passkeys.revokeAllSessions();
+			case "POST /api/auth/logout": {
+				// Unauthenticated, this was a denial-of-service button: any reachable peer could
+				// POST it (even cross-origin, no-cors) and log the owner's phone out for good.
+				if (!originAllowed(req, cfg.allowedOrigins)) {
+					sendJson(res, 403, { error: "bad origin" });
+					return;
+				}
+				if (!session && !tokenOk) {
+					sendJson(res, 401, { error: "unauthorized" });
+					return;
+				}
+				// log out this browser; `--logout` on the box is how you evict everyone
+				if (session) {
+					passkeys.revokeSession(session.id);
+					log(`auth: logout "${session.label}" from ${clientIp(req)}`);
+				}
 				res.writeHead(200, {
 					"content-type": "application/json",
-					"set-cookie": `${"pi_super_sid"}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+					"set-cookie": `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`,
 				});
 				res.end(JSON.stringify({ ok: true }));
 				return;
+			}
 			default:
 				sendJson(res, 404, { error: "not found" });
 		}
@@ -376,6 +462,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		res.writeHead(200, {
 			"content-type": MIME[extname(file)] ?? "application/octet-stream",
 			"cache-control": file.endsWith("index.html") ? "no-store" : "max-age=300",
+			...SECURITY_HEADERS,
 		});
 		createReadStream(file).pipe(res);
 	}
@@ -387,6 +474,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	http.on("upgrade", (req, socket, head) => {
 		// Everything in here runs before authentication: a throw would kill the process.
 		let url: URL;
+		let sessionId: string | undefined;
 		try {
 			url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 			const session = passkeys.sessionFor(req);
@@ -398,6 +486,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				socket.destroy();
 				return;
 			}
+			sessionId = session?.id;
 		} catch {
 			socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
 			socket.destroy();
@@ -409,7 +498,10 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				socket.destroy();
 				return;
 			}
-			wss.handleUpgrade(req, socket, head, (ws) => onMetaConnection(ws, clientIp(req)));
+			wss.handleUpgrade(req, socket, head, (ws) => {
+				if (sessionId) socketSessions.set(ws, sessionId);
+				onMetaConnection(ws, clientIp(req));
+			});
 			return;
 		}
 		if (url.pathname !== "/ws") {
@@ -418,6 +510,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			return;
 		}
 		wss.handleUpgrade(req, socket, head, (ws) => {
+			if (sessionId) socketSessions.set(ws, sessionId);
 			void onConnection(ws, url, clientIp(req));
 		});
 	});
@@ -656,6 +749,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		http,
 		resumeMeta,
 		async close() {
+			clearInterval(revalidate);
+			socketSessions.clear();
 			await meta.stop();
 			for (const ws of wss.clients) ws.terminate();
 			for (const term of live) await term.dispose();
@@ -682,8 +777,24 @@ function voiceInstructions(metaDir: string): string {
 	}
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
 	const data = JSON.stringify(body);
-	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+	res.writeHead(status, {
+		"content-type": "application/json; charset=utf-8",
+		"cache-control": "no-store",
+		...SECURITY_HEADERS,
+		...headers,
+	});
 	res.end(data);
 }
+
+/**
+ * Sent on everything. This app hands out a shell: it must never be framed (clickjacking a
+ * terminal is a shell), never be sniffed into a different content type, and never leak the
+ * token in a Referer to whatever a captured pane happens to link to.
+ */
+const SECURITY_HEADERS: Record<string, string> = {
+	"x-content-type-options": "nosniff",
+	"referrer-policy": "no-referrer",
+	"content-security-policy": "frame-ancestors 'none'",
+};

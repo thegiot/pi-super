@@ -239,6 +239,11 @@ export class MetaAgent extends EventEmitter {
 
 	private resetTurnState(): void {
 		this.busy = false;
+		// A dead or restarted child has no turn in flight. Leaving these set made an idle
+		// agent look permanently mid-turn, which the stall watchdog would then "rescue"
+		// once per cooldown, forever.
+		this.turnPending = false;
+		this.lastPrompt = undefined;
 		this.assistant = undefined;
 		this.pendingTools.clear();
 		this.emit("state", this.state);
@@ -265,17 +270,31 @@ export class MetaAgent extends EventEmitter {
 			return;
 		}
 		this.lastRescueAt = Date.now();
-		const retry = this.lastPrompt;
+		const lost = this.lastPrompt;
 		this.push({ kind: "system", id: 0, text: `meta agent silent for ${mins}m mid-turn — restarting it` });
 		this.emit("speak", {
-			message: retry
-				? "That request got stuck, so I restarted myself and I'm asking again."
+			message: lost
+				? "That request got stuck, so I restarted myself and I'm picking it up again."
 				: "I got stuck and restarted myself. Say that again?",
 			kind: "status",
 		});
 		await this.stop();
+		// the recovery prompt below *is* the resume nudge for this restart; two prompts into
+		// a fresh child would race (the second would need steering that may be rejected)
+		this.nudged = true;
 		this.start();
-		if (retry) this.prompt(retry);
+		// Not a replay: the killed turn may have already sent a prompt to an agent window or
+		// opened one, and those side effects are in the resumed session for the model to see.
+		// Asking it to *finish* the request — after checking what it already did — is the only
+		// version that cannot double-send.
+		if (lost) {
+			this.write({
+				type: "prompt",
+				message: `${INTERNAL_PROMPT} Your last turn hung and I had to restart you mid-request. It was: "${lost}". Check first what that turn already did (its tool calls are above; look at the windows it touched) and do NOT repeat anything that already happened — then finish the job and speak the answer.`,
+			});
+			this.turnPending = true;
+			this.lastEventAt = Date.now();
+		}
 	}
 
 	/** SIGTERM, then SIGKILL if it does not go away; resolves once the child is gone. */

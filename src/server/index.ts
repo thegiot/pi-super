@@ -30,7 +30,15 @@ async function main(): Promise<void> {
 		return;
 	}
 	if (args.printUrl) {
-		process.stdout.write(`http://${args.host}:${args.port}/?token=${token}\n`);
+		// Printing ?token=… once passkeys are the gate advertises a credential the server
+		// will refuse — and invites pasting a still-powerful secret into a chat window.
+		const store = new PasskeyStore(args.stateDir);
+		const tokenUsable = args.authMode === "token" || args.allowToken || !store.enrolled;
+		process.stdout.write(
+			tokenUsable
+				? `http://${args.host}:${args.port}/?token=${token}\n`
+				: `http://${args.host}:${args.port}/\n# passkey unlock — the token no longer opens the app (--allow-token to keep it working)\n`,
+		);
 		return;
 	}
 

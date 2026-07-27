@@ -62,7 +62,10 @@ every device on your tailnet, which is not the same thing as authorizing them.
 Authorization: **enrol a passkey**. Open the app once with the token, menu (≡) → *+
 passkey*, and confirm with your phone's fingerprint/screen lock. From then on the bearer
 token alone opens nothing — HTTP and WebSocket both demand a passkey session, and a stolen
-token or a compromised tailnet device gets 401.
+token or a compromised tailnet device gets 401. It cannot enrol its way back in either:
+once a passkey exists, adding another one takes an unlocked session (`--allow-token` opts
+out of both rules). Revocation reaches running servers, including the shell sockets they
+already handed out — `--remove-passkey` / `--logout` take effect within seconds.
 
 ```
 --auth auto      token until a passkey is enrolled, then passkey only (default)

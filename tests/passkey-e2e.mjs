@@ -156,6 +156,19 @@ async function main() {
 	const tokenNow = await fetch(`${BASE}/api/state`, { headers: auth });
 	check("token alone refused after enrolment", tokenNow.status === 401, `status=${tokenNow.status}`);
 
+	// …and it must not be able to mint a *new* grant either: enrolling another passkey
+	// with the token alone would walk straight around the policy
+	const enrolByToken = await fetch(`${BASE}/api/auth/register/options`, {
+		method: "POST",
+		headers: { ...auth, "content-type": "application/json" },
+		body: JSON.stringify({ label: "smuggled" }),
+	});
+	check("token cannot enrol another passkey", enrolByToken.status === 401, `status=${enrolByToken.status}`);
+
+	// logout is a denial-of-service button unless it is authenticated
+	const anonLogout = await fetch(`${BASE}/api/auth/logout`, { method: "POST" });
+	check("anonymous logout refused", anonLogout.status === 401, `status=${anonLogout.status}`);
+
 	const wsProbe = await new Promise((resolve) => {
 		const probe = new WebSocket(`ws://localhost:${PORT}/ws?token=${token}`, { headers: auth });
 		probe.on("open", () => {
@@ -220,6 +233,20 @@ async function main() {
 		encoding: "utf8",
 	});
 	check("--logout revokes sessions", revoke.stdout.includes("revoked"), revoke.stdout.trim());
+
+	// the CLI writes the file; the *running* server has to honour it, both for new
+	// requests and for the shell socket it already handed out
+	let apiAfterRevoke = "?";
+	let tabsAfterRevoke = -1;
+	for (let i = 0; i < 30; i++) {
+		await wait(1000);
+		apiAfterRevoke = await c.evaluate(`fetch("/api/state").then(r => r.status)`);
+		// the client keeps redialling; with the session gone it can never reach OPEN again
+		tabsAfterRevoke = await c.evaluate(`window.piSuper.state.ws && window.piSuper.state.ws.readyState === 1 ? 1 : 0`);
+		if (apiAfterRevoke === 401 && tabsAfterRevoke === 0) break;
+	}
+	check("revoked session refused by the running server", apiAfterRevoke === 401, `status=${apiAfterRevoke}`);
+	check("revoked session's websocket closed", tabsAfterRevoke === 0, `open=${tabsAfterRevoke}`);
 	const list = spawnSync("node", ["dist/server/index.js", "--list-passkeys"], {
 		cwd: new URL("..", import.meta.url).pathname,
 		env: { ...process.env, PI_SUPER_STATE_DIR: STATE_DIR },

@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
 import {
@@ -11,8 +11,12 @@ import {
 import { parseCookies } from "./auth.js";
 
 export const SESSION_COOKIE = "pi_super_sid";
+/** ties a browser to the one ceremony it started, so nobody else can consume it */
+export const CHALLENGE_COOKIE = "pi_super_chal";
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+/** login options are mintable by anyone who can reach us; bound the memory they cost */
+const MAX_CHALLENGES = 64;
 const RP_NAME = "pi-super";
 
 export interface StoredCredential {
@@ -52,6 +56,8 @@ interface StoreFile {
 export class PasskeyStore {
 	private data: StoreFile = { credentials: [], sessions: [] };
 	private readonly file: string;
+	/** fingerprint of the file `data` came from; anything else on disk wins (syncFromDisk) */
+	private loadedSig = "";
 	private readonly challenges = new Map<string, { challenge: string; expires: number }>();
 
 	constructor(stateDir: string) {
@@ -68,8 +74,33 @@ export class PasskeyStore {
 				credentials: parsed.credentials ?? [],
 				sessions: (parsed.sessions ?? []).filter((s) => s.expiresAt > Date.now()),
 			};
+			this.loadedSig = this.signature();
 		} catch {
 			/* corrupt file: start empty rather than locking the user out of registration */
+		}
+	}
+
+	/**
+	 * Re-read the store when someone else has written it.
+	 *
+	 * `pi-super --remove-passkey` runs in a *second process* against the same file. Without
+	 * this the running server kept serving the revoked credential from memory and, on its
+	 * next save, wrote it back — revocation looked like it worked and did nothing. Every
+	 * read and every mutation goes through here, so the file is the source of truth.
+	 */
+	private syncFromDisk(): void {
+		if (!existsSync(this.file)) return;
+		if (this.signature() === this.loadedSig) return;
+		this.load();
+	}
+
+	/** nanosecond mtime *and* size: two writes in the same millisecond are not rare here */
+	private signature(): string {
+		try {
+			const st = statSync(this.file, { bigint: true });
+			return `${st.mtimeNs}:${st.size}`;
+		} catch {
+			return "";
 		}
 	}
 
@@ -77,17 +108,20 @@ export class PasskeyStore {
 		const tmp = `${this.file}.tmp`;
 		writeFileSync(tmp, JSON.stringify(this.data, null, 1), { mode: 0o600 });
 		renameSync(tmp, this.file);
+		this.loadedSig = this.signature();
 	}
 
 	get credentials(): StoredCredential[] {
+		this.syncFromDisk();
 		return this.data.credentials;
 	}
 
 	get enrolled(): boolean {
-		return this.data.credentials.length > 0;
+		return this.credentials.length > 0;
 	}
 
 	removeCredential(id: string): boolean {
+		this.syncFromDisk();
 		const before = this.data.credentials.length;
 		this.data.credentials = this.data.credentials.filter((c) => c.id !== id && c.label !== id);
 		this.data.sessions = this.data.sessions.filter((s) => this.data.credentials.some((c) => c.id === s.credentialId));
@@ -96,13 +130,31 @@ export class PasskeyStore {
 	}
 
 	revokeAllSessions(): void {
+		this.syncFromDisk();
 		this.data.sessions = [];
 		this.save();
+	}
+
+	/** Log out one browser, not the household. */
+	revokeSession(id: string): void {
+		this.syncFromDisk();
+		this.data.sessions = this.data.sessions.filter((s) => s.id !== id);
+		this.save();
+	}
+
+	/**
+	 * Is this session id still good? Live WebSockets are authenticated once, at upgrade,
+	 * and a terminal socket *is* shell access — so they have to keep asking.
+	 */
+	sessionAlive(id: string): boolean {
+		this.syncFromDisk();
+		return this.data.sessions.some((s) => s.id === id && s.expiresAt > Date.now());
 	}
 
 	// ----------------------------------------------------------------- sessions
 
 	private newSession(credentialId: string, label: string): string {
+		this.syncFromDisk();
 		const id = randomBytes(32).toString("base64url");
 		this.data.sessions = this.data.sessions.filter((s) => s.expiresAt > Date.now());
 		this.data.sessions.push({
@@ -119,6 +171,7 @@ export class PasskeyStore {
 	sessionFor(req: IncomingMessage): Session | undefined {
 		const sid = parseCookies(req.headers.cookie)[SESSION_COOKIE];
 		if (!sid) return undefined;
+		this.syncFromDisk();
 		const now = Date.now();
 		const sidBuf = Buffer.from(sid);
 		for (const s of this.data.sessions) {
@@ -139,20 +192,54 @@ export class PasskeyStore {
 
 	// --------------------------------------------------------------- ceremonies
 
-	private putChallenge(key: string, challenge: string): void {
+	/**
+	 * One challenge per ceremony, named by a nonce we hand back in a cookie.
+	 *
+	 * A single `auth:<rpID>` slot meant any unauthenticated request could overwrite the
+	 * challenge the real user was mid-way through answering (and verification consumed it
+	 * destructively), which is a free login-denial. The nonce also stops one browser from
+	 * completing a ceremony another browser started.
+	 */
+	private putChallenge(kind: "reg" | "auth", rpID: string, challenge: string): string {
 		const now = Date.now();
 		for (const [k, v] of this.challenges) if (v.expires < now) this.challenges.delete(k);
-		this.challenges.set(key, { challenge, expires: now + CHALLENGE_TTL_MS });
+		// insertion-ordered: drop the oldest outstanding ceremonies first
+		for (const k of this.challenges.keys()) {
+			if (this.challenges.size < MAX_CHALLENGES) break;
+			this.challenges.delete(k);
+		}
+		const nonce = randomBytes(18).toString("base64url");
+		this.challenges.set(`${kind}:${rpID}:${nonce}`, { challenge, expires: now + CHALLENGE_TTL_MS });
+		return nonce;
 	}
 
-	private takeChallenge(key: string): string | undefined {
+	private takeChallenge(kind: "reg" | "auth", rpID: string, nonce: string | undefined): string | undefined {
+		if (!nonce) return undefined;
+		const key = `${kind}:${rpID}:${nonce}`;
 		const entry = this.challenges.get(key);
 		this.challenges.delete(key);
 		if (!entry || entry.expires < Date.now()) return undefined;
 		return entry.challenge;
 	}
 
-	async registrationOptions(rpID: string, label: string, anyAuthenticator = false): Promise<unknown> {
+	/** Short-lived, HttpOnly: the browser proves it is the one that asked. */
+	challengeCookie(nonce: string, secure: boolean): string {
+		const flags = ["HttpOnly", secure ? "Secure" : "", "SameSite=Lax", "Path=/api/auth/", `Max-Age=${CHALLENGE_TTL_MS / 1000}`]
+			.filter(Boolean)
+			.join("; ");
+		return `${CHALLENGE_COOKIE}=${nonce}; ${flags}`;
+	}
+
+	static challengeNonce(req: IncomingMessage): string | undefined {
+		return parseCookies(req.headers.cookie)[CHALLENGE_COOKIE];
+	}
+
+	async registrationOptions(
+		rpID: string,
+		label: string,
+		anyAuthenticator = false,
+	): Promise<{ options: unknown; nonce: string }> {
+		this.syncFromDisk();
 		const options = await generateRegistrationOptions({
 			rpName: RP_NAME,
 			rpID,
@@ -172,8 +259,7 @@ export class PasskeyStore {
 				userVerification: "required",
 			},
 		});
-		this.putChallenge(`reg:${rpID}`, options.challenge);
-		return options;
+		return { options, nonce: this.putChallenge("reg", rpID, options.challenge) };
 	}
 
 	async verifyRegistration(
@@ -181,8 +267,10 @@ export class PasskeyStore {
 		origin: string,
 		response: Parameters<typeof verifyRegistrationResponse>[0]["response"],
 		label: string,
+		nonce: string | undefined,
 	): Promise<{ ok: true; credential: StoredCredential } | { ok: false; error: string }> {
-		const expectedChallenge = this.takeChallenge(`reg:${rpID}`);
+		this.syncFromDisk();
+		const expectedChallenge = this.takeChallenge("reg", rpID, nonce);
 		if (!expectedChallenge) return { ok: false, error: "no pending registration (expired?)" };
 		try {
 			const result = await verifyRegistrationResponse({
@@ -210,14 +298,14 @@ export class PasskeyStore {
 		}
 	}
 
-	async authenticationOptions(rpID: string): Promise<unknown> {
+	async authenticationOptions(rpID: string): Promise<{ options: unknown; nonce: string }> {
+		this.syncFromDisk();
 		const options = await generateAuthenticationOptions({
 			rpID,
 			userVerification: "required",
 			allowCredentials: this.data.credentials.map((c) => ({ id: c.id, transports: c.transports as never })),
 		});
-		this.putChallenge(`auth:${rpID}`, options.challenge);
-		return options;
+		return { options, nonce: this.putChallenge("auth", rpID, options.challenge) };
 	}
 
 	async verifyAuthentication(
@@ -225,8 +313,10 @@ export class PasskeyStore {
 		origin: string,
 		response: Parameters<typeof verifyAuthenticationResponse>[0]["response"],
 		secure: boolean,
-	): Promise<{ ok: true; cookie: string; label: string } | { ok: false; error: string }> {
-		const expectedChallenge = this.takeChallenge(`auth:${rpID}`);
+		nonce: string | undefined,
+	): Promise<{ ok: true; cookie: string; label: string; sessionId: string } | { ok: false; error: string }> {
+		this.syncFromDisk();
+		const expectedChallenge = this.takeChallenge("auth", rpID, nonce);
 		if (!expectedChallenge) return { ok: false, error: "no pending login (expired?)" };
 		const credential = this.data.credentials.find((c) => c.id === response.id);
 		if (!credential) return { ok: false, error: "unknown passkey" };
@@ -255,7 +345,7 @@ export class PasskeyStore {
 			credential.lastUsedAt = new Date().toISOString();
 			const sid = this.newSession(credential.id, credential.label);
 			this.save();
-			return { ok: true, cookie: this.sessionCookie(sid, secure), label: credential.label };
+			return { ok: true, cookie: this.sessionCookie(sid, secure), label: credential.label, sessionId: sid };
 		} catch (err) {
 			return { ok: false, error: String((err as Error).message) };
 		}
