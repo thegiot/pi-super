@@ -85,9 +85,10 @@ The voice plane picks a backend automatically:
 The credential never reaches the browser: the phone POSTs its SDP offer to pi-super, which
 attaches auth plus the server-side instructions and returns only the answer.
 
-Right now `codex` returns 403 `Voice session access denied` for this account (feature flag
-not rolled out) and there is no `OPENAI_API_KEY`, so it falls back to `local`. Nothing to
-change when either becomes available.
+Voice runs on your ChatGPT subscription by default (`codex`, gpt-live). `OPENAI_API_KEY`
+is only used when no ChatGPT login is present.
+
+
 
 ## Development
 

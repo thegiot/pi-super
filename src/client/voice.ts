@@ -393,7 +393,16 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				sendEvent({ type: "response.create" });
 				break;
 			}
-			// --- transcripts ---------------------------------------------------
+			// --- transcripts: gpt-live (V3) names ------------------------------
+			case "input_transcript.added":
+				api.onTranscript?.("user", String(ev.text ?? ev.transcript ?? ""));
+				break;
+			case "output_transcript.added":
+				api.onTranscript?.("assistant", String(ev.text ?? ev.transcript ?? ""));
+				break;
+			case "turn.done":
+				break;
+			// --- transcripts: standard Realtime names --------------------------
 			case "response.output_audio_transcript.delta":
 				assistantLine += String(ev.delta ?? "");
 				break;

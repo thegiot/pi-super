@@ -15,7 +15,25 @@ export interface VoiceConfig {
 const CODEX_BASE = process.env.PI_SUPER_CODEX_BASE ?? "https://chatgpt.com/backend-api/codex";
 const CODEX_MODEL = process.env.PI_SUPER_VOICE_MODEL ?? "gpt-live-1-boulder-alpha";
 const OPENAI_MODEL = process.env.PI_SUPER_VOICE_MODEL ?? "gpt-realtime-2.1-mini";
-const DEFAULT_VOICE = process.env.PI_SUPER_VOICE ?? "marin";
+
+// The voice sets must not be mixed: asking a gpt-live (V3) session for a V2 voice such as
+// `marin` is rejected as `403 Voice session access denied`, which looks exactly like an
+// account-entitlement failure and is not one.
+const CODEX_VOICES = ["cove", "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol"];
+const CODEX_DEFAULT_VOICE = "cove";
+const OPENAI_DEFAULT_VOICE = "marin";
+
+function pickVoice(provider: "codex" | "openai"): string {
+	const wanted = process.env.PI_SUPER_VOICE;
+	if (provider === "openai") return wanted ?? OPENAI_DEFAULT_VOICE;
+	if (wanted && !CODEX_VOICES.includes(wanted)) {
+		process.stderr.write(
+			`pi-super: voice "${wanted}" is not a gpt-live voice (${CODEX_VOICES.join(", ")}), using ${CODEX_DEFAULT_VOICE}\n`,
+		);
+		return CODEX_DEFAULT_VOICE;
+	}
+	return wanted ?? CODEX_DEFAULT_VOICE;
+}
 
 interface CodexAuth {
 	access: string;
@@ -42,11 +60,13 @@ export function readCodexAuth(): CodexAuth | undefined {
 }
 
 export function detectVoiceConfig(): VoiceConfig {
-	if (process.env.OPENAI_API_KEY) {
-		return { provider: "openai", model: OPENAI_MODEL, voice: DEFAULT_VOICE, delegation: "tool" };
-	}
+	// Prefer the ChatGPT subscription: gpt-live is what the user actually wants, and it
+	// costs nothing extra. An API key is the fallback, not the other way round.
 	if (readCodexAuth()) {
-		return { provider: "codex", model: CODEX_MODEL, voice: DEFAULT_VOICE, delegation: "codex" };
+		return { provider: "codex", model: CODEX_MODEL, voice: pickVoice("codex"), delegation: "codex" };
+	}
+	if (process.env.OPENAI_API_KEY) {
+		return { provider: "openai", model: OPENAI_MODEL, voice: pickVoice("openai"), delegation: "tool" };
 	}
 	return { provider: "none", model: "", voice: "", delegation: "tool" };
 }
@@ -79,6 +99,7 @@ export async function negotiateOffer(cfg: VoiceConfig, sdp: string, instructions
 				"chatgpt-account-id": auth.accountId,
 				originator: "pi",
 				"user-agent": "pi-super",
+				// the query params are mandatory whenever openai-alpha is sent
 				"openai-alpha": "quicksilver=v2",
 				"content-type": "application/json",
 			},
