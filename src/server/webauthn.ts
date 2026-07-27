@@ -129,7 +129,9 @@ export class PasskeyStore {
 	}
 
 	sessionCookie(id: string, secure: boolean): string {
-		const flags = ["HttpOnly", secure ? "Secure" : "", "SameSite=Strict", "Path=/", `Max-Age=${SESSION_TTL_MS / 1000}`]
+		// Lax, not Strict: navigations from other apps (QR scanner, chat link) are cross-site
+		// in Chrome and Strict would hide the session on them, showing a spurious login page.
+		const flags = ["HttpOnly", secure ? "Secure" : "", "SameSite=Lax", "Path=/", `Max-Age=${SESSION_TTL_MS / 1000}`]
 			.filter(Boolean)
 			.join("; ");
 		return `${SESSION_COOKIE}=${id}; ${flags}`;

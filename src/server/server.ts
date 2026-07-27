@@ -127,12 +127,16 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			return;
 		}
 		// First visit with ?token= — pin it into an HttpOnly cookie and drop it from the URL.
+		// SameSite=Lax, not Strict: navigations initiated from another app (QR scanner, chat
+		// link) are cross-site in Chrome, and Strict would withhold the cookie on the very
+		// redirect we are about to issue, 401-ing the first visit. Lax still keeps the cookie
+		// off cross-site POSTs and WebSocket handshakes, which the Origin check covers anyway.
 		if (url.searchParams.has("token") && !req.headers.cookie?.includes(`${COOKIE_NAME}=`)) {
 			const clean = new URL(url);
 			clean.searchParams.delete("token");
 			const secure = (req.socket as { encrypted?: boolean }).encrypted === true ? " Secure;" : "";
 			res.writeHead(302, {
-				"set-cookie": `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly;${secure} SameSite=Strict; Path=/; Max-Age=31536000`,
+				"set-cookie": `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=31536000`,
 				location: `${clean.pathname}${clean.search}`,
 			});
 			res.end();
