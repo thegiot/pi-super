@@ -1,0 +1,16 @@
+[Unit]
+Description=pi-super — mobile meta-interface to tmux
+# needs the user's tmux server, which appears after login; no linger required
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hai/pi-super
+# bash -l resolves node (nvm) and pi (npx cache) from the login profile, so
+# version-hashed paths keep working across updates without editing this unit.
+ExecStart=/bin/bash -lc 'exec node dist/server/index.js --auth passkey'
+Restart=on-failure
+RestartSec=2
+# journald keeps the logs; view: journalctl --user -u pi-super -f
+
+[Install]
+WantedBy=default.target

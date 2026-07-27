@@ -126,3 +126,15 @@ npm run test:voice     # unattended voice call: fake mic + headless Chrome + rec
 npm run test:mobile    # Pixel-metrics screenshots + layout checks -> /tmp/pi-super-shots/
 npm run test:passkey   # full WebAuthn flow via Chrome's virtual authenticator
 ```
+
+## Running under systemd (user service)
+
+```sh
+cp contrib/pi-super.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now pi-super
+journalctl --user -u pi-super -f     # logs
+```
+
+The unit starts the server through a login shell so `node` (nvm) and `pi` resolve from
+your normal profile. Deploys are `npm run build && systemctl --user restart pi-super`.
