@@ -21,22 +21,29 @@ tests" — or call it hands-free from the car. It inspects, it steers, it report
 * **A real terminal, not an approximation.** A real PTY carrying real bytes: every key,
   every TUI, copy-mode, `vim`, `mutt`, `pi` all behave exactly as they do at your desk.
 * **Built for thumbs.** Window tabs, a reader mode that reflows a 200-column agent
-  session to phone width, a key ribbon, a prompt composer (so Gboard dictation just
-  works), and image paste that lands as a real file path in the session.
+  session to phone width, a window list that shows each pane's *title* (which is where an
+  agent says what it is currently doing — far more use than a column of windows all named
+  `sh`), a key ribbon, a prompt composer (so Gboard dictation just works), and image paste
+  that lands as a real file path in the session.
 
-Where things stand: the terminal and the meta agent work today; the voice call is wired
-up but its speech backends need credentials this box doesn't have yet (details in
-[DESIGN.md](DESIGN.md)).
+Where things stand: terminal, chat and voice all work today — voice runs on your ChatGPT
+login (gpt-live) when pi has one, an `OPENAI_API_KEY` otherwise, and falls back to the
+browser's own speech engine when there is neither. What it is not yet is a *real* call:
+Android suspends the tab when the screen goes off (details in [DESIGN.md](DESIGN.md)).
 
-## The three views
+## The two buttons
 
 * **terminal** (📖 toggles raw ↔ reader) — your tmux, one tab per window.
-* **meta agent** (🜲) — chat with *super*, which inspects and steers every window for
-  you: "what's the status of the grand endeavors work?", "tell it to run the tests",
-  "open the kitchen radio project and find out why it stopped working". It answers in
-  chat and, via its `speak` tool, out loud.
-* **voice call** (📞) — the same meta agent, hands free. The speech model only talks
+* **super** (📞) — one press opens the chat *and* places the call. Ask it anything about
+  the machine: "what's the status of the grand endeavors work?", "tell it to run the
+  tests", "open the kitchen radio project and find out why it stopped working". It
+  answers in the chat and, via its `speak` tool, out loud. The speech model only talks
   and delegates; super does the work and reports back mid-call.
+
+  Chat and call are deliberately one thing — on a phone you never want the transcript
+  without the option to speak, and *mute* / *hush* (or the headset button) already mean
+  "not now". Pressing 📞 again returns to the terminal **without hanging up**: the call bar
+  stays on screen, which is the state you want while super works. Hang up from there.
 
 ## Quick start
 
@@ -137,6 +144,11 @@ The call is meant to behave like a phone call, within what a browser allows:
   dropping the call. A real incoming phone call, which takes the microphone away, is
   survivable this way. The meta agent lives on the server, so super's memory spans the
   gap; only the speech model's own short-term context is lost.
+* **stall rescue** — if the agent's turn goes completely silent for three minutes (a
+  provider stream that stops delivering while the socket stays open — it happens), the
+  server restarts it, tells you out loud, and asks it to pick the request back up after
+  checking what it already did. Voice cannot afford a failure mode whose only symptom is
+  silence after "checking".
 * **not yet a real call** — with the screen off, Android suspends the tab and the call
   dies. The screen wake lock we hold is the opposite of what a call wants. Genuine
   screen-off, Bluetooth-routed, ducking-aware audio needs a native foreground service
