@@ -15,10 +15,30 @@ export interface MetaOptions {
 	inheritExtensions?: boolean;
 	/** where the meta agent's pi sessions live; enables resume across pi-super restarts */
 	sessionDir?: string;
+	/** stall-watchdog tuning; defaults are the production values (tests drive it fast) */
+	stallMs?: number;
+	watchdogMs?: number;
 }
 
 /** Prefix for prompts pi-super injects itself, so rehydration can hide them later. */
 const INTERNAL_PROMPT = "[pi-super]";
+
+/**
+ * How long a turn may produce *no RPC event at all* before we call it wedged.
+ *
+ * This is silence, not slowness: a thinking model streams deltas, and a long tool
+ * (tmux_wait_idle runs for minutes by design) is excluded because its
+ * tool_execution_start is still outstanding. What it catches is the real failure seen
+ * in the field — the provider stream stops delivering while the socket stays open on
+ * keepalives, so pi waits forever and every prompt after it queues behind a turn that
+ * will never end. Voice makes this maximally confusing: super says "checking" and then
+ * simply never speaks again.
+ */
+const STALL_MS = 180_000;
+/** how often the watchdog looks */
+const WATCHDOG_MS = 30_000;
+/** never rescue more often than this — a provider outage must not become a restart loop */
+const RESCUE_COOLDOWN_MS = 600_000;
 
 const RESUME_NUDGE = `${INTERNAL_PROMPT} The pi-super server restarted and resumed your session. If you had unfinished business — a report you promised, an agent window you were waiting on — check those windows now, re-establish the waits (tmux_wait_idle) and speak a short status update. If everything was already wrapped up, just reply briefly without speaking.`;
 
@@ -51,6 +71,12 @@ export class MetaAgent extends EventEmitter {
 	private turnPending = false;
 	/** the resume nudge is sent at most once per pi-super process */
 	private nudged = false;
+	/** last RPC event of any kind, for the stall watchdog */
+	private lastEventAt = 0;
+	private watchdog: ReturnType<typeof setInterval> | undefined;
+	private lastRescueAt = 0;
+	/** the user turn in flight, so a rescue can ask it again instead of losing it */
+	private lastPrompt: string | undefined;
 
 	constructor(private readonly opts: MetaOptions) {
 		super();
@@ -161,6 +187,11 @@ export class MetaAgent extends EventEmitter {
 			this.emit("exit", { code: -1 });
 		});
 		proc.stdin.on("error", (err) => this.emit("log", `meta stdin: ${err.message}\n`));
+		this.lastEventAt = Date.now();
+		if (!this.watchdog) {
+			this.watchdog = setInterval(() => void this.checkStall(), this.opts.watchdogMs ?? WATCHDOG_MS);
+			this.watchdog.unref?.();
+		}
 		this.push({ kind: "system", id: 0, text: resuming ? "meta agent resumed previous session" : "meta agent started" });
 		if (resuming && !this.nudged) {
 			this.nudged = true;
@@ -213,10 +244,46 @@ export class MetaAgent extends EventEmitter {
 		this.emit("state", this.state);
 	}
 
+	/**
+	 * A turn that has gone completely silent is not coming back on its own: pi is blocked
+	 * on a provider stream that stopped delivering, and everything the user has said since
+	 * is queued behind it. Restart the child (it resumes the same session file, so no
+	 * memory is lost), re-ask the question, and say so out loud — silence is the one
+	 * response voice mode cannot explain.
+	 */
+	private async checkStall(): Promise<void> {
+		if (!this.running) return;
+		if (!this.busy && !this.turnPending) return;
+		// a tool is legitimately allowed to take a very long time (tmux_wait_idle)
+		if (this.pendingTools.size > 0) return;
+		const silent = Date.now() - this.lastEventAt;
+		if (silent < (this.opts.stallMs ?? STALL_MS)) return;
+		const mins = Math.round(silent / 60_000);
+		if (Date.now() - this.lastRescueAt < RESCUE_COOLDOWN_MS) {
+			this.push({ kind: "system", id: 0, text: `meta agent still stalled (${mins}m, rescued recently)` });
+			this.lastEventAt = Date.now(); // don't re-report every 30s
+			return;
+		}
+		this.lastRescueAt = Date.now();
+		const retry = this.lastPrompt;
+		this.push({ kind: "system", id: 0, text: `meta agent silent for ${mins}m mid-turn — restarting it` });
+		this.emit("speak", {
+			message: retry
+				? "That request got stuck, so I restarted myself and I'm asking again."
+				: "I got stuck and restarted myself. Say that again?",
+			kind: "status",
+		});
+		await this.stop();
+		this.start();
+		if (retry) this.prompt(retry);
+	}
+
 	/** SIGTERM, then SIGKILL if it does not go away; resolves once the child is gone. */
 	async stop(): Promise<void> {
 		const proc = this.proc;
 		this.proc = undefined;
+		if (this.watchdog) clearInterval(this.watchdog);
+		this.watchdog = undefined;
 		this.resetTurnState();
 		if (!proc || proc.exitCode !== null) return;
 		await new Promise<void>((resolve) => {
@@ -278,7 +345,24 @@ export class MetaAgent extends EventEmitter {
 
 	private onEvent(ev: Record<string, unknown>): void {
 		this.emit("event", ev);
+		this.lastEventAt = Date.now();
 		switch (ev.type) {
+			// Transient-failure handling used to be invisible: a turn stuck in backoff looked
+			// exactly like a turn thinking hard. Surface it — the chat shows it, and the server
+			// logs every system item to the journal.
+			case "auto_retry_start":
+				this.push({
+					kind: "system",
+					id: 0,
+					text: `provider error, retrying (attempt ${String(ev.attempt ?? "?")}): ${String(ev.errorMessage ?? "").slice(0, 200)}`,
+				});
+				break;
+			case "auto_retry_end":
+				if (ev.finalError) this.push({ kind: "system", id: 0, text: `retries gave up: ${String(ev.finalError).slice(0, 200)}` });
+				break;
+			case "extension_error":
+				this.push({ kind: "system", id: 0, text: `extension error: ${String(ev.error ?? "").slice(0, 200)}` });
+				break;
 			case "agent_start":
 				this.busy = true;
 				this.emit("state", this.state);
@@ -286,6 +370,7 @@ export class MetaAgent extends EventEmitter {
 			case "agent_settled":
 				this.busy = false;
 				this.turnPending = false;
+				this.lastPrompt = undefined;
 				if (this.assistant && this.assistant.kind === "assistant") {
 					this.assistant.done = true;
 					this.patch(this.assistant);
@@ -356,6 +441,8 @@ export class MetaAgent extends EventEmitter {
 		// under way, and a rejected prompt would be silently lost.
 		if (this.busy || this.turnPending) cmd.streamingBehavior = "steer";
 		this.turnPending = true;
+		this.lastPrompt = message;
+		this.lastEventAt = Date.now();
 		this.write(cmd);
 	}
 

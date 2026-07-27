@@ -28,6 +28,12 @@ the ones deliberately left for later.
   voice requests share one channel — real async multiplexing needs correlation ids
   (meta-side job registry) before the "ask about B while A builds" story is honest.
 - No timeout/rate limit on `/api/voice/offer` provider calls.
+- **Is a delegation ever *completed*?** We only ever send `delegation.context.append`; the
+  gpt-live contract may also have a "this hand-off is finished" event, which would let the
+  model stop treating the delegation as in-flight. A live run did speak the final answer
+  from an append alone (DESIGN.md), so this is not blocking — but the append-only channel
+  is an assumption, and `speak(kind:"final")` is the obvious place to close the loop if the
+  event exists. Needs a capture of the real protocol, not a guess.
 - `commentary` vs `speakable` channel choice is a guess: `speak(kind:"status")` goes to
   `commentary`, everything else to `speakable`. Only `speakable` has been observed live.
 - The 500-byte chunking of `delegation.context.append` has never been exercised (real
@@ -60,6 +66,16 @@ The browser cannot be a phone call. What is missing, and needs the native wrappe
   best we do is redial afterwards.
 - **No in-call notification / lock-screen surface** beyond Media Session metadata.
 - **No voice hang-up** — ending the call still requires the screen.
+
+## Observed failures
+
+- **Wedged provider stream (2026-07-28).** The meta agent's `pi` child sat in a turn for
+  8+ minutes with no output: the TLS socket to the API was open and receiving keepalive
+  frames, but no tokens ever arrived, and every voice prompt after it queued behind the
+  turn as steering. Symptom on the phone: super says "checking" and never speaks again.
+  A `strace` attach/detach (SIGSTOP + EINTR) coincided with it unblocking, so the exact
+  trigger is unproven. Mitigated by the stall watchdog in `MetaAgent` (restart + re-ask
+  after 3 minutes of complete RPC silence outside a running tool), not fixed at the root.
 
 ## Hardening
 

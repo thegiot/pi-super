@@ -87,7 +87,10 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	});
 	meta.on("log", (chunk: string) => process.stderr.write(`meta: ${chunk}`));
 	meta.on("state", (state) => broadcastMeta({ t: "state", state }));
-	meta.on("speak", (speak) => broadcastMeta({ t: "speak", ...(speak as object) }));
+	meta.on("speak", (speak) => {
+		log(`meta: speak/${(speak as { kind?: string }).kind}: ${preview((speak as { message: string }).message)}`);
+		broadcastMeta({ t: "speak", ...(speak as object) });
+	});
 	meta.on("exit", () => broadcastMeta({ t: "state", state: meta.state }));
 	// If a previous meta session exists, resume it eagerly — it may owe the user a
 	// report (an interrupted tmux_wait_idle), which must not wait for the app to open.
@@ -612,12 +615,15 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			}
 			try {
 				switch (msg.t) {
-					case "prompt":
-						meta.prompt(
-							String(msg.text ?? ""),
-							msg.images as Array<{ data: string; mimeType: string }> | undefined,
-						);
+					case "prompt": {
+						const text = String(msg.text ?? "");
+						// The journal is the only place to see whether a *voice* prompt ever
+						// reached the agent: the phone shows the chat, but when nothing comes
+						// back there is no way to tell "never sent" from "agent wedged".
+						log(`meta ws: ${ip} prompt${meta.state.busy ? " (busy, steering)" : ""}: ${preview(text)}`);
+						meta.prompt(text, msg.images as Array<{ data: string; mimeType: string }> | undefined);
 						break;
+					}
 					case "abort":
 						meta.abort();
 						break;
@@ -659,6 +665,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			await new Promise<void>((resolve) => http.close(() => resolve()));
 		},
 	};
+}
+
+/** One grep-friendly line: newlines folded, tail cut. */
+function preview(text: string, max = 80): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
 /** Instructions handed to the realtime voice model (server-side, not client-editable). */
