@@ -407,7 +407,7 @@ function setView(view: "raw" | "reader" | "meta"): void {
 	$("btn-insert").hidden = view === "meta"; // "insert without Enter" is a terminal thing
 	el.input.placeholder = view === "meta" ? "ask super…" : "prompt…";
 	$("btn-view").textContent = view === "reader" ? "▣" : "📖";
-	$("btn-meta").classList.toggle("armed", view === "meta");
+	refreshCallButton();
 	clearInterval(state.readerTimer as ReturnType<typeof setInterval>);
 	if (view === "reader") {
 		void refreshReader();
@@ -479,11 +479,24 @@ $("btn-view").onclick = () => {
 	localStorage.setItem("view", next);
 	setView(next);
 };
-$("btn-meta").onclick = () => setView(state.view === "meta" ? state.lastTermView : "meta");
 el.abort.onclick = () => meta.abort();
 
+/** super's one button carries three signals: chat open, call up, super working. */
+let metaBusy = false;
+/** set by a failed dial, cleared by an explicit hang-up */
+let dialFailed = false;
+function refreshCallButton(): void {
+	const btn = $("btn-call");
+	btn.classList.toggle("open", state.view === "meta");
+	btn.classList.toggle("armed", voice.state === "live");
+	btn.classList.toggle("busy", voice.state === "connecting" || metaBusy);
+}
+
 const meta = createMeta(el.meta);
-meta.onState = (s) => $("btn-meta").classList.toggle("busy", s.busy);
+meta.onState = (s) => {
+	metaBusy = s.busy;
+	refreshCallButton();
+};
 
 const voice = createVoice(meta);
 meta.onSpeak = ({ message, kind }) => {
@@ -493,8 +506,9 @@ meta.onSpeak = ({ message, kind }) => {
 voice.onState = (s, detail) => {
 	el.callState.textContent = s === "live" ? "connected — talk to super" : detail ? `${s}: ${detail}` : s;
 	el.call.hidden = s === "idle";
-	$("btn-call").classList.toggle("armed", s === "live");
-	$("btn-call").classList.toggle("busy", s === "connecting");
+	// A failed dial must not be retried on every visit to the chat; hanging up clears it.
+	if (s === "error") dialFailed = true;
+	refreshCallButton();
 	// a redial re-acquires the mic, so the mute button must not keep claiming otherwise
 	if (s !== "live") {
 		$("btn-mute").textContent = "mute";
@@ -506,15 +520,21 @@ voice.onTranscript = (role, text) => {
 	if (role === "user") status(`🎙 ${text}`, 4000);
 };
 
+// One button for super: it opens the chat and places the call in the same press, because
+// on a phone those are never wanted separately — mute and hush handle "not now", and
+// leaving the chat view deliberately does *not* hang up (the call bar stays put).
 $("btn-call").onclick = () => {
-	if (voice.state === "idle" || voice.state === "error") {
-		setView("meta");
-		void voice.start();
-	} else {
-		voice.stop();
+	if (state.view === "meta") {
+		setView(state.lastTermView);
+		return;
 	}
+	setView("meta");
+	if (!dialFailed && (voice.state === "idle" || voice.state === "error")) void voice.start();
 };
-$("btn-hangup").onclick = () => voice.stop();
+$("btn-hangup").onclick = () => {
+	dialFailed = false;
+	voice.stop();
+};
 $("btn-hush").onclick = () => voice.hush();
 $("btn-mute").onclick = () => {
 	const muted = voice.toggleMute();
@@ -635,6 +655,8 @@ if (new URLSearchParams(location.search).has("debug")) {
 		voice,
 		meta,
 		state,
+		// lets a harness open the chat without also placing a call
+		setView,
 		events,
 		spoken,
 		transcript,

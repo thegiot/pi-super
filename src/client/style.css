@@ -222,14 +222,10 @@ button.armed {
 	color: var(--accent);
 }
 
-#btn-meta.busy {
-	border-color: var(--warn);
-	color: var(--warn);
-}
-
-#btn-meta.armed {
-	border-color: var(--accent);
-	color: var(--accent);
+/* the chat is open: distinct from `armed` (a live call), which may be either */
+#btn-call.open {
+	background: #1c2430;
+	border-color: #4f7fd0;
 }
 
 #status {

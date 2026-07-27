@@ -168,7 +168,8 @@ async function main() {
 	await c.shot("04-drawer");
 
 	// meta chat with the keyboard-ish state: focus the composer and type
-	await c.evaluate(`document.getElementById("btn-close-drawer").click(); document.getElementById("btn-meta").click(); 1`);
+	// btn-call opens the chat (and would dial); the shot only needs the view, so no click
+	await c.evaluate(`document.getElementById("btn-close-drawer").click(); window.piSuper.setView("meta"); 1`);
 	await wait(600);
 	await c.evaluate(`
     const i = document.getElementById("input");
