@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { createMeta } from "./meta.js";
 import "./style.css";
+import { createVoice } from "./voice.js";
 
 interface WindowInfo {
 	id: string;
@@ -31,6 +32,8 @@ const el = {
 	readerText: $("reader-text"),
 	meta: $("meta"),
 	abort: $("btn-abort"),
+	call: $("call"),
+	callState: $("call-state"),
 	status: $("status"),
 	input: $<HTMLTextAreaElement>("input"),
 	ribbon: $("ribbon"),
@@ -319,8 +322,36 @@ el.abort.onclick = () => meta.abort();
 
 const meta = createMeta(el.meta);
 meta.onState = (s) => $("btn-meta").classList.toggle("busy", s.busy);
-meta.onSpeak = ({ message }) => {
+
+const voice = createVoice(meta);
+meta.onSpeak = ({ message, kind }) => {
+	voice.pushUpdate(message, kind);
 	if (state.view !== "meta") status(`🔊 ${message}`, 6000);
+};
+voice.onState = (s, detail) => {
+	el.callState.textContent = s === "live" ? "connected — talk to super" : detail ? `${s}: ${detail}` : s;
+	el.call.hidden = s === "idle";
+	$("btn-call").classList.toggle("armed", s === "live");
+	$("btn-call").classList.toggle("busy", s === "connecting");
+	if (s === "error" && detail) status(detail, 8000, true);
+};
+voice.onTranscript = (role, text) => {
+	if (role === "user") status(`🎙 ${text}`, 4000);
+};
+
+$("btn-call").onclick = () => {
+	if (voice.state === "idle" || voice.state === "error") {
+		setView("meta");
+		void voice.start();
+	} else {
+		voice.stop();
+	}
+};
+$("btn-hangup").onclick = () => voice.stop();
+$("btn-mute").onclick = () => {
+	const muted = voice.toggleMute();
+	$("btn-mute").textContent = muted ? "unmute" : "mute";
+	$("btn-mute").classList.toggle("armed", muted);
 };
 
 $("btn-send").onclick = () => sendText(el.input.value, true);

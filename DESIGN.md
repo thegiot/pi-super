@@ -129,10 +129,32 @@ No "convenience" unauthenticated mode once bound off-loopback.
 
 | # | Scope | State |
 |---|-------|-------|
-| M1 | server + terminal plane + mobile web UI (windows, raw/reader, ribbon, image paste, auth) | in progress |
-| M2 | meta agent (pi RPC child + tmux tools + chat view) | |
-| M3 | voice mode (OpenAI Realtime over WebRTC, eco delegation, PWA) | |
+| M1 | server + terminal plane + mobile web UI (windows, raw/reader, ribbon, image paste, auth) | **done** |
+| M2 | meta agent (pi RPC child + tmux tools + speak + chat view) | **done** |
+| M3 | voice mode (WebRTC realtime + delegation; Web Speech fallback) | **code done, realtime blocked on credentials** |
 | M4 | native Android wrapper for true call-mode audio; push notifications | |
+
+### M3 credential situation (2026-07)
+
+Both realtime paths are implemented and the plumbing is verified up to the point where the
+backend checks entitlements:
+
+* **codex** (`chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas`,
+  `gpt-live-1-boulder-alpha`, `delegation: {type: "client"}` — the pi-codex-conversion protocol):
+  this box's ChatGPT OAuth *authenticates fine* (a malformed offer gets a proper
+  `invalid_offer` 400), but a well-formed offer returns **403 `Voice session access denied`**
+  regardless of `originator`/`openai-alpha` headers. That is an account-level feature flag
+  for Codex voice, not something the client can fix. When the rollout reaches the account,
+  voice mode should work with no code change.
+* **openai** (standard Realtime API, `gpt-realtime-2.1-mini`, `ask_super` function tool):
+  ready, but there is no `OPENAI_API_KEY` on this box. Setting one switches the provider
+  automatically (~$0.03 per conversational minute).
+* **local** fallback: browser `SpeechRecognition` + `speechSynthesis` driving the meta agent.
+  Half duplex, no barge-in, Chrome-only — but zero credentials, and it makes the whole
+  speak-first meta-agent loop usable on Android today.
+
+The voice model never touches the machine in any of these modes: it delegates to the meta
+agent and relays what comes back, which is what keeps the design model-agnostic.
 
 ## Prior art actually consulted
 

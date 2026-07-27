@@ -12,8 +12,18 @@ look into every window and act on your behalf.
   phone width, a key ribbon, a prompt composer (so Gboard dictation just works), and
   image paste that lands as a real file path in the session.
 
-Status: **M1 (terminal plane) works.** M2 (meta agent) and M3 (voice mode) are next —
-see [DESIGN.md](DESIGN.md).
+Status: terminal plane and meta agent work; voice mode is wired but its realtime backends
+need credentials this box doesn't have yet (details in [DESIGN.md](DESIGN.md)).
+
+## The three views
+
+* **terminal** (📖 toggles raw ↔ reader) — your tmux, tab per window.
+* **meta agent** (🜲) — chat with *super*, which inspects and steers every window for you:
+  "what's the status of the grand endeavors work?", "tell it to run the tests", "open the
+  kitchen radio project and find out why it stopped working". It answers in chat and, via
+  its `speak` tool, out loud.
+* **voice call** (📞) — the same meta agent, hands free. The speech model only talks and
+  delegates; super does the work and reports back mid-call.
 
 ## Quick start
 
@@ -34,6 +44,9 @@ Options:
   -s, --session <name>    Base tmux session to mirror (default: first non-pi-super session)
   -S/-L <socket>          tmux socket path / name
       --status-line       Keep tmux's own status line inside the terminal view
+      --meta-model <m>    Model for the meta agent (default: your pi default)
+      --no-meta           Disable the meta agent
+      --meta-inherit-extensions   Load your global pi packages into the meta agent too
       --reset-token       Roll the access token
       --url               Print the access URL and exit
 ```
@@ -58,6 +71,23 @@ geometry and never reflows anybody else's terminal; the UI scales the view to fi
 
 Window switching, creation, renaming and killing go out-of-band as plain tmux commands,
 not keystroke stuffing. Reader mode is `capture-pane` rendered as selectable DOM text.
+
+## Voice
+
+The voice plane picks a backend automatically:
+
+| provider | needs | how work gets done |
+|---|---|---|
+| `codex` | your ChatGPT/Codex login (pi's `auth.json`) | WebRTC to `gpt-live`, `delegation.created` → meta agent, progress via `delegation.context.append` |
+| `openai` | `OPENAI_API_KEY` | WebRTC to `gpt-realtime-2.1-mini`, `ask_super` function tool |
+| `local` | nothing (Chrome) | browser speech recognition → meta agent → `speechSynthesis` |
+
+The credential never reaches the browser: the phone POSTs its SDP offer to pi-super, which
+attaches auth plus the server-side instructions and returns only the answer.
+
+Right now `codex` returns 403 `Voice session access denied` for this account (feature flag
+not rolled out) and there is no `OPENAI_API_KEY`, so it falls back to `local`. Nothing to
+change when either becomes available.
 
 ## Development
 

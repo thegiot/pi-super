@@ -178,6 +178,49 @@ main {
 	text-align: center;
 }
 
+#call {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	background: #16211a;
+	border-top: 1px solid #234;
+}
+
+#call[hidden] {
+	display: none;
+}
+
+#call-state {
+	flex: 1;
+	color: var(--accent);
+	font-size: 13px;
+}
+
+#call-buttons {
+	display: flex;
+	gap: 6px;
+}
+
+#btn-call.armed {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+#btn-call.busy {
+	border-color: var(--warn);
+	color: var(--warn);
+}
+
+button.armed {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
 #btn-meta.busy {
 	border-color: var(--warn);
 	color: var(--warn);

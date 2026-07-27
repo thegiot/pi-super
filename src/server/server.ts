@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
@@ -8,6 +8,7 @@ import { type ChatItem, MetaAgent } from "./meta.js";
 import { SESSION_PREFIX, sweepStaleSessions, TermConnection } from "./term.js";
 import { Tmux } from "./tmux.js";
 import { MAX_UPLOAD_BYTES, readBody, storeUpload } from "./uploads.js";
+import { detectVoiceConfig, negotiateOffer } from "./voice.js";
 
 const MIME: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -124,6 +125,27 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				const text = await tmux.capture(target, { lines: Math.min(Math.max(lines, 0), 50000) });
 				res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
 				res.end(text);
+				return;
+			}
+			case "GET /api/voice/config": {
+				const voice = detectVoiceConfig();
+				sendJson(res, 200, { ...voice, enabled: voice.provider !== "none" && cfg.metaEnabled });
+				return;
+			}
+			case "POST /api/voice/offer": {
+				if (!originAllowed(req, cfg.allowedOrigins)) {
+					sendJson(res, 403, { error: "bad origin" });
+					return;
+				}
+				const voice = detectVoiceConfig();
+				const sdp = (await readBody(req, 1024 * 1024)).toString("utf8");
+				const result = await negotiateOffer(voice, sdp, voiceInstructions(cfg.metaDir));
+				if (!result.ok) {
+					sendJson(res, result.status >= 400 ? result.status : 502, { error: result.error });
+					return;
+				}
+				res.writeHead(200, { "content-type": "application/sdp", "cache-control": "no-store" });
+				res.end(result.sdp);
 				return;
 			}
 			case "POST /api/upload": {
@@ -399,6 +421,15 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			await new Promise<void>((resolve) => http.close(() => resolve()));
 		},
 	};
+}
+
+/** Instructions handed to the realtime voice model (server-side, not client-editable). */
+function voiceInstructions(metaDir: string): string {
+	try {
+		return readFileSync(join(metaDir, "voice-prompt.md"), "utf8");
+	} catch {
+		return "You are the voice of super. Delegate anything substantive to the client and keep replies short and spoken.";
+	}
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
