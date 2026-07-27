@@ -4,30 +4,39 @@
 
 *A bit juvenile, but this is how it finally makes your pi setup feel.*
 
-A phone-shaped remote for **the tmux you already have running** — the one full of `pi`
-sessions, side-agents, shells and TUIs — plus (soon) a voice-driven meta agent that can
-look into every window and act on your behalf.
+Your desk setup, in your pocket.
 
-* **tmux-native**: attaches to the running tmux server, never replaces it. Your desktop
-  client keeps working at the same time, on the same windows.
-* **terminal-first**: a real PTY carrying real bytes, so every key, every TUI, copy-mode,
-  `vim`, `mutt`, `pi` all behave exactly as they do locally.
-* **mobile-first**: window tabs, a reader mode that reflows a 200-column agent session to
-  phone width, a key ribbon, a prompt composer (so Gboard dictation just works), and
-  image paste that lands as a real file path in the session.
+pi-super takes the tmux session already running on your dev box — the one full of `pi`
+agents, side-agents, shells and editors — and puts the whole thing on your phone. Not a
+copy, not a sync: the *same* session, live. Your desktop keeps showing exactly what it
+always showed; your phone just gets a seat at the table too.
 
-Status: terminal plane and meta agent work; voice mode is wired but its realtime backends
-need credentials this box doesn't have yet (details in [DESIGN.md](DESIGN.md)).
+And because you're not always in a typing mood, there's *super*: a supervisor agent that
+can peek into every window and act for you. Text it from the garden — "what's the status
+of the grand endeavors work?" — dictate an order from the kitchen — "tell it to run the
+tests" — or call it hands-free from the car. It inspects, it steers, it reports back.
+
+* **Nothing moves.** pi-super attaches to your running tmux server, never replaces it.
+  Your desktop client keeps working at the same time, on the same windows.
+* **A real terminal, not an approximation.** A real PTY carrying real bytes: every key,
+  every TUI, copy-mode, `vim`, `mutt`, `pi` all behave exactly as they do at your desk.
+* **Built for thumbs.** Window tabs, a reader mode that reflows a 200-column agent
+  session to phone width, a key ribbon, a prompt composer (so Gboard dictation just
+  works), and image paste that lands as a real file path in the session.
+
+Where things stand: the terminal and the supervisor work today; the voice call is wired
+up but its speech backends need credentials this box doesn't have yet (details in
+[DESIGN.md](DESIGN.md)).
 
 ## The three views
 
-* **terminal** (📖 toggles raw ↔ reader) — your tmux, tab per window.
-* **meta agent** (🜲) — chat with *super*, which inspects and steers every window for you:
-  "what's the status of the grand endeavors work?", "tell it to run the tests", "open the
-  kitchen radio project and find out why it stopped working". It answers in chat and, via
-  its `speak` tool, out loud.
-* **voice call** (📞) — the same meta agent, hands free. The speech model only talks and
-  delegates; super does the work and reports back mid-call.
+* **terminal** (📖 toggles raw ↔ reader) — your tmux, one tab per window.
+* **supervisor** (🜲) — chat with *super*, which inspects and steers every window for
+  you: "what's the status of the grand endeavors work?", "tell it to run the tests",
+  "open the kitchen radio project and find out why it stopped working". It answers in
+  chat and, via its `speak` tool, out loud.
+* **voice call** (📞) — the same supervisor, hands free. The speech model only talks
+  and delegates; super does the work and reports back mid-call.
 
 ## Quick start
 
@@ -101,7 +110,7 @@ not keystroke stuffing. Reader mode is `capture-pane` rendered as selectable DOM
 
 ## Voice
 
-The voice plane picks a backend automatically:
+Voice picks a backend automatically:
 
 | provider | needs | how work gets done |
 |---|---|---|
