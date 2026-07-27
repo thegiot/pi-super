@@ -1,5 +1,9 @@
 # pi-super
 
+[![IronMan Design](https://i.ytimg.com/vi/DZaAFADoF1M/hqdefault.jpg)](https://www.youtube.com/watch?v=DZaAFADoF1M)
+
+*A bit juvenile, but this is how it finally makes your pi setup feel.*
+
 A phone-shaped remote for **the tmux you already have running** — the one full of `pi`
 sessions, side-agents, shells and TUIs — plus (soon) a voice-driven meta agent that can
 look into every window and act on your behalf.
