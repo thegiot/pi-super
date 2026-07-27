@@ -294,7 +294,7 @@ footer {
 #input {
 	flex: 1;
 	resize: none;
-	max-height: 35dvh;
+	max-height: 30dvh;
 	background: var(--bg);
 	color: var(--fg);
 	border: 1px solid #2a303a;

@@ -161,7 +161,14 @@ export class PasskeyStore {
 			attestationType: "none",
 			// one user, many devices: don't let the same authenticator enrol twice
 			excludeCredentials: this.data.credentials.map((c) => ({ id: c.id })),
-			authenticatorSelection: { residentKey: "preferred", userVerification: "preferred" },
+			// platform + required UV: the passkey must live in the enrolling device's own
+			// authenticator behind its biometric/screen-lock. Without this, Android offers
+			// a confusing "NFC/USB security key" chooser instead of the fingerprint prompt.
+			authenticatorSelection: {
+				authenticatorAttachment: "platform",
+				residentKey: "required",
+				userVerification: "required",
+			},
 		});
 		this.putChallenge(`reg:${rpID}`, options.challenge);
 		return options;
@@ -181,7 +188,7 @@ export class PasskeyStore {
 				expectedChallenge,
 				expectedOrigin: origin,
 				expectedRPID: rpID,
-				requireUserVerification: false,
+				requireUserVerification: true,
 			});
 			if (!result.verified || !result.registrationInfo) return { ok: false, error: "registration not verified" };
 			const info = result.registrationInfo;
@@ -204,7 +211,7 @@ export class PasskeyStore {
 	async authenticationOptions(rpID: string): Promise<unknown> {
 		const options = await generateAuthenticationOptions({
 			rpID,
-			userVerification: "preferred",
+			userVerification: "required",
 			allowCredentials: this.data.credentials.map((c) => ({ id: c.id, transports: c.transports as never })),
 		});
 		this.putChallenge(`auth:${rpID}`, options.challenge);
@@ -227,7 +234,7 @@ export class PasskeyStore {
 				expectedChallenge,
 				expectedOrigin: origin,
 				expectedRPID: rpID,
-				requireUserVerification: false,
+				requireUserVerification: true,
 				credential: {
 					id: credential.id,
 					publicKey: new Uint8Array(Buffer.from(credential.publicKey, "base64url")),

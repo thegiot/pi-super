@@ -312,8 +312,11 @@ function sendText(text: string, enter: boolean): void {
 }
 
 function autogrow(): void {
+	// Cap against the *visual* viewport: with the on-screen keyboard up, innerHeight
+	// still reports the full screen and a long draft would crowd out the terminal.
+	const viewH = window.visualViewport?.height ?? window.innerHeight;
 	el.input.style.height = "auto";
-	el.input.style.height = `${Math.min(el.input.scrollHeight, window.innerHeight * 0.35)}px`;
+	el.input.style.height = `${Math.min(el.input.scrollHeight, viewH * 0.3)}px`;
 }
 
 async function upload(file: File | Blob, name?: string): Promise<void> {
@@ -397,6 +400,7 @@ $("btn-mute").onclick = () => {
 $("btn-send").onclick = () => sendText(el.input.value, true);
 $("btn-insert").onclick = () => sendText(el.input.value, false);
 el.input.addEventListener("input", autogrow);
+window.visualViewport?.addEventListener("resize", autogrow);
 el.input.addEventListener("keydown", (e) => {
 	if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
 		e.preventDefault();

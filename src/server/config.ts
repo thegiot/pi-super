@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export interface Config {
 	host: string;
@@ -40,7 +40,7 @@ Options:
   -s, --session <name>    Base tmux session to mirror (default: first non-pi-super session)
   -S, --socket-path <p>   tmux socket path (tmux -S)
   -L, --socket-name <n>   tmux socket name (tmux -L)
-      --state-dir <dir>   State/uploads/token dir (default ~/.pi-super)
+      --state-dir <dir>   State/uploads/token dir (default ~/.pi/super)
       --status-line       Show tmux's own status line inside the terminal view
       --meta-model <m>    Model for the meta agent (default: your pi default)
       --no-meta           Disable the meta agent
@@ -65,7 +65,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		port: Number(process.env.PI_SUPER_PORT ?? 8722),
 		socketArgs: [],
 		baseSession: process.env.PI_SUPER_SESSION,
-		stateDir: process.env.PI_SUPER_STATE_DIR ?? join(homedir(), ".pi-super"),
+		stateDir: process.env.PI_SUPER_STATE_DIR ?? join(homedir(), ".pi", "super"),
 		statusLine: false,
 		clientDir: "",
 		metaDir: "",
@@ -170,6 +170,20 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
 export function helpText(): string {
 	return HELP;
+}
+
+/**
+ * The state dir used to be ~/.pi-super; it now lives at ~/.pi/super with pi's other
+ * state. Move the old dir over once, but only when the target is the stock default —
+ * a custom --state-dir/PI_SUPER_STATE_DIR must never receive a surprise rename.
+ */
+export function migrateLegacyStateDir(stateDir: string): void {
+	const legacy = join(homedir(), ".pi-super");
+	if (stateDir !== join(homedir(), ".pi", "super")) return;
+	if (existsSync(stateDir) || !existsSync(legacy)) return;
+	mkdirSync(dirname(stateDir), { recursive: true });
+	renameSync(legacy, stateDir);
+	process.stdout.write(`pi-super: moved state ${legacy} -> ${stateDir}\n`);
 }
 
 /** dist/server/config.js -> dist/client */

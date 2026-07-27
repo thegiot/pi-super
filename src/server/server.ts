@@ -59,6 +59,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		socketArgs: cfg.socketArgs,
 		model: cfg.metaModel,
 		inheritExtensions: cfg.metaInheritExtensions,
+		sessionDir: join(cfg.stateDir, "meta-sessions"),
 	});
 	const metaClients = new Set<WebSocket>();
 
@@ -70,6 +71,15 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	meta.on("state", (state) => broadcastMeta({ t: "state", state }));
 	meta.on("speak", (speak) => broadcastMeta({ t: "speak", ...(speak as object) }));
 	meta.on("exit", () => broadcastMeta({ t: "state", state: meta.state }));
+	// If a previous meta session exists, resume it right away — it may owe the user a
+	// report (an interrupted tmux_wait_idle), which must not wait for the app to open.
+	if (cfg.metaEnabled && meta.hasPreviousSession) {
+		try {
+			meta.start();
+		} catch (err) {
+			process.stderr.write(`pi-super: meta resume failed: ${String((err as Error).message)}\n`);
+		}
+	}
 
 	/** Base session to mirror: explicit config, else the first real (non-ours) session. */
 	async function resolveBase(requested?: string | null): Promise<string> {

@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -13,7 +13,14 @@ export interface MetaOptions {
 	piBin?: string;
 	/** load the user's globally configured extensions/packages too (default: no) */
 	inheritExtensions?: boolean;
+	/** where the meta agent's pi sessions live; enables resume across pi-super restarts */
+	sessionDir?: string;
 }
+
+/** Prefix for prompts pi-super injects itself, so rehydration can hide them later. */
+const INTERNAL_PROMPT = "[pi-super]";
+
+const RESUME_NUDGE = `${INTERNAL_PROMPT} The pi-super server restarted and resumed your session. If you had unfinished business — a report you promised, an agent window you were waiting on — check those windows now, re-establish the waits (tmux_wait_idle) and speak a short status update. If everything was already wrapped up, just reply briefly without speaking.`;
 
 export type ChatItem =
 	| { kind: "user"; id: number; text: string }
@@ -42,6 +49,8 @@ export class MetaAgent extends EventEmitter {
 	busy = false;
 	/** a prompt was sent but agent_start has not arrived yet */
 	private turnPending = false;
+	/** the resume nudge is sent at most once per pi-super process */
+	private nudged = false;
 
 	constructor(private readonly opts: MetaOptions) {
 		super();
@@ -53,6 +62,23 @@ export class MetaAgent extends EventEmitter {
 
 	get state(): { running: boolean; busy: boolean; model?: string } {
 		return { running: this.running, busy: this.busy, model: this.opts.model };
+	}
+
+	/** Latest stored session file, if any — what `pi -c` would pick up. */
+	private latestSessionFile(): string | undefined {
+		const dir = this.opts.sessionDir;
+		if (!dir || !existsSync(dir)) return undefined;
+		let best: { file: string; mtime: number } | undefined;
+		for (const f of readdirSync(dir)) {
+			if (!f.endsWith(".jsonl")) continue;
+			const mtime = statSync(join(dir, f)).mtimeMs;
+			if (!best || mtime > best.mtime) best = { file: join(dir, f), mtime };
+		}
+		return best?.file;
+	}
+
+	get hasPreviousSession(): boolean {
+		return this.latestSessionFile() !== undefined;
 	}
 
 	start(): void {
@@ -68,6 +94,19 @@ export class MetaAgent extends EventEmitter {
 		if (!this.opts.inheritExtensions) args.push("-ne");
 		if (existsSync(prompt)) args.push("--append-system-prompt", prompt);
 		if (this.opts.model) args.push("--model", this.opts.model);
+		// Persist sessions in our own dir so a pi-super restart resumes the conversation
+		// (and its promised follow-ups) instead of starting from amnesia.
+		let resuming = false;
+		if (this.opts.sessionDir) {
+			mkdirSync(this.opts.sessionDir, { recursive: true });
+			args.push("--session-dir", this.opts.sessionDir);
+			const prev = this.latestSessionFile();
+			if (prev) {
+				args.push("--continue");
+				resuming = true;
+				if (this.transcript.length === 0) this.rehydrate(prev);
+			}
+		}
 
 		const env: NodeJS.ProcessEnv = {
 			...process.env,
@@ -106,7 +145,42 @@ export class MetaAgent extends EventEmitter {
 			this.emit("exit", { code: -1 });
 		});
 		proc.stdin.on("error", (err) => this.emit("log", `meta stdin: ${err.message}\n`));
-		this.push({ kind: "system", id: 0, text: "meta agent started" });
+		this.push({ kind: "system", id: 0, text: resuming ? "meta agent resumed previous session" : "meta agent started" });
+		if (resuming && !this.nudged) {
+			this.nudged = true;
+			this.turnPending = true;
+			this.write({ type: "prompt", message: RESUME_NUDGE });
+		}
+	}
+
+	/** Best-effort: rebuild the chat view from the session file we are about to resume. */
+	private rehydrate(file: string): void {
+		try {
+			const items: ChatItem[] = [];
+			for (const line of readFileSync(file, "utf8").split("\n")) {
+				if (!line.trim()) continue;
+				let ev: { type?: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
+				try {
+					ev = JSON.parse(line);
+				} catch {
+					continue;
+				}
+				if (ev.type !== "message") continue;
+				const role = ev.message?.role;
+				if (role !== "user" && role !== "assistant") continue;
+				const text = (ev.message?.content ?? [])
+					.filter((c) => c.type === "text" && typeof c.text === "string")
+					.map((c) => c.text)
+					.join("\n")
+					.trim();
+				if (!text || text.startsWith(INTERNAL_PROMPT)) continue;
+				if (role === "user") items.push({ kind: "user", id: ++this.nextId, text });
+				else items.push({ kind: "assistant", id: ++this.nextId, text, done: true });
+			}
+			this.transcript.push(...items.slice(-100));
+		} catch {
+			// rehydration is cosmetic; the resumed pi session holds the real context
+		}
 	}
 
 	private resetTurnState(): void {

@@ -3,7 +3,7 @@ import { networkInterfaces } from "node:os";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureToken } from "./auth.js";
-import { defaultClientDir, defaultMetaDir, helpText, parseArgs } from "./config.js";
+import { defaultClientDir, defaultMetaDir, helpText, migrateLegacyStateDir, parseArgs } from "./config.js";
 import { createServer } from "./server.js";
 import { Tmux } from "./tmux.js";
 import { PasskeyStore } from "./webauthn.js";
@@ -23,6 +23,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	migrateLegacyStateDir(args.stateDir);
 	const token = ensureToken(args.stateDir, args.resetToken);
 	if (args.resetToken) {
 		process.stdout.write(`new token: ${token}\n`);
