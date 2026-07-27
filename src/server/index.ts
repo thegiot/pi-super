@@ -69,6 +69,7 @@ async function main(): Promise<void> {
 
 	const server = createServer(cfg, token);
 	server.http.listen(cfg.port, cfg.host, () => {
+		server.resumeMeta();
 		process.stdout.write(`pi-super listening on http://${cfg.host}:${cfg.port}\n`);
 		process.stdout.write(`  open: http://${displayHost(cfg.host)}:${cfg.port}/?token=${token}\n`);
 		const store = new PasskeyStore(cfg.stateDir);

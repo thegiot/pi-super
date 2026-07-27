@@ -74,7 +74,7 @@ token or a compromised tailnet device gets 401.
 
 Passkeys are bound to the hostname you enrol on (WebAuthn RP ID) and need HTTPS or
 localhost, so enrol over the name you will actually use — e.g. your MagicDNS
-`machine.tailXXXX.ts.net`, not `localhost`. Sessions live in `~/.pi-super/passkeys.json`
+`machine.tailXXXX.ts.net`, not `localhost`. Sessions live in `~/.pi/super/passkeys.json`
 and last 30 days; `--logout` revokes them all.
 
 ## How it works
@@ -121,7 +121,7 @@ whole loop down to the recorded audio reply (`/tmp/pi-super-voice-out.webm`). It
 ```bash
 npm run build          # tsc (server) + vite (client)
 npm run typecheck
-node tests/smoke.mjs http://127.0.0.1:8799 "$(cat ~/.pi-super/token)"   # e2e against live tmux
+node tests/smoke.mjs http://127.0.0.1:8799 "$(cat ~/.pi/super/token)"   # e2e against live tmux
 npm run test:voice     # unattended voice call: fake mic + headless Chrome + recorded reply
 npm run test:mobile    # Pixel-metrics screenshots + layout checks -> /tmp/pi-super-shots/
 npm run test:passkey   # full WebAuthn flow via Chrome's virtual authenticator

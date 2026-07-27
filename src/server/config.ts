@@ -180,7 +180,14 @@ export function helpText(): string {
 export function migrateLegacyStateDir(stateDir: string): void {
 	const legacy = join(homedir(), ".pi-super");
 	if (stateDir !== join(homedir(), ".pi", "super")) return;
-	if (existsSync(stateDir) || !existsSync(legacy)) return;
+	if (!existsSync(legacy)) return;
+	if (existsSync(stateDir)) {
+		// Never merge blindly: tokens/passkeys in the wrong copy would be a silent lockout.
+		process.stderr.write(
+			`pi-super: both ${legacy} and ${stateDir} exist — using ${stateDir}; reconcile or delete ${legacy}\n`,
+		);
+		return;
+	}
 	mkdirSync(dirname(stateDir), { recursive: true });
 	renameSync(legacy, stateDir);
 	process.stdout.write(`pi-super: moved state ${legacy} -> ${stateDir}\n`);

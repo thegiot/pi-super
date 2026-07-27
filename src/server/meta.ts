@@ -64,17 +64,33 @@ export class MetaAgent extends EventEmitter {
 		return { running: this.running, busy: this.busy, model: this.opts.model };
 	}
 
-	/** Latest stored session file, if any — what `pi -c` would pick up. */
+	/**
+	 * Latest *valid* stored session, resolved by us and passed to pi as an explicit
+	 * `--session <file>` — guessing what `pi -c` would pick invites the two to diverge
+	 * (e.g. over an empty or truncated file that pi would skip).
+	 */
 	private latestSessionFile(): string | undefined {
-		const dir = this.opts.sessionDir;
-		if (!dir || !existsSync(dir)) return undefined;
-		let best: { file: string; mtime: number } | undefined;
-		for (const f of readdirSync(dir)) {
-			if (!f.endsWith(".jsonl")) continue;
-			const mtime = statSync(join(dir, f)).mtimeMs;
-			if (!best || mtime > best.mtime) best = { file: join(dir, f), mtime };
+		try {
+			const dir = this.opts.sessionDir;
+			if (!dir || !existsSync(dir)) return undefined;
+			let best: { file: string; mtime: number } | undefined;
+			for (const f of readdirSync(dir)) {
+				if (!f.endsWith(".jsonl")) continue;
+				const file = join(dir, f);
+				try {
+					const mtime = statSync(file).mtimeMs;
+					if (best && mtime <= best.mtime) continue;
+					const header = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
+					if ((JSON.parse(header) as { type?: string }).type !== "session") continue;
+					best = { file, mtime };
+				} catch {
+					// unreadable/corrupt candidate: skip it rather than resume garbage
+				}
+			}
+			return best?.file;
+		} catch {
+			return undefined;
 		}
-		return best?.file;
 	}
 
 	get hasPreviousSession(): boolean {
@@ -102,7 +118,7 @@ export class MetaAgent extends EventEmitter {
 			args.push("--session-dir", this.opts.sessionDir);
 			const prev = this.latestSessionFile();
 			if (prev) {
-				args.push("--continue");
+				args.push("--session", prev);
 				resuming = true;
 				if (this.transcript.length === 0) this.rehydrate(prev);
 			}
@@ -158,24 +174,31 @@ export class MetaAgent extends EventEmitter {
 		try {
 			const items: ChatItem[] = [];
 			for (const line of readFileSync(file, "utf8").split("\n")) {
-				if (!line.trim()) continue;
-				let ev: { type?: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
 				try {
-					ev = JSON.parse(line);
+					if (!line.trim()) continue;
+					const ev = JSON.parse(line) as {
+						type?: string;
+						message?: { role?: string; content?: string | Array<{ type: string; text?: string }> };
+					};
+					if (ev.type !== "message") continue;
+					const role = ev.message?.role;
+					if (role !== "user" && role !== "assistant") continue;
+					// message content is either a plain string or a parts array
+					const content = ev.message?.content ?? [];
+					const text = (
+						typeof content === "string"
+							? content
+							: content
+									.filter((c) => c.type === "text" && typeof c.text === "string")
+									.map((c) => c.text)
+									.join("\n")
+					).trim();
+					if (!text || text.startsWith(INTERNAL_PROMPT)) continue;
+					if (role === "user") items.push({ kind: "user", id: ++this.nextId, text });
+					else items.push({ kind: "assistant", id: ++this.nextId, text, done: true });
 				} catch {
-					continue;
+					// one malformed line must not cost the whole transcript
 				}
-				if (ev.type !== "message") continue;
-				const role = ev.message?.role;
-				if (role !== "user" && role !== "assistant") continue;
-				const text = (ev.message?.content ?? [])
-					.filter((c) => c.type === "text" && typeof c.text === "string")
-					.map((c) => c.text)
-					.join("\n")
-					.trim();
-				if (!text || text.startsWith(INTERNAL_PROMPT)) continue;
-				if (role === "user") items.push({ kind: "user", id: ++this.nextId, text });
-				else items.push({ kind: "assistant", id: ++this.nextId, text, done: true });
 			}
 			this.transcript.push(...items.slice(-100));
 		} catch {

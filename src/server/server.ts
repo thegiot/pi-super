@@ -28,6 +28,8 @@ const MAX_WS_BUFFER = 2 * 1024 * 1024;
 
 export interface SuperServer {
 	http: Server;
+	/** resume a previous meta session, if any — call once the port is bound (owned) */
+	resumeMeta(): void;
 	close(): Promise<void>;
 }
 
@@ -71,9 +73,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	meta.on("state", (state) => broadcastMeta({ t: "state", state }));
 	meta.on("speak", (speak) => broadcastMeta({ t: "speak", ...(speak as object) }));
 	meta.on("exit", () => broadcastMeta({ t: "state", state: meta.state }));
-	// If a previous meta session exists, resume it right away — it may owe the user a
+	// If a previous meta session exists, resume it eagerly — it may owe the user a
 	// report (an interrupted tmux_wait_idle), which must not wait for the app to open.
-	if (cfg.metaEnabled && meta.hasPreviousSession) {
+	// The caller invokes this only after listen() succeeds: holding the port proves we
+	// are the only pi-super instance, so two `pi` children can't fight over the session.
+	function resumeMeta(): void {
+		if (!cfg.metaEnabled || !meta.hasPreviousSession) return;
 		try {
 			meta.start();
 		} catch (err) {
@@ -593,6 +598,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 
 	return {
 		http,
+		resumeMeta,
 		async close() {
 			await meta.stop();
 			for (const ws of wss.clients) ws.terminate();

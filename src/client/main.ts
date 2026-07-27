@@ -58,6 +58,7 @@ const state = {
 	session: "",
 	base: "",
 	backoff: 500,
+	connectedAt: 0,
 	readerTimer: 0 as number | ReturnType<typeof setInterval>,
 	reconnectTimer: 0 as number | ReturnType<typeof setTimeout>,
 	/** a sticky "disconnected" notice is showing; the next open says "reconnected" */
@@ -68,6 +69,9 @@ const nearBottom = (e: HTMLElement): boolean => e.scrollTop + e.clientHeight >= 
 const toBottom = (e: HTMLElement): void => {
 	e.scrollTop = e.scrollHeight;
 };
+/** The scroll container of whatever view is on screen — hidden ones must be left alone. */
+const activeScroller = (): HTMLElement =>
+	state.view === "reader" ? el.reader : state.view === "meta" ? el.meta : el.term;
 
 // ------------------------------------------------------------------ terminal
 
@@ -154,6 +158,7 @@ function connect(): void {
 	const ws = new WebSocket(url);
 	ws.binaryType = "arraybuffer";
 	state.ws = ws;
+	state.connectedAt = Date.now();
 
 	ws.onopen = () => {
 		state.backoff = 500;
@@ -167,6 +172,10 @@ function connect(): void {
 		}
 		const msg = JSON.parse(ev.data) as Record<string, unknown>;
 		switch (msg.t) {
+			case "pong":
+				clearTimeout(pongTimer as ReturnType<typeof setTimeout>);
+				pongTimer = undefined;
+				break;
 			case "hello":
 				state.session = String(msg.session ?? "");
 				if (msg.base) state.base = String(msg.base);
@@ -194,6 +203,8 @@ function connect(): void {
 	};
 	ws.onclose = () => {
 		state.ws = undefined;
+		clearTimeout(pongTimer as ReturnType<typeof setTimeout>);
+		pongTimer = undefined;
 		// The first retry runs silently: sub-second blips (network switch, phone lock)
 		// resolve on their own, and a red "disconnected" flash for those only alarms.
 		if (state.backoff > 500) {
@@ -206,20 +217,52 @@ function connect(): void {
 	ws.onerror = () => ws.close();
 }
 
-// Coming back to the app (unlock, tab switch) must not sit out the backoff timer.
+/**
+ * A phone coming out of suspension often holds a socket that still claims OPEN but is
+ * dead. TCP would notice eventually; the user notices immediately. So: probe with an
+ * app-level ping and force-close when the pong doesn't come back.
+ */
+let pongTimer: number | ReturnType<typeof setTimeout> | undefined;
+function probe(timeoutMs: number): void {
+	const ws = state.ws;
+	if (!ws) return;
+	if (ws.readyState === WebSocket.CONNECTING) {
+		// a connect attempt stuck from before suspension: abort it, onclose retries
+		if (Date.now() - state.connectedAt > 10_000) ws.close();
+		return;
+	}
+	if (ws.readyState !== WebSocket.OPEN || pongTimer) return;
+	send({ t: "ping" });
+	pongTimer = setTimeout(() => {
+		pongTimer = undefined;
+		ws.close(); // triggers the normal reconnect path
+	}, timeoutMs);
+}
+setInterval(() => probe(8000), 30_000);
+
+// Coming back to the app (unlock, tab switch) must not sit out the backoff timer,
+// nor trust a possibly-stale socket.
 document.addEventListener("visibilitychange", () => {
-	if (document.hidden || state.ws) return;
-	state.backoff = 500;
-	connect();
+	if (document.hidden) return;
+	if (!state.ws) {
+		state.backoff = 500;
+		connect();
+	} else {
+		probe(5000);
+	}
 });
 
+let termSized = false;
 function resizeTerm(cols: number, rows: number): void {
 	if (!cols || !rows) return;
+	// The newest output is at the *bottom* of the remote screen; when the scaled canvas
+	// overflows the container (phone), land there on first sizing and stay there if the
+	// user was already reading the tail — but never yank them out of the scrollback.
+	const stick = !termSized || nearBottom(el.term);
+	termSized = true;
 	if (term.cols !== cols || term.rows !== rows) term.resize(cols, rows);
 	applyScale();
-	// The newest output is at the *bottom* of the remote screen; when the scaled canvas
-	// overflows the container (phone), start there instead of showing the top.
-	toBottom(el.term);
+	if (stick) toBottom(el.term);
 }
 
 let statusTimer: ReturnType<typeof setTimeout> | undefined;
@@ -494,12 +537,14 @@ el.claim.onchange = () => {
 };
 
 const onViewportChange = () => {
-	// Keyboard/URL-bar resizes squeeze the layout; whoever was reading the tail of a
-	// view must stay pinned to it, or the newest output vanishes under the composer.
-	const stick = [el.term, el.reader, el.meta].filter(nearBottom);
+	// Keyboard/URL-bar resizes squeeze the layout; whoever was reading the tail of the
+	// visible view must stay pinned to it, or the newest output vanishes under the
+	// composer. Hidden views have zero heights — touching them would trash their state.
+	const e = activeScroller();
+	const stick = nearBottom(e);
 	requestAnimationFrame(() => {
 		refit();
-		for (const e of stick) toBottom(e);
+		if (stick) toBottom(e);
 	});
 };
 window.addEventListener("resize", onViewportChange);
@@ -557,12 +602,19 @@ async function refreshAuthUi(): Promise<void> {
 $("btn-passkey").onclick = () => {
 	const label = prompt("name this passkey", navigator.userAgent.includes("Android") ? "phone" : "laptop");
 	if (label === null) return;
+	el.passkeyInfo.textContent = "enrolling…";
 	enrollPasskey(label.trim() || "passkey")
 		.then((name) => {
 			status(`passkey "${name}" enrolled — the token alone no longer opens this`, 6000);
 			void refreshAuthUi();
 		})
-		.catch((e: Error) => status(`enrolment failed: ${e.message}`, 8000, true));
+		.catch((e: Error) => {
+			// #status sits under the drawer overlay, so a failure must land here too —
+			// an instant rejection otherwise looks like the button doing nothing at all
+			const detail = `${(e as DOMException).name ?? "Error"}: ${e.message}`;
+			el.passkeyInfo.textContent = `enrolment failed — ${detail}`;
+			status(`enrolment failed: ${detail}`, 8000, true);
+		});
 };
 $("btn-lock").onclick = () => {
 	void logout().then(() => location.reload());

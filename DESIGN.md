@@ -66,7 +66,7 @@ Named after hbomberguy's *super*: one remote that drives everything.
   out of the box, no STT of our own needed for text mode) sends bracketed-paste text
   + optional Enter; a key ribbon covers Esc/Tab/Ctrl/arrows/PgUp/PgDn/Ctrl-C; raw xterm
   focus is available for exact TUI typing.
-* **Images.** Clipboard/file-picker upload → `~/.pi-super/uploads/<rand>.<ext>` (0600) →
+* **Images.** Clipboard/file-picker upload → `~/.pi/super/uploads/<rand>.<ext>` (0600) →
   the absolute path is pasted into the focused pane, which is exactly what pi/claude
   TUIs want.
 
@@ -129,8 +129,8 @@ shell. So pi-super supports WebAuthn:
 * Once any passkey exists, `--auth auto` flips the policy: only a passkey session opens the
   app; the token is refused on both HTTP and the WebSocket. `--allow-token` opts out.
 * Verified server-side with `@simplewebauthn/server`; credentials, counters and sessions
-  live in `~/.pi-super/passkeys.json` (0600). Sessions are opaque 256-bit ids in an
-  HttpOnly/Secure/SameSite=Strict cookie, 30 days, revocable with `--logout`.
+  live in `~/.pi/super/passkeys.json` (0600). Sessions are opaque 256-bit ids in an
+  HttpOnly/Secure/SameSite=Lax cookie, 30 days, revocable with `--logout`.
 * The app bundle (no secrets in it) is served unauthenticated once passkeys are required —
   a login page has to be reachable by someone who cannot log in yet.
 * RP ID comes from the request host, so a passkey enrolled on the MagicDNS name is only
@@ -142,7 +142,7 @@ real signatures, and the load-bearing assertion that the token stops working aft
 ### 4. Security
 
 Terminal access == shell access. Defaults: bind `127.0.0.1`, mandatory 256-bit bearer
-token (`~/.pi-super/token`), token→`HttpOnly; SameSite=Strict` cookie on first load,
+token (`~/.pi/super/token`), token→`HttpOnly; SameSite=Lax` cookie on first load,
 WebSocket `Origin` check, upload size/MIME caps, uploads 0600 in a 0700 dir, no root.
 Exposure is the operator's choice: ssh -R tunnel, Tailscale serve, or a TLS reverse proxy.
 No "convenience" unauthenticated mode once bound off-loopback.
