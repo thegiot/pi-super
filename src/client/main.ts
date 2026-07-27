@@ -59,6 +59,8 @@ const state = {
 	base: "",
 	backoff: 500,
 	connectedAt: 0,
+	/** after (re)connect: re-select the remembered window once the list arrives */
+	restorePending: false,
 	readerTimer: 0 as number | ReturnType<typeof setInterval>,
 	reconnectTimer: 0 as number | ReturnType<typeof setTimeout>,
 	/** a sticky "disconnected" notice is showing; the next open says "reconnected" */
@@ -177,6 +179,7 @@ function connect(): void {
 				pongTimer = undefined;
 				break;
 			case "hello":
+				state.restorePending = true;
 				state.session = String(msg.session ?? "");
 				if (msg.base) state.base = String(msg.base);
 				state.sizeMode = msg.mode === "claim" ? "claim" : "ignore";
@@ -187,12 +190,25 @@ function connect(): void {
 			case "geometry":
 				resizeTerm(Number(msg.cols), Number(msg.rows));
 				break;
-			case "windows":
+			case "windows": {
 				state.windows = msg.windows as WindowInfo[];
+				// A restarted server rebuilds the mirror session on window 0; put the user
+				// back where they were. Otherwise, remember where they are.
+				const active = activeWindow();
+				if (state.restorePending) {
+					state.restorePending = false;
+					const want = localStorage.getItem("lastWindow");
+					if (want && want !== active?.id && state.windows.some((w) => w.id === want)) {
+						send({ t: "select", window: want });
+					}
+				} else if (active) {
+					localStorage.setItem("lastWindow", active.id);
+				}
 				renderTabs();
 				renderWindowList();
 				if (state.view === "reader") void refreshReader();
 				break;
+			}
 			case "error":
 				status(String(msg.error), 4000, true);
 				break;
@@ -370,6 +386,7 @@ function sendText(text: string, enter: boolean): void {
 	if (state.view === "meta") meta.send(text);
 	else send({ t: "paste", text, enter });
 	el.input.value = "";
+	localStorage.removeItem("draft");
 	autogrow();
 }
 
@@ -461,7 +478,12 @@ $("btn-mute").onclick = () => {
 
 $("btn-send").onclick = () => sendText(el.input.value, true);
 $("btn-insert").onclick = () => sendText(el.input.value, false);
-el.input.addEventListener("input", autogrow);
+// The draft survives reloads, server restarts and the phone evicting the tab.
+el.input.addEventListener("input", () => {
+	autogrow();
+	if (el.input.value) localStorage.setItem("draft", el.input.value);
+	else localStorage.removeItem("draft");
+});
 window.visualViewport?.addEventListener("resize", autogrow);
 el.input.addEventListener("keydown", (e) => {
 	if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -612,6 +634,8 @@ $("btn-lock").onclick = () => {
 	void logout().then(() => location.reload());
 };
 
+el.input.value = localStorage.getItem("draft") ?? "";
+if (el.input.value) autogrow();
 el.claim.checked = state.sizeMode === "claim";
 // On a phone the desktop-width raw terminal is unreadable at a glance, and reader mode is
 // the whole point; on a wide screen the real terminal is what you want. Remembered after
