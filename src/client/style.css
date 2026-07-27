@@ -100,6 +100,7 @@ main {
 }
 
 #term {
+	touch-action: pan-x pan-y;
 	position: absolute;
 	inset: 0;
 	overflow: hidden;
@@ -263,6 +264,12 @@ footer {
 }
 
 #ribbon::-webkit-scrollbar {
+	display: none;
+}
+
+/* a later `display` rule beats the [hidden] attribute's UA style, so say it again */
+#ribbon[hidden],
+#composer button[hidden] {
 	display: none;
 }
 

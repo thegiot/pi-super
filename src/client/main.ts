@@ -52,6 +52,7 @@ const state = {
 	lastTermView: "raw" as "raw" | "reader",
 	sizeMode: (localStorage.getItem("sizeMode") as "ignore" | "claim" | null) ?? "ignore",
 	fontSize: Number(localStorage.getItem("fontSize") ?? 13),
+	zoom: Number(localStorage.getItem("zoom") ?? 1),
 	session: "",
 	base: "",
 	backoff: 500,
@@ -82,19 +83,36 @@ function send(data: Uint8Array | object): void {
 	else ws.send(JSON.stringify(data));
 }
 
-/** In ignore-size mode the terminal is as wide as the desktop's — scale it to fit. */
+/**
+ * In ignore-size mode the terminal is as wide as the *desktop's* window (213+ columns),
+ * so it has to be scaled down. Fitting the full width on a phone lands around 0.27, i.e.
+ * a 3px font — useless. So we clamp at a still-legible floor and let the user pan
+ * horizontally (and zoom with A+/A-), which beats a wall of grey mush.
+ */
+const MIN_SCALE = 0.5;
+
 function applyScale(): void {
 	const screen = el.term.querySelector<HTMLElement>(".xterm-screen");
 	const xterm = el.term.querySelector<HTMLElement>(".xterm");
 	if (!screen || !xterm) return;
-	xterm.style.transform = "";
-	if (state.sizeMode === "claim") return;
-	const natural = screen.offsetWidth;
-	if (!natural) return;
-	const scale = Math.min(1, el.term.clientWidth / natural);
+	if (state.sizeMode === "claim") {
+		xterm.style.transform = "";
+		xterm.style.margin = "";
+		el.term.style.overflow = "hidden";
+		return;
+	}
+	const naturalW = screen.offsetWidth;
+	const naturalH = screen.offsetHeight;
+	if (!naturalW) return;
+	const fit = el.term.clientWidth / naturalW;
+	const scale = Math.min(1, Math.max(fit, MIN_SCALE) * state.zoom);
+	xterm.style.transformOrigin = "top left";
 	xterm.style.transform = `scale(${scale})`;
-	xterm.style.width = `${100 / scale}%`;
-	xterm.style.height = `${100 / scale}%`;
+	// transform doesn't shrink the layout box, so pull it in by hand — otherwise the
+	// container scrolls over a big empty area to the right of the scaled terminal.
+	xterm.style.marginRight = `${-Math.round(naturalW * (1 - scale))}px`;
+	xterm.style.marginBottom = `${-Math.round(naturalH * (1 - scale))}px`;
+	el.term.style.overflow = scale < fit - 0.001 || scale > fit + 0.001 ? "auto" : "hidden";
 }
 
 function refit(): void {
@@ -267,6 +285,7 @@ function setView(view: "raw" | "reader" | "meta"): void {
 	el.term.style.visibility = view === "raw" ? "visible" : "hidden";
 	el.ribbon.hidden = view === "meta";
 	el.abort.hidden = view !== "meta";
+	$("btn-insert").hidden = view === "meta"; // "insert without Enter" is a terminal thing
 	el.input.placeholder = view === "meta" ? "ask super…" : "prompt…";
 	$("btn-view").textContent = view === "reader" ? "▣" : "📖";
 	$("btn-meta").classList.toggle("armed", view === "meta");
@@ -328,7 +347,11 @@ $("btn-close-drawer").onclick = closeDrawer;
 el.drawer.onclick = (e) => {
 	if (e.target === el.drawer) closeDrawer();
 };
-$("btn-view").onclick = () => setView(state.view === "reader" ? "raw" : "reader");
+$("btn-view").onclick = () => {
+	const next = state.view === "reader" ? "raw" : "reader";
+	localStorage.setItem("view", next);
+	setView(next);
+};
 $("btn-meta").onclick = () => setView(state.view === "meta" ? state.lastTermView : "meta");
 el.abort.onclick = () => meta.abort();
 
@@ -381,12 +404,23 @@ el.ribbon.addEventListener("click", (e) => {
 	if (key) send({ t: "keys", keys: [key] });
 });
 
-$("btn-font-inc").onclick = () => setFont(state.fontSize + 1);
-$("btn-font-dec").onclick = () => setFont(state.fontSize - 1);
-function setFont(size: number): void {
-	state.fontSize = Math.max(6, Math.min(24, size));
-	localStorage.setItem("fontSize", String(state.fontSize));
-	term.options.fontSize = state.fontSize;
+$("btn-font-inc").onclick = () => zoomBy(1.25);
+$("btn-font-dec").onclick = () => zoomBy(1 / 1.25);
+
+/**
+ * In claim mode we own the geometry, so A+/A- changes the font (and thus how many columns
+ * we ask for). In ignore mode the server dictates the grid, so the only thing that can
+ * change is how far we zoom into it.
+ */
+function zoomBy(factor: number): void {
+	if (state.sizeMode === "claim") {
+		state.fontSize = Math.max(6, Math.min(24, Math.round(state.fontSize * factor)));
+		localStorage.setItem("fontSize", String(state.fontSize));
+		term.options.fontSize = state.fontSize;
+	} else {
+		state.zoom = Math.max(0.5, Math.min(6, state.zoom * factor));
+		localStorage.setItem("zoom", String(state.zoom));
+	}
 	refit();
 }
 
@@ -454,5 +488,9 @@ if (new URLSearchParams(location.search).has("debug")) {
 }
 
 el.claim.checked = state.sizeMode === "claim";
-setView("raw");
+// On a phone the desktop-width raw terminal is unreadable at a glance, and reader mode is
+// the whole point; on a wide screen the real terminal is what you want. Remembered after
+// the first manual switch.
+const savedView = localStorage.getItem("view") as "raw" | "reader" | null;
+setView(savedView ?? (window.innerWidth < 600 ? "reader" : "raw"));
 connect();

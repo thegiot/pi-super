@@ -103,4 +103,5 @@ npm run build          # tsc (server) + vite (client)
 npm run typecheck
 node tests/smoke.mjs http://127.0.0.1:8799 "$(cat ~/.pi-super/token)"   # e2e against live tmux
 npm run test:voice     # unattended voice call: fake mic + headless Chrome + recorded reply
+npm run test:mobile    # Pixel-metrics screenshots + layout checks -> /tmp/pi-super-shots/
 ```
