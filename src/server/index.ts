@@ -71,8 +71,13 @@ async function main(): Promise<void> {
 	server.http.listen(cfg.port, cfg.host, () => {
 		server.resumeMeta();
 		process.stdout.write(`pi-super listening on http://${cfg.host}:${cfg.port}\n`);
-		process.stdout.write(`  open: http://${displayHost(cfg.host)}:${cfg.port}/?token=${token}\n`);
 		const store = new PasskeyStore(cfg.stateDir);
+		const tokenUsable = cfg.authMode === "token" || cfg.allowToken || (cfg.authMode === "auto" && !store.enrolled);
+		process.stdout.write(
+			tokenUsable
+				? `  open: http://${displayHost(cfg.host)}:${cfg.port}/?token=${token}\n`
+				: `  open: http://${displayHost(cfg.host)}:${cfg.port}/ (passkey unlock)\n`,
+		);
 		if (store.enrolled && cfg.authMode !== "token") {
 			process.stdout.write(
 				`  passkey required (${store.credentials.length} enrolled${cfg.allowToken ? ", token still accepted" : ""})\n`,

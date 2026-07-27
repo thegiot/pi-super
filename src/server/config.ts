@@ -12,6 +12,8 @@ export interface Config {
 	clientDir: string;
 	metaDir: string;
 	metaModel: string | undefined;
+	/** explicit pi binary for the meta agent (default: `pi` from PATH) */
+	piBin: string | undefined;
 	metaEnabled: boolean;
 	metaInheritExtensions: boolean;
 	/** auto = token until a passkey is enrolled, then passkey only */
@@ -43,6 +45,7 @@ Options:
       --state-dir <dir>   State/uploads/token dir (default ~/.pi/super)
       --status-line       Show tmux's own status line inside the terminal view
       --meta-model <m>    Model for the meta agent (default: your pi default)
+      --pi-bin <path>     pi binary for the meta agent (default: pi from PATH)
       --no-meta           Disable the meta agent
       --meta-inherit-extensions
                           Load your globally installed pi packages into the meta agent
@@ -70,6 +73,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		clientDir: "",
 		metaDir: "",
 		metaModel: process.env.PI_SUPER_META_MODEL,
+		piBin: process.env.PI_SUPER_PI_BIN,
 		metaEnabled: true,
 		metaInheritExtensions: false,
 		authMode: "auto",
@@ -119,6 +123,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 				break;
 			case "--meta-model":
 				cfg.metaModel = next();
+				break;
+			case "--pi-bin":
+				cfg.piBin = next();
 				break;
 			case "--no-meta":
 				cfg.metaEnabled = false;

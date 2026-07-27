@@ -60,16 +60,32 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		metaDir: cfg.metaDir,
 		socketArgs: cfg.socketArgs,
 		model: cfg.metaModel,
+		piBin: cfg.piBin,
 		inheritExtensions: cfg.metaInheritExtensions,
 		sessionDir: join(cfg.stateDir, "meta-sessions"),
 	});
+
+	/** journald adds timestamps/unit; we just add the facts worth grepping for */
+	const log = (msg: string): void => {
+		process.stdout.write(`${msg}\n`);
+	};
+	const clientIp = (req: IncomingMessage): string => {
+		const fwd = String(req.headers["x-forwarded-for"] ?? "")
+			.split(",")[0]
+			?.trim();
+		return fwd || req.socket.remoteAddress || "?";
+	};
 	const metaClients = new Set<WebSocket>();
 
 	const broadcastMeta = (msg: unknown) => {
 		const data = JSON.stringify(msg);
 		for (const ws of metaClients) if (ws.readyState === WebSocket.OPEN) ws.send(data);
 	};
-	meta.on("item", (item: ChatItem) => broadcastMeta({ t: "item", item }));
+	meta.on("item", (item: ChatItem) => {
+		if (item.kind === "system") log(`meta: ${item.text}`);
+		broadcastMeta({ t: "item", item });
+	});
+	meta.on("log", (chunk: string) => process.stderr.write(`meta: ${chunk}`));
 	meta.on("state", (state) => broadcastMeta({ t: "state", state }));
 	meta.on("speak", (speak) => broadcastMeta({ t: "speak", ...(speak as object) }));
 	meta.on("exit", () => broadcastMeta({ t: "state", state: meta.state }));
@@ -208,9 +224,11 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				const { response, label } = (await body()) as { response: never; label?: string };
 				const result = await passkeys.verifyRegistration(rpID, origin, response, label ?? "");
 				if (!result.ok) {
+					log(`auth: passkey enrolment failed from ${clientIp(req)}: ${result.error}`);
 					sendJson(res, 400, { error: result.error });
 					return;
 				}
+				log(`auth: passkey "${result.credential.label}" enrolled from ${clientIp(req)}`);
 				sendJson(res, 200, { ok: true, credential: { id: result.credential.id, label: result.credential.label } });
 				return;
 			}
@@ -225,9 +243,11 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				const { response } = (await body()) as { response: never };
 				const result = await passkeys.verifyAuthentication(rpID, origin, response, secure);
 				if (!result.ok) {
+					log(`auth: passkey login failed from ${clientIp(req)}: ${result.error}`);
 					sendJson(res, 401, { error: result.error });
 					return;
 				}
+				log(`auth: passkey login "${result.label}" from ${clientIp(req)}`);
 				res.writeHead(200, { "content-type": "application/json", "set-cookie": result.cookie });
 				res.end(JSON.stringify({ ok: true, label: result.label }));
 				return;
@@ -315,6 +335,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 					return;
 				}
 				const path = storeUpload(cfg.stateDir, body, url.searchParams.get("name"), req.headers["content-type"]);
+				log(`upload: ${path} (${body.length} bytes) from ${clientIp(req)}`);
 				sendJson(res, 200, { path, bytes: body.length });
 				return;
 			}
@@ -385,7 +406,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				socket.destroy();
 				return;
 			}
-			wss.handleUpgrade(req, socket, head, (ws) => onMetaConnection(ws));
+			wss.handleUpgrade(req, socket, head, (ws) => onMetaConnection(ws, clientIp(req)));
 			return;
 		}
 		if (url.pathname !== "/ws") {
@@ -394,11 +415,11 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			return;
 		}
 		wss.handleUpgrade(req, socket, head, (ws) => {
-			void onConnection(ws, url);
+			void onConnection(ws, url, clientIp(req));
 		});
 	});
 
-	async function onConnection(ws: WebSocket, url: URL): Promise<void> {
+	async function onConnection(ws: WebSocket, url: URL, ip: string): Promise<void> {
 		const send = (msg: unknown) => {
 			if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 		};
@@ -436,6 +457,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		const cleanup = () => {
 			if (closed) return;
 			closed = true;
+			log(`term: ${ip} detached (${term.sessionName})`);
 			if (poll) clearInterval(poll);
 			live.delete(term);
 			void term.dispose();
@@ -455,6 +477,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			return;
 		}
 		if (closed) return; // browser gave up while we were attaching
+		log(`term: ${ip} attached (${term.sessionName} → ${base}, ${term.mode})`);
 		send({ t: "hello", base, session: term.sessionName, mode: term.mode, build: clientBuild(), ...term.geometry });
 
 		let lastWindows = "";
@@ -573,7 +596,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		}
 	}
 
-	function onMetaConnection(ws: WebSocket): void {
+	function onMetaConnection(ws: WebSocket, ip: string): void {
+		log(`meta ws: ${ip} connected`);
 		metaClients.add(ws);
 		const send = (msg: unknown) => {
 			if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
@@ -613,7 +637,9 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				send({ t: "error", error: String((err as Error).message) });
 			}
 		});
-		const drop = () => metaClients.delete(ws);
+		const drop = () => {
+			if (metaClients.delete(ws)) log(`meta ws: ${ip} disconnected`);
+		};
 		ws.on("close", drop);
 		ws.on("error", drop);
 	}
