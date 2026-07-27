@@ -92,8 +92,15 @@ is only used when no ChatGPT login is present.
 
 ## Development
 
+The voice call is testable without a human: `npm run test:voice` speaks a synthesized
+question into headless Chrome's fake microphone, drives the call over CDP, and checks the
+whole loop down to the recorded audio reply (`/tmp/pi-super-voice-out.webm`). It needs
+`google-chrome`, `sox`, and piper (`uv tool install piper-tts` plus a voice model in
+`/tmp/piper-voices/`).
+
 ```bash
 npm run build          # tsc (server) + vite (client)
 npm run typecheck
 node tests/smoke.mjs http://127.0.0.1:8799 "$(cat ~/.pi-super/token)"   # e2e against live tmux
+npm run test:voice     # unattended voice call: fake mic + headless Chrome + recorded reply
 ```

@@ -144,11 +144,32 @@ No "convenience" unauthenticated mode once bound off-loopback.
   `403 Voice session access denied`, which reads exactly like an account entitlement
   failure and is not one. gpt-live voices: cove (default), juniper, maple, spruce, ember,
   vale, breeze, arbor, sol. The query params are mandatory whenever `openai-alpha` is sent.
-  Data channel is `oai-events`: we receive `delegation.created`, `input_transcript.added`,
-  `output_transcript.added`, `turn.done`, `error`, and send `delegation.context.append`.
+  Data channel is `oai-events`. Verified vocabulary (captured live by `tests/voice-e2e.mjs`):
+
+  | event | direction | payload |
+  |---|---|---|
+  | `session.started` | in | `session.{id,model,expires_at,instructions}` |
+  | `input_transcript.added` | in | `item.text` — fragment of what the user said |
+  | `turn.created` / `turn.delta` / `turn.done` | in | `turn.{id,role,transcript}` — the assembled user turn |
+  | `output_transcript.added` | in | `item.text` — fragment of what the model is saying |
+  | `delegation.created` | in | `item.{id,content[].text}` — hand-off to us |
+  | `delegation.context.append` | out | `{delegation_item_id, channel: speakable\|commentary, content}` |
+  | `delegation.context.appended` | in | ack with timing |
+
+  Transcript fragments are tiny (~200 ms), so the user side is taken from `turn.done` and
+  the assistant side is accumulated and flushed after a pause.
 * **openai** (fallback, needs `OPENAI_API_KEY`): standard Realtime API, `ask_super` function tool.
 * **local** fallback: browser `SpeechRecognition` + `speechSynthesis`. Half duplex, no
   credentials, Chrome only.
+
+### Testing voice without a human
+
+`tests/voice-e2e.mjs` runs the entire call unattended: piper TTS renders a question to a
+WAV, headless Chrome plays it as its microphone (`--use-file-for-fake-audio-capture`),
+CDP clicks the call button, and the page taps the returned WebRTC track with an
+`AnalyserNode` (proof audio flowed) plus a `MediaRecorder` (so the reply can be listened
+to afterwards). It asserts the full chain: call live → model heard speech → delegated →
+meta agent ran tmux tools → `speak()` → `delegation.context.append` → model spoke.
 
 
 ## Prior art actually consulted

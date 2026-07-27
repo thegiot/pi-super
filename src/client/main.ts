@@ -430,6 +430,29 @@ window.addEventListener("resize", onViewportChange);
 window.visualViewport?.addEventListener("resize", onViewportChange);
 new ResizeObserver(onViewportChange).observe(el.term);
 
+// ?debug=1 exposes the innards (same-origin only) so the headless e2e harness — and you,
+// from devtools — can drive a call and watch every realtime event go by.
+if (new URLSearchParams(location.search).has("debug")) {
+	const events: Array<{ dir: string; t: unknown; ev: unknown; at: number }> = [];
+	const spoken: string[] = [];
+	const transcript: Array<{ role: string; text: string }> = [];
+	voice.onEvent = (dir, ev) => {
+		events.push({ dir, t: ev.type, ev, at: Date.now() });
+		if (events.length > 500) events.shift();
+	};
+	const prevSpeak = meta.onSpeak;
+	meta.onSpeak = (msg) => {
+		spoken.push(msg.message);
+		prevSpeak?.(msg);
+	};
+	const prevTranscript = voice.onTranscript;
+	voice.onTranscript = (role, text) => {
+		transcript.push({ role, text });
+		prevTranscript?.(role, text);
+	};
+	(window as unknown as Record<string, unknown>).piSuper = { voice, meta, state, events, spoken, transcript };
+}
+
 el.claim.checked = state.sizeMode === "claim";
 setView("raw");
 connect();

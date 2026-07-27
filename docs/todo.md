@@ -28,8 +28,10 @@ the ones deliberately left for later.
   voice requests share one channel — real async multiplexing needs correlation ids
   (meta-side job registry) before the "ask about B while A builds" story is honest.
 - No timeout/rate limit on `/api/voice/offer` provider calls.
-- Codex path is untestable here (403 `Voice session access denied`); revisit when the
-  account gets the feature, and check the delegation event names against reality.
+- `commentary` vs `speakable` channel choice is a guess: `speak(kind:"status")` goes to
+  `commentary`, everything else to `speakable`. Only `speakable` has been observed live.
+- The 500-byte chunking of `delegation.context.append` has never been exercised (real
+  updates have been one chunk).
 
 ## Hardening
 

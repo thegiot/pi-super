@@ -39,6 +39,10 @@ export interface VoiceApi {
 	pushUpdate(text: string, kind: string): void;
 	onState?: (state: VoiceState, detail?: string) => void;
 	onTranscript?: (role: "user" | "assistant", text: string) => void;
+	/** every realtime event, in and out — used by the e2e harness and by ?debug=1 */
+	onEvent?: (direction: "in" | "out", ev: Record<string, unknown>) => void;
+	/** the remote audio element, once the call is up (lets a test tap the stream) */
+	readonly remoteAudio: HTMLAudioElement | undefined;
 }
 
 const MAX_CHUNK_BYTES = 400;
@@ -92,6 +96,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	let muted = false;
 	let state: VoiceState = "idle";
 	let assistantLine = "";
+	let assistantFlush: ReturnType<typeof setTimeout> | undefined;
 	let recognition: SpeechRecognitionLike | undefined;
 	let speaking = false;
 	let listening = false;
@@ -102,6 +107,9 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		config: undefined,
 		get state() {
 			return state;
+		},
+		get remoteAudio() {
+			return audio;
 		},
 		start,
 		stop,
@@ -115,7 +123,9 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	}
 
 	function sendEvent(ev: Record<string, unknown>): void {
-		if (dc?.readyState === "open") dc.send(JSON.stringify(ev));
+		if (dc?.readyState !== "open") return;
+		dc.send(JSON.stringify(ev));
+		api.onEvent?.("out", ev);
 	}
 
 	async function loadConfig(): Promise<VoiceConfig> {
@@ -174,7 +184,11 @@ export function createVoice(meta: MetaApi): VoiceApi {
 			for (const track of mic.getTracks()) pc.addTrack(track, mic);
 
 			dc = pc.createDataChannel("oai-events");
-			dc.onmessage = (ev) => onEvent(JSON.parse(String(ev.data)) as Record<string, unknown>);
+			dc.onmessage = (ev) => {
+				const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
+				api.onEvent?.("in", msg);
+				onEvent(msg);
+			};
 
 			const offer = await pc.createOffer();
 			await pc.setLocalDescription(offer);
@@ -362,10 +376,9 @@ export function createVoice(meta: MetaApi): VoiceApi {
 					.join(" ")
 					.trim();
 				delegationId = item?.id;
-				if (text) {
-					api.onTranscript?.("user", text);
-					meta.send(text);
-				}
+				// no onTranscript here: turn.done already reported what the user said, and the
+				// delegated text is a paraphrase of it
+				if (text) meta.send(text);
 				break;
 			}
 			// --- standard realtime function calling ----------------------------
@@ -393,15 +406,28 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				sendEvent({ type: "response.create" });
 				break;
 			}
-			// --- transcripts: gpt-live (V3) names ------------------------------
+			// --- transcripts: gpt-live (V3) ------------------------------------
+			// Both sides arrive as small fragments in `item.text`; the user's turn is
+			// summed up for us in turn.done, the assistant's is not, so we debounce it.
 			case "input_transcript.added":
-				api.onTranscript?.("user", String(ev.text ?? ev.transcript ?? ""));
+				break; // superseded by turn.done
+			case "turn.done": {
+				const turn = ev.turn as { role?: string; transcript?: string } | undefined;
+				const text = turn?.transcript?.trim();
+				if (text && turn?.role === "user") api.onTranscript?.("user", text);
 				break;
-			case "output_transcript.added":
-				api.onTranscript?.("assistant", String(ev.text ?? ev.transcript ?? ""));
+			}
+			case "output_transcript.added": {
+				const item = ev.item as { text?: string } | undefined;
+				assistantLine += item?.text ?? "";
+				if (assistantFlush) clearTimeout(assistantFlush);
+				assistantFlush = setTimeout(() => {
+					const text = assistantLine.trim();
+					assistantLine = "";
+					if (text) api.onTranscript?.("assistant", text);
+				}, 1200);
 				break;
-			case "turn.done":
-				break;
+			}
 			// --- transcripts: standard Realtime names --------------------------
 			case "response.output_audio_transcript.delta":
 				assistantLine += String(ev.delta ?? "");
