@@ -49,6 +49,13 @@ The browser cannot be a phone call. What is missing, and needs the native wrappe
 - **Screen off kills the call** — `wakeLock("screen")` keeps the display lit (the opposite
   of a call) and is released as soon as the page hides; the tab is then frozen.
 - **No audio routing control** — no `setSinkId`, no earpiece/speaker/Bluetooth SCO choice.
+- **Narrowband Bluetooth.** The moment a call needs the microphone, Android leaves A2DP
+  for HFP/SCO, and the default CVSD link is an 8 kHz, ~300-3400 Hz channel — a literal
+  1950s telephone. Measured on synthesised speech, that band leaves average phoneme
+  separability intact but specifically collapses spoken `b`/`c` and `c`/`e` (the `/s/`
+  onset of "cee" lives above 3400 Hz), which is why identifiers are now banned from
+  `speak` in the prompts. The native wrapper should request mSBC wideband speech (16 kHz)
+  rather than accepting CVSD, and should tell the user which it got.
 - **No audio focus** — we neither duck other apps nor yield to a real incoming call; the
   best we do is redial afterwards.
 - **No in-call notification / lock-screen surface** beyond Media Session metadata.

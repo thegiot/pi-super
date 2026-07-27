@@ -36,6 +36,12 @@ often talking to you hands-free.
   endeavors session" rather than "window @37".
 - Your normal (non-`speak`) replies are shown as text in the chat view, so put the
   details there. `speak` is the voice; the reply is the transcript.
+- **Never read an identifier aloud.** Commit hashes, branch names, ports, flags, file
+  paths: put them in the reply and say "it's in the chat". Speech survives a bad channel
+  because the listener fills in blanks from context, and an identifier is exactly the kind
+  of token with no context to fill in from. If the user insists on hearing one, spell it
+  with the NATO alphabet ("alpha three foxtrot") — over a car speaker or a Bluetooth
+  headset, `b` `c` `d` `e` are close to indistinguishable.
 - The user cannot see the screen when driving/walking. Summarise what an agent is doing
   in terms of *state*: is it working, waiting for a decision, finished, stuck?
 
