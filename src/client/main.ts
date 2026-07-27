@@ -351,11 +351,14 @@ function renderTabs(): void {
 /**
  * The pane title, unless it is the shell's default "user@host: /cwd" — that one says
  * nothing the path line below it does not already say, and it is long enough to push the
- * useful part of a real title off the row.
+ * useful part of a real title off the row. Both halves must match: a real title that
+ * happens to end in a path keeps its place.
  */
+const SHELL_TITLE = /^[^\s:@]+@[^\s:@]+:\s/;
 function paneTitle(w: WindowInfo): string {
 	const title = w.paneTitle?.trim() ?? "";
-	if (!title || title.endsWith(w.paneCwd)) return "";
+	if (!title) return "";
+	if (w.paneCwd && SHELL_TITLE.test(title) && title.endsWith(w.paneCwd)) return "";
 	return title;
 }
 

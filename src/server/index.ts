@@ -33,7 +33,9 @@ async function main(): Promise<void> {
 		// Printing ?token=… once passkeys are the gate advertises a credential the server
 		// will refuse — and invites pasting a still-powerful secret into a chat window.
 		const store = new PasskeyStore(args.stateDir);
-		const tokenUsable = args.authMode === "token" || args.allowToken || !store.enrolled;
+		// same rule the startup banner uses: in `passkey` mode the token opens nothing at
+		// all, enrolled or not
+		const tokenUsable = args.authMode === "token" || args.allowToken || (args.authMode === "auto" && !store.enrolled);
 		process.stdout.write(
 			tokenUsable
 				? `http://${args.host}:${args.port}/?token=${token}\n`

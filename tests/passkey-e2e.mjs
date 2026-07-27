@@ -146,6 +146,16 @@ async function main() {
 	const before = await c.evaluate(`window.piSuper.auth.state()`);
 	check("starts unenrolled", before.enrolled === false && before.required === false);
 
+	// a shell opened with the token *before* the policy tightened: enrolling the first
+	// passkey has to reach it too, or the old credential keeps a live root prompt
+	const bootstrapWs = new WebSocket(`ws://localhost:${PORT}/ws?token=${token}`, { headers: auth });
+	const bootstrapClosed = new Promise((resolve) => bootstrapWs.on("close", () => resolve("closed")));
+	const bootstrapOpen = await new Promise((resolve) => {
+		bootstrapWs.on("open", () => resolve("open"));
+		bootstrapWs.on("error", (e) => resolve(String(e.message)));
+	});
+	check("token opens a shell socket before enrolment", bootstrapOpen === "open", bootstrapOpen);
+
 	const label = await c.evaluate(`window.piSuper.auth.enroll("test-phone")`);
 	check("enrolment ceremony completed", label === "test-phone", `label=${label}`);
 
@@ -155,6 +165,9 @@ async function main() {
 	// the whole point: the token alone must now be refused
 	const tokenNow = await fetch(`${BASE}/api/state`, { headers: auth });
 	check("token alone refused after enrolment", tokenNow.status === 401, `status=${tokenNow.status}`);
+
+	const bootstrapGone = await Promise.race([bootstrapClosed, wait(25000).then(() => "still open")]);
+	check("pre-enrolment token socket closed", bootstrapGone === "closed", bootstrapGone);
 
 	// …and it must not be able to mint a *new* grant either: enrolling another passkey
 	// with the token alone would walk straight around the policy
@@ -207,24 +220,8 @@ async function main() {
 	const after = await c.evaluate(`window.piSuper.auth.state()`);
 	check("session reported", after.authenticated === true && after.session?.label === "test-phone");
 
-	// a wrong passkey (different authenticator) must fail
-	await c.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
-	const other = await c.send("WebAuthn.addVirtualAuthenticator", {
-		options: {
-			protocol: "ctap2",
-			transport: "internal",
-			hasResidentKey: true,
-			hasUserVerification: true,
-			isUserVerified: true,
-			automaticPresenceSimulation: true,
-		},
-	});
-	await c.send("Network.clearBrowserCookies");
-	await c.send("Page.navigate", { url: `${BASE}/?debug=1` });
-	await wait(3000);
-	const rejected = await c.evaluate(`window.piSuper.auth.login().then(() => "unexpected-success").catch(e => "rejected")`);
-	check("unknown authenticator rejected", rejected === "rejected", rejected);
-	await c.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId: other.authenticatorId });
+	const liveBefore = await c.evaluate(`window.piSuper.state.ws && window.piSuper.state.ws.readyState === 1 ? 1 : 0`);
+	check("shell socket is live before revocation", liveBefore === 1, `open=${liveBefore}`);
 
 	// server-side revocation
 	const revoke = spawnSync("node", ["dist/server/index.js", "--logout"], {
@@ -252,6 +249,26 @@ async function main() {
 		env: { ...process.env, PI_SUPER_STATE_DIR: STATE_DIR },
 		encoding: "utf8",
 	});
+
+	// a wrong passkey (different authenticator) must fail
+	await c.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
+	const other = await c.send("WebAuthn.addVirtualAuthenticator", {
+		options: {
+			protocol: "ctap2",
+			transport: "internal",
+			hasResidentKey: true,
+			hasUserVerification: true,
+			isUserVerified: true,
+			automaticPresenceSimulation: true,
+		},
+	});
+	await c.send("Network.clearBrowserCookies");
+	await c.send("Page.navigate", { url: `${BASE}/?debug=1` });
+	await wait(3000);
+	const rejected = await c.evaluate(`window.piSuper.auth.login().then(() => "unexpected-success").catch(e => "rejected")`);
+	check("unknown authenticator rejected", rejected === "rejected", rejected);
+	await c.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId: other.authenticatorId });
+
 	check("--list-passkeys shows the credential", list.stdout.includes("test-phone"), list.stdout.trim().split("\n")[0]);
 
 	await cleanup();

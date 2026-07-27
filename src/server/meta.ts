@@ -293,6 +293,9 @@ export class MetaAgent extends EventEmitter {
 				message: `${INTERNAL_PROMPT} Your last turn hung and I had to restart you mid-request. It was: "${lost}". Check first what that turn already did (its tool calls are above; look at the windows it touched) and do NOT repeat anything that already happened — then finish the job and speak the answer.`,
 			});
 			this.turnPending = true;
+			// keep it as the outstanding request: if the recovery turn hangs too, the next
+			// rescue must still know what the user actually asked for
+			this.lastPrompt = lost;
 			this.lastEventAt = Date.now();
 		}
 	}

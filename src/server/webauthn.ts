@@ -105,7 +105,8 @@ export class PasskeyStore {
 	}
 
 	private save(): void {
-		const tmp = `${this.file}.tmp`;
+		// unique: two processes saving at once must not write the same temp file
+		const tmp = `${this.file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
 		writeFileSync(tmp, JSON.stringify(this.data, null, 1), { mode: 0o600 });
 		renameSync(tmp, this.file);
 		this.loadedSig = this.signature();
@@ -268,7 +269,8 @@ export class PasskeyStore {
 		response: Parameters<typeof verifyRegistrationResponse>[0]["response"],
 		label: string,
 		nonce: string | undefined,
-	): Promise<{ ok: true; credential: StoredCredential } | { ok: false; error: string }> {
+		secure: boolean,
+	): Promise<{ ok: true; credential: StoredCredential; cookie: string } | { ok: false; error: string }> {
 		this.syncFromDisk();
 		const expectedChallenge = this.takeChallenge("reg", rpID, nonce);
 		if (!expectedChallenge) return { ok: false, error: "no pending registration (expired?)" };
@@ -281,6 +283,8 @@ export class PasskeyStore {
 				requireUserVerification: true,
 			});
 			if (!result.verified || !result.registrationInfo) return { ok: false, error: "registration not verified" };
+			// the ceremony took a while; someone may have revoked in the meantime
+			this.syncFromDisk();
 			const info = result.registrationInfo;
 			const credential: StoredCredential = {
 				id: info.credential.id,
@@ -291,8 +295,12 @@ export class PasskeyStore {
 				createdAt: new Date().toISOString(),
 			};
 			this.data.credentials.push(credential);
+			// Enrolling is a user-verified ceremony on this very device: give it a session, or
+			// the browser that just added the passkey is locked out by the policy it enabled
+			// (and its token-authenticated socket would be the only thing still working).
+			const sid = this.newSession(credential.id, credential.label);
 			this.save();
-			return { ok: true, credential };
+			return { ok: true, credential, cookie: this.sessionCookie(sid, secure) };
 		} catch (err) {
 			return { ok: false, error: String((err as Error).message) };
 		}
@@ -335,15 +343,20 @@ export class PasskeyStore {
 				},
 			});
 			if (!result.verified) return { ok: false, error: "signature not verified" };
+			// Revocation may have landed while we were verifying: a signature from a passkey
+			// that no longer exists must not mint a session.
+			this.syncFromDisk();
+			const live = this.data.credentials.find((c) => c.id === response.id);
+			if (!live) return { ok: false, error: "passkey was revoked" };
 			// A counter that fails to advance can mean a cloned authenticator; many real
 			// passkeys always report 0, so only enforce it once we've seen it move.
 			const next = result.authenticationInfo.newCounter;
-			if (credential.counter > 0 && next <= credential.counter) {
+			if (live.counter > 0 && next <= live.counter) {
 				return { ok: false, error: "passkey counter did not advance (possible clone)" };
 			}
-			credential.counter = next;
-			credential.lastUsedAt = new Date().toISOString();
-			const sid = this.newSession(credential.id, credential.label);
+			live.counter = next;
+			live.lastUsedAt = new Date().toISOString();
+			const sid = this.newSession(live.id, live.label);
 			this.save();
 			return { ok: true, cookie: this.sessionCookie(sid, secure), label: credential.label, sessionId: sid };
 		} catch (err) {

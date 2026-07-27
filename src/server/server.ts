@@ -77,7 +77,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	};
 	const metaClients = new Set<WebSocket>();
 
-	/** crude per-IP bucket for the endpoints anyone can reach: 30 hits a minute */
+	/**
+	 * Crude per-peer bucket for the endpoints anyone can reach: 30 hits a minute.
+	 *
+	 * Keyed on the *socket* address, never on X-Forwarded-For: a header the client writes
+	 * is a rate limit the client chooses.
+	 */
 	const authHits = new Map<string, { count: number; resetAt: number }>();
 	function rateLimit(ip: string, limit = 30, windowMs = 60_000): boolean {
 		const now = Date.now();
@@ -93,17 +98,21 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	 * Revoking a passkey (or a session simply expiring) has to reach the sockets it opened,
 	 * or revocation is a lie for as long as the tab stays open.
 	 */
-	const socketSessions = new Map<WebSocket, string>();
+	const socketAuth = new Map<WebSocket, { kind: "session"; id: string } | { kind: "token" }>();
 	const revalidate = setInterval(() => {
-		for (const [ws, sid] of socketSessions) {
+		for (const [ws, who] of socketAuth) {
 			if (ws.readyState === WebSocket.CLOSED) {
-				socketSessions.delete(ws);
+				socketAuth.delete(ws);
 				continue;
 			}
-			if (passkeys.sessionAlive(sid)) continue;
-			log("auth: session revoked or expired — closing its socket");
-			socketSessions.delete(ws);
-			ws.close(4001, "session revoked");
+			// A token-authenticated socket outlives the moment the token stops being enough:
+			// enrolling the first passkey flips the policy, and the shell opened with the old
+			// credential would otherwise keep running for as long as the tab stays open.
+			const ok = who.kind === "token" ? !passkeyRequired() || cfg.allowToken : passkeys.sessionAlive(who.id);
+			if (ok) continue;
+			log(`auth: ${who.kind} no longer authorized — closing its socket`);
+			socketAuth.delete(ws);
+			ws.close(4001, "authorization revoked");
 			setTimeout(() => ws.terminate(), 1000).unref?.();
 		}
 	}, 15_000);
@@ -230,13 +239,17 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		const body = async () => JSON.parse((await readBody(req, 256 * 1024)).toString("utf8") || "{}");
 		const session = passkeys.sessionFor(req);
 		const tokenOk = isAuthed(req, url, token);
-		const tokenMayEnroll = tokenOk && (!passkeyRequired() || cfg.allowToken || !passkeys.enrolled);
+		// In `auto` (the default) this still allows the first, bootstrap enrolment, because
+		// with no passkey on file no passkey is required yet. In `passkey` mode it does not:
+		// that mode is documented as locking you out, and a token that could enrol would
+		// quietly unlock it.
+		const tokenMayEnroll = tokenOk && (!passkeyRequired() || cfg.allowToken);
 		const canEnroll = session !== undefined || tokenMayEnroll;
 		const nonce = PasskeyStore.challengeNonce(req);
 		// Public ceremonies are cheap to ask for and not cheap to serve; a peer that can reach
 		// us must not be able to spin them (or the log) at will.
 		if (route.endsWith("/options") || route.endsWith("/verify")) {
-			if (!rateLimit(clientIp(req))) {
+			if (!rateLimit(req.socket.remoteAddress ?? "?")) {
 				sendJson(res, 429, { error: "too many auth attempts, wait a minute" });
 				return;
 			}
@@ -244,7 +257,9 @@ export function createServer(cfg: Config, token: string): SuperServer {
 
 		switch (route) {
 			case "GET /api/auth/state": {
-				const authed = session !== undefined || (tokenOk && !passkeyRequired());
+				// --allow-token means a token-authenticated browser really is in; saying
+				// otherwise made the client show a lock screen the server did not want.
+				const authed = session !== undefined || (tokenOk && (!passkeyRequired() || cfg.allowToken));
 				sendJson(res, 200, {
 					enrolled: passkeys.enrolled,
 					required: passkeyRequired(),
@@ -294,14 +309,19 @@ export function createServer(cfg: Config, token: string): SuperServer {
 					return;
 				}
 				const { response, label } = (await body()) as { response: never; label?: string };
-				const result = await passkeys.verifyRegistration(rpID, origin, response, label ?? "", nonce);
+				const result = await passkeys.verifyRegistration(rpID, origin, response, label ?? "", nonce, secure);
 				if (!result.ok) {
 					log(`auth: passkey enrolment failed from ${clientIp(req)}: ${result.error}`);
 					sendJson(res, 400, { error: result.error });
 					return;
 				}
 				log(`auth: passkey "${result.credential.label}" enrolled from ${clientIp(req)}`);
-				sendJson(res, 200, { ok: true, credential: { id: result.credential.id, label: result.credential.label } });
+				sendJson(
+					res,
+					200,
+					{ ok: true, credential: { id: result.credential.id, label: result.credential.label } },
+					{ "set-cookie": result.cookie },
+				);
 				return;
 			}
 			case "POST /api/auth/login/options": {
@@ -474,7 +494,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	http.on("upgrade", (req, socket, head) => {
 		// Everything in here runs before authentication: a throw would kill the process.
 		let url: URL;
-		let sessionId: string | undefined;
+		let who: { kind: "session"; id: string } | { kind: "token" } | undefined;
 		try {
 			url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
 			const session = passkeys.sessionFor(req);
@@ -486,7 +506,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				socket.destroy();
 				return;
 			}
-			sessionId = session?.id;
+			who = session ? { kind: "session", id: session.id } : { kind: "token" };
 		} catch {
 			socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
 			socket.destroy();
@@ -499,7 +519,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				return;
 			}
 			wss.handleUpgrade(req, socket, head, (ws) => {
-				if (sessionId) socketSessions.set(ws, sessionId);
+				if (who) socketAuth.set(ws, who);
 				onMetaConnection(ws, clientIp(req));
 			});
 			return;
@@ -510,7 +530,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			return;
 		}
 		wss.handleUpgrade(req, socket, head, (ws) => {
-			if (sessionId) socketSessions.set(ws, sessionId);
+			if (who) socketAuth.set(ws, who);
 			void onConnection(ws, url, clientIp(req));
 		});
 	});
@@ -750,7 +770,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		resumeMeta,
 		async close() {
 			clearInterval(revalidate);
-			socketSessions.clear();
+			socketAuth.clear();
 			await meta.stop();
 			for (const ws of wss.clients) ws.terminate();
 			for (const term of live) await term.dispose();
