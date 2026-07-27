@@ -363,6 +363,14 @@ footer {
 
 .wrow .name {
 	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wrow .name .title {
+	font-weight: 400;
+	color: var(--dim);
 }
 
 .wrow .name.active {

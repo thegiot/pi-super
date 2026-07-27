@@ -88,6 +88,9 @@ async function main() {
 		["grand-endeavors", "git -C . log --oneline -40 2>/dev/null | cat; ls -la; bash"],
 		["notes", "bash"],
 		["build", "seq 1 200 | sed 's/^/line /' ; bash"],
+		// an agent-style pane title, which is what the window list is meant to surface
+		// (a bash prompt would immediately overwrite it with "user@host: cwd")
+		["agent", "printf '\\033]2;\u03c0 - reviewing the mobile layout, drawer titles next - pi-super\\033\\\\'; sleep 600"],
 	]) {
 		sh("tmux", ["-L", SOCKET, "new-window", "-d", "-t", "phone", "-n", name, cmd]);
 	}

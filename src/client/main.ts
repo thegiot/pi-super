@@ -348,6 +348,17 @@ function renderTabs(): void {
 	el.tabs.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "center" });
 }
 
+/**
+ * The pane title, unless it is the shell's default "user@host: /cwd" — that one says
+ * nothing the path line below it does not already say, and it is long enough to push the
+ * useful part of a real title off the row.
+ */
+function paneTitle(w: WindowInfo): string {
+	const title = w.paneTitle?.trim() ?? "";
+	if (!title || title.endsWith(w.paneCwd)) return "";
+	return title;
+}
+
 function renderWindowList(): void {
 	el.windowList.replaceChildren(
 		...state.windows.map((w) => {
@@ -358,6 +369,16 @@ function renderWindowList(): void {
 			const name = document.createElement("div");
 			name.className = `name${w.active ? " active" : ""}`;
 			name.textContent = `${w.index}: ${w.name} · ${w.paneCmd}`;
+			// The pane title is what an agent window actually says about itself ("π - CZ filter
+			// done; WSDP pricing next"); the tmux window name is usually just "sh". One line,
+			// clipped — wrapping would turn the list into a wall of prose.
+			const title = paneTitle(w);
+			if (title) {
+				const t = document.createElement("span");
+				t.className = "title";
+				t.textContent = ` ${title}`;
+				name.append(t);
+			}
 			const path = document.createElement("div");
 			path.className = "path";
 			path.textContent = w.paneCwd;
