@@ -59,6 +59,17 @@ export function requestToken(req: IncomingMessage, url: URL): string | undefined
 	return parseCookies(req.headers.cookie)[COOKIE_NAME];
 }
 
+/**
+ * Whether the client reached us over TLS — either directly or via a TLS-terminating
+ * proxy (tailscale serve sets X-Forwarded-Proto; we only listen on loopback, so any
+ * direct client that could forge the header is already on this machine).
+ */
+export function isSecureRequest(req: IncomingMessage): boolean {
+	if ((req.socket as { encrypted?: boolean }).encrypted === true) return true;
+	const proto = req.headers["x-forwarded-proto"];
+	return (typeof proto === "string" ? proto : (proto?.[0] ?? "")).split(",")[0]?.trim() === "https";
+}
+
 export function isAuthed(req: IncomingMessage, url: URL, token: string): boolean {
 	const got = requestToken(req, url);
 	return got !== undefined && tokenEquals(got, token);
@@ -77,8 +88,7 @@ export function originAllowed(req: IncomingMessage, allowed: string[] | undefine
 		const host = req.headers.host;
 		if (!host || o.host !== host) return false;
 		// If we were reached over TLS, an http:// origin on the same host is not us.
-		const secure = (req.socket as { encrypted?: boolean }).encrypted === true;
-		return !secure || o.protocol === "https:";
+		return !isSecureRequest(req) || o.protocol === "https:";
 	} catch {
 		return false;
 	}

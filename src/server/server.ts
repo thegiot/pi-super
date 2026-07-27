@@ -2,7 +2,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
-import { COOKIE_NAME, isAuthed, originAllowed, requestToken, tokenEquals } from "./auth.js";
+import { COOKIE_NAME, isAuthed, isSecureRequest, originAllowed, requestToken, tokenEquals } from "./auth.js";
 import type { Config } from "./config.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
 import { SESSION_PREFIX, sweepStaleSessions, TermConnection } from "./term.js";
@@ -134,7 +134,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		if (url.searchParams.has("token") && !req.headers.cookie?.includes(`${COOKIE_NAME}=`)) {
 			const clean = new URL(url);
 			clean.searchParams.delete("token");
-			const secure = (req.socket as { encrypted?: boolean }).encrypted === true ? " Secure;" : "";
+			const secure = isSecureRequest(req) ? " Secure;" : "";
 			res.writeHead(302, {
 				"set-cookie": `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=31536000`,
 				location: `${clean.pathname}${clean.search}`,
