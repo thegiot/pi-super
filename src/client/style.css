@@ -253,7 +253,7 @@ footer {
 
 #ribbon {
 	display: flex;
-	gap: 5px;
+	gap: 4px;
 	overflow-x: auto;
 	scrollbar-width: none;
 	padding: 5px 6px;
@@ -269,10 +269,14 @@ footer {
 	display: none;
 }
 
+/* the ribbon is a dense strip: keep the hit area tall but stop wide side padding
+ * from ballooning single-glyph keys (/, @, arrows) into 42px slabs */
 #ribbon button {
 	flex: 0 0 auto;
-	min-width: 42px;
+	min-width: 30px;
+	padding: 7px 5px;
 	font-size: 13px;
+	text-align: center;
 }
 
 #ribbon button.armed {
