@@ -1,8 +1,18 @@
 {
   "name": "pi-super",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
   "description": "Mobile-first meta-interface to an existing tmux full of pi sessions",
+  "license": "MIT",
+  "repository": "github:pasky/pi-super",
+  "homepage": "https://github.com/pasky/pi-super",
+  "bugs": "https://github.com/pasky/pi-super/issues",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "contrib"
+  ],
   "type": "module",
   "bin": {
     "pi-super": "dist/server/index.js"
@@ -17,7 +27,8 @@
     "test:voice": "npm run build && node tests/voice-e2e.mjs",
     "test": "npm run build:server && node --test tests/*.test.mjs",
     "dev": "npm run build && node dist/server/index.js",
-    "start": "node dist/server/index.js"
+    "start": "node dist/server/index.js",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "@simplewebauthn/browser": "^13.3.0",

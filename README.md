@@ -70,10 +70,12 @@ worktrees, handled transparently behind the scenes).
 ...anyway:
 
 ```bash
-npm install
-npm run build
-node dist/server/index.js            # prints an URL with the access token
+npm install -g pi-super              # needs a C++ toolchain for node-pty's native build
+pi-super                             # prints an URL with the access token
 ```
+
+From source instead: `git clone https://github.com/pasky/pi-super`, `npm install`,
+`npm run build`, `node dist/server/index.js`.
 
 Open the printed URL on your phone (same LAN / over an ssh tunnel / behind a TLS proxy).
 The `?token=…` is exchanged once for an HttpOnly cookie, so subsequent loads are clean;
