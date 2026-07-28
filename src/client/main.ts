@@ -35,6 +35,7 @@ const el = {
 	abort: $("btn-abort"),
 	call: $("call"),
 	callState: $("call-state"),
+	callWarn: $("call-warn"),
 	status: $("status"),
 	input: $<HTMLTextAreaElement>("input"),
 	ribbon: $("ribbon"),
@@ -527,9 +528,31 @@ meta.onSpeak = ({ message, kind }) => {
 	voice.pushUpdate(message, kind);
 	if (state.view !== "meta") status(`🔊 ${message}`, 6000);
 };
+/**
+ * gpt-live (the ChatGPT/Codex realtime model) is the mode this thing is built around;
+ * everything else is a downgrade the user should not discover by being confused at it —
+ * the API fallback bills per minute, and local speech is half duplex with no barge-in.
+ */
+function degradedVoiceWarning(): string {
+	const cfg = voice.config;
+	if (!cfg) return "";
+	if (cfg.provider === "local") return "⚠ degraded: browser speech — half duplex, no barge-in";
+	if (cfg.provider === "openai")
+		return `⚠ degraded: OpenAI Realtime API (${cfg.model}) — not gpt-live, billed per minute`;
+	if (cfg.provider === "codex" && !cfg.model.startsWith("gpt-live")) return `⚠ degraded: ${cfg.model} — not gpt-live`;
+	return "";
+}
+
+function refreshCallWarning(): void {
+	const warn = degradedVoiceWarning();
+	el.callWarn.textContent = warn;
+	el.callWarn.hidden = !warn;
+}
+
 voice.onState = (s, detail) => {
 	el.callState.textContent = s === "live" ? "connected — talk to super" : detail ? `${s}: ${detail}` : s;
 	el.call.hidden = s === "idle";
+	refreshCallWarning();
 	// A failed dial must not be retried on every visit to the chat; hanging up clears it.
 	if (s === "error") dialFailed = true;
 	refreshCallButton();
