@@ -1,47 +1,35 @@
 #!/usr/bin/env node
 /**
- * Measure the gpt-live (codex realtime) path purely as a dictation engine: what transcript
- * it produces for a known clip, how long the dial takes before it is listening, and how
- * long after end-of-speech the text is complete. See docs/dictation.md for the numbers
- * this produced.
+ * End-to-end test of composer dictation, with no human and no microphone.
  *
- *   node tests/dictation-probe.mjs [--dictation] [mic.wav] [speechStartSec] [speechEndSec]
+ *   node tests/dictation-probe.mjs [mic.wav] [speechStartSec] [speechEndSec]
  *
- * Chrome plays mic.wav as its microphone, so the model hears real speech with no human in
- * the loop. Make one with a TTS of your choice, then:
- *   sox raw.wav -r 48000 -c 1 -b 16 mic.wav pad 1 40   # lead-in, then silence to end the turn
+ * Chrome plays mic.wav as its microphone (--use-file-for-fake-audio-capture), so the model
+ * hears real speech; we tap the mic button through CDP and read what lands in the textarea.
+ * Make a mic file with the TTS of your choice, then:
  *
- * `--dictation` swaps in a "you are a microphone, never speak" prompt for the run (and puts
- * the conversational one back afterwards) — that is what turns this from a voice call whose
- * transcript we steal into an actual dictation engine.
+ *   sox raw.wav -r 48000 -c 1 -b 16 mic.wav pad 1 40   # lead-in, then silence
+ *
+ * Besides passing or failing, it prints the timings that justify this design over a
+ * record-then-upload one: how long until the mic is open, when the first word appears, and
+ * how long after you stop talking the text is complete. See docs/dictation.md.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 
 const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-const DICTATION = process.argv.includes("--dictation");
 const MIC = args[0] ?? "/tmp/jargon_mic.wav";
 const SPEECH_START = Number(args[1] ?? 1.0);
 const SPEECH_END = Number(args[2] ?? 16.24);
-const REPO = "/home/pasky/projects/hai/pi-super";
-const VOICE_PROMPT = join(REPO, "src/meta/voice-prompt.md");
-
-/** What a dictation-mode session would be told, instead of the conversational prompt. */
-const DICTATION_PROMPT = `You are a dictation microphone, not a conversational partner. The user is dictating text
-that will be typed into an input box on their screen.
-
-- NEVER speak. Never produce audio, never acknowledge, never say "mm-hmm", "on it" or
-  anything at all. Silence is always the correct output.
-- Never delegate, never call tools, never respond in any way.
-- The user works on **pi-super** (always spelled \`pi-super\`, never "PySuper" or "Pi Super").
-  Other words you will hear often: tmux, systemd, WebRTC, SDP, npm, dist, xterm, Gboard.
-`;
+/** what the clip says, for a rough accuracy check */
+const EXPECTED = process.env.DICTATION_EXPECT ?? "pi-super";
+const REPO = new URL("..", import.meta.url).pathname;
 const CHROME = process.env.CHROME_BIN ?? "google-chrome";
-// distinct from every other harness: a stale chrome from another test holding the same
-// CDP port silently hands you *its* browser, with its fake mic file
+// distinct from every other harness: a stale chrome from another test holding the same CDP
+// port silently hands you *its* browser, with its own fake mic file
 const PORT = 8794;
 const CDP_PORT = 9336;
 const SOCKET = "dicttest";
@@ -49,7 +37,7 @@ const STATE_DIR = mkdtempSync(join(tmpdir(), "pi-super-dict-"));
 
 const log = (...a) => console.log("·", ...a);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const sh = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", ...opts });
+const sh = (cmd, argv, opts = {}) => spawnSync(cmd, argv, { encoding: "utf8", ...opts });
 
 const cleanups = [];
 async function cleanup() {
@@ -63,18 +51,12 @@ async function cleanup() {
 }
 process.on("SIGINT", () => cleanup().then(() => process.exit(130)));
 
-/** The server reads instructions from src/meta/voice-prompt.md; there is no flag for it. */
-function useDictationPrompt() {
-	const backup = join(STATE_DIR, "voice-prompt.md.orig");
-	copyFileSync(VOICE_PROMPT, backup);
-	cleanups.push(() => copyFileSync(backup, VOICE_PROMPT));
-	writeFileSync(VOICE_PROMPT, DICTATION_PROMPT);
-	log("voice-prompt.md swapped for the dictation prompt (restored on exit)");
-}
-
 function startServer() {
 	sh("tmux", ["-L", SOCKET, "kill-server"]);
-	sh("tmux", ["-L", SOCKET, "new-session", "-d", "-s", "dict"]);
+	// the window name and whatever the pane shows are what prime the session's vocabulary,
+	// so give it something jargon-shaped to find
+	sh("tmux", ["-L", SOCKET, "new-session", "-d", "-s", "dict", "-n", "pi-super"]);
+	sh("tmux", ["-L", SOCKET, "send-keys", "-t", "dict", "echo tmux systemd rebase WebRTC dist", "Enter"]);
 	cleanups.push(() => sh("tmux", ["-L", SOCKET, "kill-server"]));
 	const proc = spawn("node", ["dist/server/index.js", "-L", SOCKET, "-s", "dict", "--port", String(PORT)], {
 		cwd: REPO,
@@ -154,7 +136,6 @@ async function startChrome() {
 }
 
 async function main() {
-	if (DICTATION) useDictationPrompt();
 	startServer();
 	await wait(2500);
 	const token = readFileSync(join(STATE_DIR, "token"), "utf8").trim();
@@ -162,7 +143,7 @@ async function main() {
 		await fetch(`http://127.0.0.1:${PORT}/api/voice/config`, { headers: { Authorization: `Bearer ${token}` } })
 	).json();
 	log("voice config:", JSON.stringify(cfg));
-	if (!cfg.enabled) throw new Error("voice not enabled");
+	if (!cfg.enabled) throw new Error("no realtime backend configured — dictation cannot run");
 
 	await startChrome();
 	const targets = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json();
@@ -170,6 +151,7 @@ async function main() {
 	await c.send("Runtime.enable");
 	await c.send("Browser.grantPermissions", { permissions: ["audioCapture"] });
 	await c.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?token=${token}&debug=1` });
+
 	// the app boots asynchronously; ?debug=1 publishes window.piSuper only once it has
 	let booted = false;
 	for (let i = 0; i < 40 && !booted; i++) {
@@ -177,62 +159,72 @@ async function main() {
 		booted = await c.evaluate(`!!window.piSuper`);
 	}
 	if (!booted) throw new Error("page never published window.piSuper (wrong chrome on the CDP port?)");
+	// availability is resolved asynchronously too, and it decides whether the button is there
+	await wait(1000);
+	const micShown = await c.evaluate(`!document.getElementById("btn-mic").hidden`);
 
-	// t0 is the click: on a real phone that is the moment the mic button is pressed, and
-	// Chrome starts playing the fake capture file when getUserMedia resolves right after.
+	// t0 is the tap: Chrome starts playing the fake capture file when getUserMedia resolves
 	await c.evaluate(`(() => {
 		window.__t0 = Date.now();
-		const stamp = (s) => { if (!window.__live && s === "live") window.__live = Date.now(); };
-		const v = window.piSuper.voice;
-		const prev = v.onState;
-		v.onState = (s, d) => { stamp(s); prev && prev(s, d); };
-		document.getElementById("btn-call").click();
-		return "clicked";
+		document.getElementById("btn-mic").click();
+		return "tapped";
 	})()`);
-	log("clicked call; speech plays " + SPEECH_START + "s–" + SPEECH_END + "s into the mic file");
+	log(`tapped the mic; speech plays ${SPEECH_START}s–${SPEECH_END}s into ${MIC}`);
 
-	const deadline = Date.now() + 75_000;
-	let done = false;
-	while (Date.now() < deadline && !done) {
-		await wait(1500);
-		done = await c.evaluate(
-			`(window.piSuper.events || []).some(e => e.t === "turn.done" && e.ev.turn && e.ev.turn.role === "user")`,
-		);
-	}
+	// let it hear the whole clip, plus a moment for the tail of the transcript
+	await wait((SPEECH_END + 3) * 1000);
+	await c.evaluate(`document.getElementById("btn-mic").click(); "stopped"`);
+	await wait(500);
 
 	const final = await c.evaluate(`(() => {
 		const s = window.piSuper;
-		const t0 = window.__t0;
 		return {
-			t0, live: window.__live,
-			state: s.voice.state,
-			events: (s.events || []).map(e => ({ dt: (e.at - t0) / 1000, dir: e.dir, t: e.t,
-				text: (e.ev.item && (e.ev.item.text || (e.ev.item.content||[]).map(x=>x.text).join(" "))) ||
-				      (e.ev.turn && e.ev.turn.transcript) || e.ev.transcript || e.ev.delta || "" })),
-			transcript: s.transcript || [],
+			t0: window.__t0,
+			state: s.dictate.state,
+			input: document.getElementById("input").value,
+			micClass: document.getElementById("btn-mic").className,
+			log: (s.dictation || []).map(e => ({ dt: (e.at - window.__t0) / 1000, state: e.state, text: e.text })),
 		};
 	})()`);
 
-	const rel = (ms) => ((ms - final.t0) / 1000).toFixed(2);
-	console.log("\n=== timeline (seconds after the mic button click) ===");
-	console.log(`  call live at            +${final.live ? rel(final.live) : "never"}s`);
-	console.log(`  speech starts at        +${SPEECH_START.toFixed(2)}s (fake mic file)`);
-	console.log(`  speech ends at          +${SPEECH_END.toFixed(2)}s`);
-	for (const e of final.events) {
-		if (!/transcript|turn\.|delegation|speech/.test(e.t)) continue;
-		console.log(`  +${e.dt.toFixed(2)}s  ${e.dir}:${e.t}  ${JSON.stringify(String(e.text).slice(0, 120))}`);
+	const at = (pred) => final.log.find(pred);
+	const listening = at((e) => e.state === "listening");
+	const firstText = at((e) => e.state === "text" && e.text.trim());
+	const lastText = [...final.log].reverse().find((e) => e.state === "text");
+
+	console.log("\n=== timeline (seconds after the mic tap) ===");
+	console.log(`  mic open (listening)   +${listening ? listening.dt.toFixed(2) : "never"}s`);
+	console.log(`  speech starts          +${SPEECH_START.toFixed(2)}s`);
+	console.log(`  first word on screen   +${firstText ? firstText.dt.toFixed(2) : "never"}s`);
+	console.log(`  speech ends            +${SPEECH_END.toFixed(2)}s`);
+	console.log(`  last word on screen    +${lastText ? lastText.dt.toFixed(2) : "never"}s`);
+	if (lastText) console.log(`  → complete ${(lastText.dt - SPEECH_END).toFixed(2)}s after the speaker stopped`);
+
+	console.log("\n=== textarea ===");
+	console.log(final.input);
+
+	const checks = [
+		["mic button offered", micShown],
+		["mic opened", !!listening],
+		["mic opened within 2s", !!listening && listening.dt < 2],
+		["text streamed while still speaking", !!firstText && firstText.dt < SPEECH_END],
+		["text landed in the composer", final.input.trim().length > 20],
+		[`primed jargon transcribed ("${EXPECTED}")`, final.input.includes(EXPECTED)],
+		["not auto-sent", final.input.trim().length > 0],
+		["mic released on the second tap", final.state === "idle" && !final.micClass.includes("armed")],
+	];
+	console.log("\n=== result ===");
+	let failed = 0;
+	for (const [name, ok] of checks) {
+		console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
+		if (!ok) failed++;
 	}
-
-	console.log("\n=== all event types seen ===");
-	console.log([...new Set(final.events.map((e) => `${e.dir}:${e.t}`))].join("\n"));
-	console.log("\n=== user transcript as delivered to the app ===");
-	for (const t of final.transcript) console.log(`${t.role}: ${t.text}`);
-
 	await cleanup();
+	process.exit(failed === 0 ? 0 : 1);
 }
 
 main().catch(async (err) => {
-	console.error("probe failed:", err.message);
+	console.error("dictation-probe failed:", err.message);
 	await cleanup();
 	process.exit(1);
 });

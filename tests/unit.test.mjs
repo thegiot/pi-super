@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isAuthed, originAllowed, parseCookies, requestToken, tokenEquals } from "../dist/server/auth.js";
 import { parseArgs } from "../dist/server/config.js";
+import { buildVocabulary, dictationInstructions } from "../dist/server/dictation.js";
 import { voiceInstructions } from "../dist/server/server.js";
 import { Tmux } from "../dist/server/tmux.js";
 import { storeUpload } from "../dist/server/uploads.js";
@@ -372,7 +373,7 @@ test("readPeek resolves against the pane cwd and classifies what it finds", asyn
 	assert.equal(rel.ok, true);
 	assert.equal(rel.path, join(dir, "note.txt"));
 	assert.equal(rel.body.toString(), "hello\nworld\n");
-	assert.equal(rel.type, "text/plain; charset=utf-8");
+	assert.equal(rel.type, "application/octet-stream", "never a type a browser renders on its own");
 	assert.equal(rel.truncated, false);
 
 	assert.equal(readPeek(join(dir, "shot.png")).type, "image/png");
@@ -394,4 +395,39 @@ test("readPeek resolves against the pane cwd and classifies what it finds", asyn
 	assert.equal(big.body.length, MAX_TEXT_BYTES);
 	assert.equal(big.truncated, true);
 	assert.equal(big.bytes, MAX_TEXT_BYTES + 5000);
+});
+
+// --- dictation vocabulary ---------------------------------------------------
+// The whole value of dictation mode is that the prompt biases the recogniser, so what goes
+// into the prompt has to be the jargon actually on screen — not the English around it.
+
+test("buildVocabulary primes on-screen jargon and drops prose", () => {
+	const pane = `
+		$ npm run build && systemctl --user restart pi-super
+		error: the file was not found, and that is all we can say about it
+		src/server/dictation.ts:12:5 - error TS2554
+	`;
+	const vocab = buildVocabulary(pane, ["grand-endeavors", "pi-super docs"]);
+	const words = vocab.split(", ");
+
+	for (const core of ["pi-super", "tmux", "systemd", "rebase"]) {
+		assert.ok(words.includes(core), `core vocabulary must survive: ${core}`);
+	}
+	assert.ok(words.includes("grand-endeavors"), "window names are the user's own words");
+	assert.ok(words.includes("systemctl"), "commands on screen are exactly what gets misheard");
+	assert.ok(!words.includes("the") && !words.includes("that"), "prose is noise here");
+	assert.equal(new Set(words.map((w) => w.toLowerCase())).size, words.length, "no duplicates");
+	// the hint rides in every session's instructions: it must stay small
+	assert.ok(vocab.length <= 500, `vocabulary too long: ${vocab.length}`);
+});
+
+test("dictationInstructions carries the prompt plus the vocabulary", () => {
+	const metaDir = new URL("../src/meta", import.meta.url).pathname;
+	const instructions = dictationInstructions(metaDir, "pi-super, tmux");
+	assert.match(instructions, /NEVER speak/, "the prompt file is what makes it a microphone");
+	assert.match(instructions, /pi-super, tmux/);
+
+	// a missing prompt file must still produce a usable microphone, not an empty prompt
+	const fallback = dictationInstructions("/nonexistent", "");
+	assert.match(fallback, /[Nn]ever speak/);
 });

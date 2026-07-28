@@ -257,6 +257,17 @@ main {
 	font-size: 13px;
 }
 
+/* An open microphone is not an "armed" state like the others: it has to read as recording
+ * at a glance, because the only thing that closes it is the user noticing it. */
+#btn-mic.armed {
+	border-color: #ff7b72;
+	color: #ff7b72;
+}
+
+#btn-mic.busy {
+	color: var(--warn);
+}
+
 button.armed {
 	border-color: var(--accent);
 	color: var(--accent);

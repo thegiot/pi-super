@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { authState, enrollPasskey, gate, loginWithPasskey, logout } from "./auth.js";
+import { createDictation } from "./dictate.js";
 import { createMeta } from "./meta.js";
 import { initPeek, pathAt } from "./peek.js";
 import "./style.css";
@@ -615,6 +616,9 @@ function saveDraft(): void {
 function syncDraft(): void {
 	const key = draftKey();
 	if (!key || key === draftFor) return;
+	// dictation is pinned to the draft it started in: letting it run on would splice what is
+	// being said into some other window's text and save it there
+	dictate.stop();
 	// typed before the first window list arrived: that text was meant for this target, so
 	// adopt it rather than clobbering it with whatever was stored
 	const orphan = draftFor === undefined && el.input.value !== "";
@@ -794,6 +798,46 @@ voice.onTranscript = (role, text) => {
 // non-fatal realtime errors: worth showing, not worth ending the call over
 voice.onNotice = (text) => status(text, 6000, true);
 
+// ---------------------------------------------------------------- dictation
+
+const dictate = createDictation();
+/** the text around the insertion point, pinned when the mic opens */
+let dictBefore = "";
+let dictAfter = "";
+
+dictate.onStart = () => {
+	const pos = el.input.selectionStart ?? el.input.value.length;
+	dictBefore = el.input.value.slice(0, pos);
+	dictAfter = el.input.value.slice(pos);
+	// dictating after an existing word must not weld the two together
+	if (dictBefore && !/\s$/.test(dictBefore)) dictBefore += " ";
+};
+dictate.onText = (text) => {
+	el.input.value = dictBefore + text + dictAfter;
+	const caret = dictBefore.length + text.length;
+	el.input.setSelectionRange(caret, caret);
+	autogrow();
+	saveDraft();
+};
+dictate.onState = (s, detail) => {
+	const btn = $("btn-mic");
+	btn.classList.toggle("armed", s === "listening");
+	btn.classList.toggle("busy", s === "connecting");
+	btn.textContent = s === "idle" ? "🎙" : "■";
+	if (detail) status(detail, 6000, true);
+};
+$("btn-mic").onclick = () => {
+	// one microphone: a live call already owns it, and silently stealing it would kill the call
+	if (voice.state !== "idle" && dictate.state === "idle") {
+		status("the call has the mic — hang up first", 3000, true);
+		return;
+	}
+	dictate.toggle(activeWindow()?.paneId);
+};
+void dictate.available().then((ok) => {
+	$("btn-mic").hidden = !ok;
+});
+
 // One button for super: it opens the chat and places the call in the same press, because
 // on a phone those are never wanted separately — mute and hush handle "not now", and
 // leaving the chat view deliberately does *not* hang up (the call bar stays put).
@@ -802,6 +846,7 @@ $("btn-call").onclick = () => {
 		setView(state.lastTermView);
 		return;
 	}
+	dictate.stop(); // the call is about to want the microphone
 	setView("meta");
 	if (!dialFailed && (voice.state === "idle" || voice.state === "error")) void voice.start();
 };
@@ -1003,8 +1048,22 @@ if (new URLSearchParams(location.search).has("debug")) {
 		transcript.push({ role, text });
 		prevTranscript?.(role, text);
 	};
+	// dictation timings only make sense against the moment each state changed
+	const dictation: Array<{ state: string; text: string; at: number }> = [];
+	const prevDictState = dictate.onState;
+	dictate.onState = (s, detail) => {
+		dictation.push({ state: s, text: el.input.value, at: Date.now() });
+		prevDictState?.(s, detail);
+	};
+	const prevDictText = dictate.onText;
+	dictate.onText = (text) => {
+		dictation.push({ state: "text", text, at: Date.now() });
+		prevDictText?.(text);
+	};
 	(window as unknown as Record<string, unknown>).piSuper = {
 		voice,
+		dictate,
+		dictation,
 		meta,
 		state,
 		// lets a harness open the chat without also placing a call

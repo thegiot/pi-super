@@ -4,6 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { COOKIE_NAME, isAuthed, isSecureRequest, originAllowed, requestToken, tokenEquals } from "./auth.js";
 import type { Config } from "./config.js";
+import { buildVocabulary, dictationInstructions } from "./dictation.js";
 import { readPeek } from "./files.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
 import { SESSION_PREFIX, sweepStaleSessions, TermConnection } from "./term.js";
@@ -167,6 +168,22 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		const first = real[0];
 		if (!first) throw new Error("no tmux sessions found — start tmux first");
 		return first.name;
+	}
+
+	/**
+	 * Jargon currently on the user's screen, to prime a dictation session with. Best effort:
+	 * a session that mishears "pi-super" is worth far more than no session at all, so every
+	 * failure here degrades to the bare core vocabulary.
+	 */
+	async function screenVocabulary(url: URL): Promise<string> {
+		try {
+			const windows = await tmux.listWindows(await resolveBase(url.searchParams.get("session")));
+			const pane = url.searchParams.get("target") ?? windows.find((w) => w.active)?.paneId;
+			const text = pane ? await tmux.capture(pane, { lines: 80 }) : "";
+			return buildVocabulary(text, windows.map((w) => w.name));
+		} catch {
+			return buildVocabulary("", []);
+		}
 	}
 
 	const http = createHttpServer((req, res) => {
@@ -447,7 +464,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				}
 				const voice = detectVoiceConfig();
 				const sdp = (await readBody(req, 1024 * 1024)).toString("utf8");
-				const result = await negotiateOffer(voice, sdp, voiceInstructions(cfg.metaDir, meta.conversationTurns));
+				// same session, different job: ?mode=dictation asks the model to be a microphone
+				const instructions =
+					url.searchParams.get("mode") === "dictation"
+						? dictationInstructions(cfg.metaDir, await screenVocabulary(url))
+						: voiceInstructions(cfg.metaDir, meta.conversationTurns);
+				const result = await negotiateOffer(voice, sdp, instructions);
 				if (!result.ok) {
 					sendJson(res, result.status >= 400 ? result.status : 502, { error: result.error });
 					return;
