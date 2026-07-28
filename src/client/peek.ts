@@ -56,7 +56,12 @@ export function pathAt(text: string, index: number): PeekTarget | undefined {
  * A deliberately small, line-at-a-time tokenizer: strings, comments, numbers, keywords,
  * one shared keyword set across languages. It is not a parser and will get exotic code
  * subtly wrong — but on a phone the job is "tell code apart from prose at a glance",
- * which four colours do, and a real grammar pack would outweigh the whole client bundle.
+ * which four colours do.
+ *
+ * Not for weight: Prism would cost ~20 KB gzipped against a bundle already at ~90 KB, so
+ * if this ever looks wrong often enough to annoy, swap it out and delete all of this. It
+ * is hand-rolled because at *this* quality bar 90 lines beat a dependency, and for no
+ * stronger reason than that.
  */
 const KEYWORDS = [
 	"as","async","await","break","case","catch","chan","class","const","continue","def","defer","del","delete",
