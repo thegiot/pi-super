@@ -17,6 +17,7 @@ export interface MetaOptions {
 	sessionDir?: string;
 	/** stall-watchdog tuning; defaults are the production values (tests drive it fast) */
 	stallMs?: number;
+	compactionStallMs?: number;
 	watchdogMs?: number;
 }
 
@@ -35,6 +36,13 @@ const INTERNAL_PROMPT = "[pi-super]";
  * simply never speaks again.
  */
 const STALL_MS = 180_000;
+/**
+ * The same question for compaction, which is silent by construction (one blocking
+ * summarization call). It gets a much longer rope than a normal turn — but a rope, not an
+ * exemption: the summarization provider can wedge exactly like any other, and an unbounded
+ * pass would switch the watchdog off for good on the one agent that cannot be nudged.
+ */
+const COMPACTION_STALL_MS = 600_000;
 /** how often the watchdog looks */
 const WATCHDOG_MS = 30_000;
 /** never rescue more often than this — a provider outage must not become a restart loop */
@@ -75,10 +83,14 @@ export class MetaAgent extends EventEmitter {
 	private lastEventAt = 0;
 	private watchdog: ReturnType<typeof setInterval> | undefined;
 	private lastRescueAt = 0;
+	/** bumped by every stop(); a rescue in flight uses it to notice it was overtaken */
+	private stopGen = 0;
 	/** the user turn in flight, so a rescue can ask it again instead of losing it */
 	private lastPrompt: string | undefined;
-	/** pi is summarizing the conversation; see checkStall() for why this matters */
-	private compacting = false;
+	/** when pi started summarizing the conversation, 0 if it is not; see checkStall() */
+	private compactingSince = 0;
+	/** next start() must not resume: the user asked for a clean slate */
+	private freshStart = false;
 
 	constructor(private readonly opts: MetaOptions) {
 		super();
@@ -144,7 +156,8 @@ export class MetaAgent extends EventEmitter {
 		if (this.opts.sessionDir) {
 			mkdirSync(this.opts.sessionDir, { recursive: true });
 			args.push("--session-dir", this.opts.sessionDir);
-			const prev = this.latestSessionFile();
+			const prev = this.freshStart ? undefined : this.latestSessionFile();
+			this.freshStart = false;
 			if (prev) {
 				args.push("--session", prev);
 				resuming = true;
@@ -170,7 +183,12 @@ export class MetaAgent extends EventEmitter {
 		this.busy = false;
 
 		proc.stdout.setEncoding("utf8");
-		proc.stdout.on("data", (chunk: string) => this.onStdout(chunk));
+		// A child we have already given up on can still have bytes in flight. Its events
+		// describe a session we no longer run, and applying them (a stray compaction_start,
+		// say) leaves the *new* child's state machine holding a flag nobody will ever clear.
+		proc.stdout.on("data", (chunk: string) => {
+			if (this.proc === proc) this.onStdout(chunk);
+		});
 		proc.stderr.setEncoding("utf8");
 		proc.stderr.on("data", (chunk: string) => this.emit("log", chunk));
 		proc.on("exit", (code, signal) => {
@@ -247,7 +265,7 @@ export class MetaAgent extends EventEmitter {
 		this.turnPending = false;
 		this.lastPrompt = undefined;
 		this.assistant = undefined;
-		this.compacting = false;
+		this.compactingSince = 0;
 		this.pendingTools.clear();
 		this.emit("state", this.state);
 	}
@@ -267,8 +285,11 @@ export class MetaAgent extends EventEmitter {
 		// Compaction is a single blocking LLM call that emits nothing between its start and
 		// end events, so on a full context it looks exactly like a dead provider stream.
 		// Killing pi here would be self-defeating: the resumed child hits the same threshold
-		// and compacts again, only now from a cold start.
-		if (this.compacting) return;
+		// and compacts again, only now from a cold start. Past COMPACTION_STALL_MS, though,
+		// it is not compacting slowly, it is stuck, and a stuck compaction wedges every turn
+		// after it just as thoroughly.
+		const compacting = this.compactingSince > 0;
+		if (compacting && Date.now() - this.compactingSince < (this.opts.compactionStallMs ?? COMPACTION_STALL_MS)) return;
 		const silent = Date.now() - this.lastEventAt;
 		if (silent < (this.opts.stallMs ?? STALL_MS)) return;
 		const mins = Math.round(silent / 60_000);
@@ -279,14 +300,25 @@ export class MetaAgent extends EventEmitter {
 		}
 		this.lastRescueAt = Date.now();
 		const lost = this.lastPrompt;
-		this.push({ kind: "system", id: 0, text: `meta agent silent for ${mins}m mid-turn — restarting it` });
+		this.push({
+			kind: "system",
+			id: 0,
+			text: compacting
+				? `compaction has not finished in ${mins}m — restarting the meta agent`
+				: `meta agent silent for ${mins}m mid-turn — restarting it`,
+		});
 		this.emit("speak", {
 			message: lost
 				? "That request got stuck, so I restarted myself and I'm picking it up again."
 				: "I got stuck and restarted myself. Say that again?",
 			kind: "status",
 		});
+		const gen = this.stopGen;
 		await this.stop();
+		// Someone stopped us while we were waiting for the old child to die (server shutting
+		// down, an explicit stop from the UI, a test tearing down). Restarting now would
+		// resurrect an agent that was deliberately put down, and nothing would ever reap it.
+		if (this.stopGen !== gen + 1) return;
 		// the recovery prompt below *is* the resume nudge for this restart; two prompts into
 		// a fresh child would race (the second would need steering that may be rejected)
 		this.nudged = true;
@@ -310,6 +342,7 @@ export class MetaAgent extends EventEmitter {
 
 	/** SIGTERM, then SIGKILL if it does not go away; resolves once the child is gone. */
 	async stop(): Promise<void> {
+		this.stopGen++;
 		const proc = this.proc;
 		this.proc = undefined;
 		if (this.watchdog) clearInterval(this.watchdog);
@@ -394,11 +427,11 @@ export class MetaAgent extends EventEmitter {
 			// that is indistinguishable from the agent having died — and in voice mode it is
 			// pure silence. Say it out loud in the chat, and let the watchdog know.
 			case "compaction_start":
-				this.compacting = true;
+				this.compactingSince = Date.now();
 				this.push({ kind: "system", id: 0, text: `compacting context (${String(ev.reason ?? "threshold")})…` });
 				break;
 			case "compaction_end": {
-				this.compacting = false;
+				this.compactingSince = 0;
 				const result = ev.result as { tokensBefore?: number; estimatedTokensAfter?: number } | null | undefined;
 				const k = (n: unknown) => (typeof n === "number" ? `${Math.round(n / 1000)}k` : "?");
 				if (ev.aborted) this.push({ kind: "system", id: 0, text: "compaction aborted" });
@@ -502,14 +535,18 @@ export class MetaAgent extends EventEmitter {
 		if (this.running) this.write({ type: "abort" });
 	}
 
+	/**
+	 * Forget the conversation. On a dead child this cannot just start(): that resumes the
+	 * newest session file, i.e. hands back the very context the user asked to be rid of.
+	 */
 	newSession(): void {
+		this.transcript.length = 0;
+		this.resetTurnState();
 		if (!this.running) {
+			this.freshStart = true;
 			this.start();
 			return;
 		}
-		this.transcript.length = 0;
-		this.resetTurnState();
-		this.turnPending = false;
 		this.write({ type: "new_session" });
 	}
 }

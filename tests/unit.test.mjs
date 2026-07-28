@@ -4,7 +4,7 @@ import { isAuthed, originAllowed, parseCookies, requestToken, tokenEquals } from
 import { parseArgs } from "../dist/server/config.js";
 import { Tmux } from "../dist/server/tmux.js";
 import { storeUpload } from "../dist/server/uploads.js";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -195,6 +195,7 @@ setInterval(() => {}, 1000);
 		piBin: shim,
 		sessionDir: join(dir, "sessions"),
 		stallMs: 200,
+		compactionStallMs: 5000,
 		watchdogMs: 50,
 	});
 	const systems = [];
@@ -207,6 +208,89 @@ setInterval(() => {}, 1000);
 	assert.ok(systems.some((t) => /compacting context \(threshold\)/.test(t)), systems.join(" | "));
 	assert.ok(systems.some((t) => /context compacted: 150k → 32k tokens/.test(t)), systems.join(" | "));
 	assert.ok(!systems.some((t) => /restarting/.test(t)), `the watchdog shot a healthy compaction: ${systems.join(" | ")}`);
+});
+
+test("a compaction that never finishes is still rescued", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-compact-stuck-"));
+	// The summarization call can wedge like any other provider call. Waiting on it forever
+	// would mean the one turn nobody can nudge also switches the watchdog off for good.
+	const fakePi = join(dir, "fake-pi.mjs");
+	writeFileSync(
+		fakePi,
+		`process.stdin.setEncoding("utf8");
+let buf = "";
+process.stdin.on("data", (c) => {
+	buf += c;
+	let i;
+	while ((i = buf.indexOf("\\n")) >= 0) {
+		const line = buf.slice(0, i);
+		buf = buf.slice(i + 1);
+		if (!line.trim()) continue;
+		if (JSON.parse(line).type !== "prompt") continue;
+		process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+		process.stdout.write(JSON.stringify({ type: "compaction_start", reason: "threshold" }) + "\\n");
+		// ...and no compaction_end, ever
+	}
+});
+setInterval(() => {}, 1000);
+`,
+	);
+	const shim = join(dir, "pi");
+	writeFileSync(shim, `#!/bin/sh\nexec ${process.execPath} ${fakePi}\n`, { mode: 0o755 });
+	const { MetaAgent } = await import("../dist/server/meta.js");
+	const meta = new MetaAgent({
+		metaDir: join(import.meta.dirname, "..", "src", "meta"),
+		socketArgs: [],
+		piBin: shim,
+		sessionDir: join(dir, "sessions"),
+		stallMs: 100,
+		compactionStallMs: 400,
+		watchdogMs: 50,
+	});
+	const systems = [];
+	meta.on("item", (item) => item.kind === "system" && systems.push(item.text));
+	meta.prompt("summarize the day");
+	const deadline = Date.now() + 6000;
+	while (Date.now() < deadline && !systems.some((t) => /restarting/.test(t))) await new Promise((r) => setTimeout(r, 50));
+	await meta.stop();
+
+	assert.ok(systems.some((t) => /compaction has not finished in .*restarting/.test(t)), systems.join(" | "));
+});
+
+test("/new on a dead agent starts clean instead of resuming the old context", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-newsession-"));
+	const argvLog = join(dir, "argv.log");
+	const sessions = join(dir, "sessions");
+	mkdirSync(sessions, { recursive: true });
+	// a session file exactly as a previous run would have left it
+	writeFileSync(
+		join(sessions, "old.jsonl"),
+		`${JSON.stringify({ type: "session", id: "old" })}\n${JSON.stringify({ type: "message", message: { role: "user", content: "the context to forget" } })}\n`,
+	);
+	const fakePi = join(dir, "fake-pi.mjs");
+	writeFileSync(fakePi, `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(argvLog)}, process.argv.slice(2).join(" "));
+setInterval(() => {}, 1000);
+`);
+	const shim = join(dir, "pi");
+	writeFileSync(shim, `#!/bin/sh\nexec ${process.execPath} ${fakePi} "$@"\n`, { mode: 0o755 });
+	const { MetaAgent } = await import("../dist/server/meta.js");
+	const meta = new MetaAgent({
+		metaDir: join(import.meta.dirname, "..", "src", "meta"),
+		socketArgs: [],
+		piBin: shim,
+		sessionDir: sessions,
+	});
+	assert.equal(meta.hasPreviousSession, true, "the fixture is only meaningful if there is something to resume");
+	meta.newSession();
+	const deadline = Date.now() + 4000;
+	while (Date.now() < deadline && !existsSync(argvLog)) await new Promise((r) => setTimeout(r, 50));
+	await meta.stop();
+
+	const argv = readFileSync(argvLog, "utf8");
+	assert.ok(!/--session /.test(argv), `"forget the conversation" resumed it anyway: ${argv}`);
+	assert.match(argv, /--session-dir/, "the fresh session is still persisted for later resumes");
+	assert.equal(meta.transcript.length > 0 && meta.transcript.every((i) => i.kind === "system"), true);
 });
 
 // --- passkey store ---------------------------------------------------------

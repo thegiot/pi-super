@@ -555,7 +555,13 @@ function refreshCallBar(detail?: string): void {
 	const idle = s === "idle";
 	el.call.hidden = idle && state.view !== "meta";
 	el.call.classList.toggle("idle", idle);
-	for (const id of ["btn-mute", "btn-hush", "btn-hangup"]) $(id).hidden = idle;
+	// mute/hush need a call that is actually up; hang up doubles as "dismiss this failed
+	// dial"; /new is a whole-conversation reset, so it waits until there is no call to
+	// half-reset (the speech model keeps its own context, which we cannot clear from here).
+	$("btn-mute").hidden = s !== "live";
+	$("btn-hush").hidden = s !== "live";
+	$("btn-hangup").hidden = idle;
+	$("btn-new-session").hidden = !idle;
 	el.callState.textContent = idle
 		? "not on a call"
 		: s === "live"
@@ -598,7 +604,7 @@ $("btn-call").onclick = () => {
 };
 $("btn-hangup").onclick = () => {
 	dialFailed = false;
-	voice.stop();
+	voice.stop({ clearError: true });
 };
 $("btn-hush").onclick = () => voice.hush();
 $("btn-mute").onclick = () => {

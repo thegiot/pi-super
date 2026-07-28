@@ -33,7 +33,11 @@ export interface VoiceApi {
 	config: VoiceConfig | undefined;
 	readonly state: VoiceState;
 	start(): Promise<void>;
-	stop(): void;
+	/**
+	 * `clearError` marks an explicit hang-up: a failed dial deliberately *keeps* the error
+	 * state so it stays on screen, but then only the user pressing hang up can retire it.
+	 */
+	stop(opts?: { clearError?: boolean }): void;
 	toggleMute(): boolean;
 	/** "stop talking" — an explicit interruption, never guessed from VAD */
 	hush(): void;
@@ -458,7 +462,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		delegationId = undefined;
 	}
 
-	function stop(): void {
+	function stop(opts?: { clearError?: boolean }): void {
 		generation++;
 		if (reconnectTimer) clearTimeout(reconnectTimer);
 		reconnectTimer = undefined;
@@ -468,7 +472,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		void wakeLock?.release().catch(() => {});
 		wakeLock = undefined;
 		if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "none";
-		if (state !== "error") setState("idle");
+		if (state !== "error" || opts?.clearError) setState("idle");
 	}
 
 	function toggleMute(): boolean {
