@@ -306,6 +306,28 @@ async function main() {
 	const afterProse = await c.evaluate(`!document.getElementById("peek").hidden`);
 	log("peek on prose stays closed:", !afterProse);
 
+	// a directory is a listing, and every row of it is another tap
+	await c.evaluate(`window.piSuper.peek.open({ path: ${JSON.stringify(STATE_DIR)} }); 1`);
+	await wait(1200);
+	const dirRows = await c.evaluate(`[...document.querySelectorAll("#peek-body .peek-row .nm")].map(e => e.textContent)`);
+	await c.shot("03f-peek-dir");
+	// tapping a row opens that file, without ever going near the terminal again
+	const rowSpot = await c.evaluate(`(() => {
+    const row = [...document.querySelectorAll("#peek-body .peek-row")].find(r => r.textContent.startsWith("peek-me.png"));
+    if (!row) return null;
+    const b = row.getBoundingClientRect();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  })()`);
+	if (!rowSpot) throw new Error("the listing did not show the file we put there");
+	await c.tap(rowSpot.x, rowSpot.y);
+	await wait(1200);
+	const fromRow = await c.evaluate(`(() => {
+    const img = document.querySelector("#peek-body img");
+    return { decoded: !!img && img.naturalWidth > 0, path: document.getElementById("peek-path").textContent.replace(/[\\u2066\\u2069]/g, "") };
+  })()`);
+	log("peek dir:", JSON.stringify({ rows: dirRows.slice(0, 6), fromRow }));
+	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
+
 	// code gets the four colours; open it directly, the tap itself is covered above
 	const sample = join(STATE_DIR, "sample.ts");
 	writeFileSync(
@@ -514,6 +536,10 @@ async function main() {
 		["tapping prose opens nothing", !afterProse],
 		["tapping a path in the raw terminal opens it too", rawPeek.open && rawPeek.decoded && rawPeek.path.endsWith("peek-me.png")],
 		["code is highlighted, block comments across lines", hl.k > 0 && hl.s > 0 && hl.c > 0 && hl.n > 0 && hl.blockLine2],
+		[
+			"a directory lists itself and its rows open files",
+			dirRows.includes("..") && dirRows.includes("peek-me.png") && fromRow.decoded && fromRow.path.endsWith("peek-me.png"),
+		],
 	];
 	let failed = 0;
 	for (const [name, ok] of checks) {

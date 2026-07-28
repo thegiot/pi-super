@@ -63,8 +63,9 @@ Two ways to work:
   left/right to walk the windows and up/down to page through the terminal; drag windows by
   the ⠿ grip in the list to reorder — that renumbers them in tmux, for every client.
   Tapping a file path an agent printed — in any view — opens the file right there:
-  `plot.png` as an image, `src/server/term.ts:88` syntax-highlighted and scrolled to line 88
-  (bare names resolve against that pane's cwd).
+  `plot.png` as an image, `src/server/term.ts:88` syntax-highlighted and scrolled to line 88,
+  a directory as a listing you can tap your way through (bare names resolve against that
+  pane's cwd).
 * **Hand it to super — the meta agent** (📞). Opens the chat and places the call in one press.
   Ask for anything on the machine: "what's the status of the muaddib work?", "tell
   it to run the tests", "open the kitchen radio project and find out why it stopped

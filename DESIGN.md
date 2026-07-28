@@ -68,7 +68,9 @@ Named after hbomberguy's *super*: one remote that drives everything.
   focus is available for exact TUI typing.
 * **Peek at files.** A tap on a path resolves the token under the finger against the
   pane's cwd and pops the file up: images as images, text syntax-highlighted in a `<pre>`,
-  `file:42` scrolled to that line. Works in all three views, by two different hit tests —
+  `file:42` scrolled to that line, and a directory as a listing whose every row is another
+  tap (`..` included) — the only file browser this needs, since you arrive next to what
+  you were after. Works in all three views, by two different hit tests —
   the reader and the chat are DOM text (`caretRangeFromPoint`), while the raw grid has no
   node under the finger, so the tap is divided into a cell and read back out of the xterm
   buffer (following `isWrapped`, because at phone width a long path spans two rows).

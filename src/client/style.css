@@ -628,3 +628,48 @@ button.primary {
 .peek-code .k {
 	color: #ff7b72;
 }
+
+.peek-dir {
+	display: flex;
+	flex-direction: column;
+}
+
+.peek-row {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+	justify-content: space-between;
+	/* a directory row is a touch target first and a line of text second */
+	min-height: 36px;
+	padding: 4px 6px;
+	background: none;
+	border: 0;
+	border-radius: 6px;
+	color: var(--fg);
+	font: 13px/1.3 ui-monospace, "SF Mono", Menlo, monospace;
+	text-align: left;
+}
+
+.peek-row:active {
+	background: #2a3140;
+}
+
+.peek-row.dir .nm {
+	color: var(--accent);
+}
+
+.peek-row.link .nm {
+	color: #79c0ff;
+}
+
+.peek-row .nm {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.peek-row .sz {
+	color: var(--dim);
+	font-size: 11px;
+	flex: none;
+}

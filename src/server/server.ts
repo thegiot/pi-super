@@ -421,6 +421,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 					...SECURITY_HEADERS,
 					// the client shows the resolved path (it only knows the token it was tapped on)
 					"x-peek-path": encodeURIComponent(peek.path),
+					// a directory listing is JSON too, so the kind cannot be read off the content type
+					"x-peek-kind": peek.kind,
 					"x-peek-bytes": String(peek.bytes),
 					"x-peek-truncated": peek.truncated ? "1" : "0",
 				});

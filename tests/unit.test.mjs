@@ -378,7 +378,15 @@ test("readPeek resolves against the pane cwd and classifies what it finds", asyn
 	assert.equal(readPeek(join(dir, "shot.png")).type, "image/png");
 	assert.equal(readPeek("core.bin", dir).error, "binary file", "no point rendering ELF in a <pre>");
 	assert.equal(readPeek("nope.txt", dir).status, 404);
-	assert.equal(readPeek(dir).error, "directory");
+
+	// a directory lists itself, directories first, so the popup can be a file browser
+	mkdirSync(join(dir, "sub"), { recursive: true });
+	const listing = readPeek(dir);
+	assert.equal(listing.kind, "dir");
+	const entries = JSON.parse(listing.body.toString()).entries;
+	assert.deepEqual(entries.map((e) => e.name), ["sub", "core.bin", "note.txt", "shot.png"]);
+	assert.equal(entries[0].dir, true);
+	assert.equal(entries.find((e) => e.name === "note.txt").size, 12);
 
 	// a phone must not be handed a whole log file
 	writeFileSync(join(dir, "big.log"), "x".repeat(MAX_TEXT_BYTES + 5000));

@@ -132,6 +132,52 @@ function highlightLine(div: HTMLElement, line: string, re: RegExp | undefined, s
 	push(rest.slice(last));
 }
 
+// --------------------------------------------------------------- directories
+
+interface DirEntry {
+	name: string;
+	dir: boolean;
+	link: boolean;
+	size: number;
+}
+
+const note = (text: string): HTMLElement =>
+	Object.assign(document.createElement("div"), { className: "peek-note", textContent: text });
+
+const human = (n: number): string => {
+	if (n < 1024) return `${n} B`;
+	const u = ["K", "M", "G", "T"];
+	let i = -1;
+	let v = n;
+	while (v >= 1024 && i < u.length - 1) {
+		v /= 1024;
+		i++;
+	}
+	return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${u[i]}`;
+};
+
+/**
+ * A tapped directory lists itself, and every row is another tap — which is the only
+ * file browser this app is ever going to need: you arrive already next to what you want.
+ */
+function renderDir(dir: string, entries: DirEntry[], go: (path: string) => void): HTMLElement {
+	const base = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+	const list = document.createElement("div");
+	list.className = "peek-dir";
+	const row = (name: string, cls: string, size?: string): void => {
+		const b = document.createElement("button");
+		b.className = `peek-row ${cls}`;
+		b.append(Object.assign(document.createElement("span"), { className: "nm", textContent: name }));
+		if (size) b.append(Object.assign(document.createElement("span"), { className: "sz", textContent: size }));
+		b.onclick = () => go(name === ".." ? base.replace(/\/[^/]*$/, "") || "/" : `${base}/${name}`);
+		list.append(b);
+	};
+	if (base !== "") row("..", "dir");
+	for (const e of entries) row(e.name + (e.dir ? "/" : ""), e.dir ? "dir" : e.link ? "link" : "file", e.dir ? undefined : human(e.size));
+	if (entries.length === 0) list.append(note("(empty)"));
+	return list;
+}
+
 interface PeekOptions {
 	/** cwd of the pane on screen — relative paths are printed relative to it */
 	cwd: () => string;
@@ -188,7 +234,7 @@ export function initPeek(opts: PeekOptions): Peek {
 		shown = target.path;
 		root.hidden = false;
 		setTitle(target.path);
-		body.replaceChildren(Object.assign(document.createElement("div"), { className: "peek-note", textContent: "…" }));
+		body.replaceChildren(note("…"));
 		const q = new URLSearchParams({ path: target.path, cwd: opts.cwd() });
 		let res: Response;
 		try {
@@ -211,6 +257,14 @@ export function initPeek(opts: PeekOptions): Peek {
 		const type = res.headers.get("content-type") ?? "";
 		const truncated = res.headers.get("x-peek-truncated") === "1";
 		setTitle(resolved + (target.line ? `:${target.line}` : ""));
+		if (res.headers.get("x-peek-kind") === "dir") {
+			const listing = (await res.json()) as { entries: DirEntry[] };
+			if (mine !== epoch) return;
+			body.replaceChildren(renderDir(resolved, listing.entries, (p) => void open({ path: p })));
+			if (truncated) body.append(note(`… first ${listing.entries.length} entries only`));
+			body.scrollTop = 0;
+			return;
+		}
 		if (type.startsWith("image/")) {
 			const blob = await res.blob();
 			if (mine !== epoch) return;
@@ -240,13 +294,7 @@ export function initPeek(opts: PeekOptions): Peek {
 			pre.append(div);
 		}
 		body.replaceChildren(pre);
-		if (truncated)
-			body.append(
-				Object.assign(document.createElement("div"), {
-					className: "peek-note",
-					textContent: "… truncated",
-				}),
-			);
+		if (truncated) body.append(note("… truncated"));
 		hit?.scrollIntoView({ block: "center" });
 	}
 
