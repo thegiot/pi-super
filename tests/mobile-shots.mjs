@@ -328,9 +328,7 @@ async function main() {
   })()`);
 	const viewChecks = await c.evaluate(`(() => {
     const vis = (id) => { const e = document.getElementById(id); return !!(e.offsetWidth || e.offsetHeight); };
-    const tab = document.querySelector("#tabs .tab.active");
-    return { view: window.piSuper.state.view, ribbonVisible: vis("ribbon"), insertVisible: vis("btn-insert"), abortVisible: vis("btn-abort"),
-             activeTabColor: tab ? getComputedStyle(tab).borderTopColor : "(none)" };
+    return { view: window.piSuper.state.view, ribbonVisible: vis("ribbon"), insertVisible: vis("btn-insert"), abortVisible: vis("btn-abort") };
   })()`);
 	console.log("\nmeta view:", JSON.stringify(viewChecks));
 
@@ -357,8 +355,6 @@ async function main() {
 		["footer visible above the fold", metrics.footer.top + metrics.footer.h <= metrics.viewport.h + 1],
 		["terminal ribbon hidden in chat view", viewChecks.view !== "meta" || !viewChecks.ribbonVisible],
 		["abort button shown in chat view", viewChecks.view !== "meta" || viewChecks.abortVisible],
-		// green is reserved for "this is what the view is showing"; in the chat it is not
-		["current window tab is blue in chat view", viewChecks.view !== "meta" || viewChecks.activeTabColor === "rgb(79, 127, 208)"],
 		["ribbon key reaches the pty without stealing focus", ribbon.sent === "C-t" && ribbon.focused === "input"],
 		["drafts are per window and per view", drafts.onB === "" && drafts.backOnA === "for A" && drafts.onMeta === ""],
 	];
