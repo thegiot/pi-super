@@ -84,12 +84,11 @@ button.icon {
 	color: var(--accent);
 }
 
-/* In the chat view the terminal is off screen, so the current window must stop claiming to
- * be what you are looking at. It goes neutral rather than blue: blue already means "the
- * chat is open" on the call button, and two blue outlines in one bar say nothing. */
+/* in the chat view the terminal is not on screen: mark the current window in the chat's
+ * blue, so green always means "this is what the view is showing" */
 body.meta-view .tab.active {
-	border-color: #5b636f;
-	color: var(--fg);
+	border-color: #4f7fd0;
+	color: #7fa8e8;
 }
 
 .tab.activity::after {
@@ -257,19 +256,14 @@ main {
 	font-size: 13px;
 }
 
-/* The call button's states are filled, the tabs are outlined: the bar reuses green (live)
- * and blue (chat) on both, and the fill is what keeps "a call is up" from reading as "this
- * window is on screen" at a glance. */
 #btn-call.armed {
 	border-color: var(--accent);
 	color: var(--accent);
-	background: #16281a;
 }
 
 #btn-call.busy {
 	border-color: var(--warn);
 	color: var(--warn);
-	background: #2b2113;
 }
 
 button.armed {
