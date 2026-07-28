@@ -49,11 +49,25 @@ export class TermConnection {
 		return { cols: this.cols, rows: this.rows };
 	}
 
-	async start(cols: number, rows: number, sizeMode: SizeMode): Promise<void> {
+	/**
+	 * `window` is where the browser left off. Selecting it *before* the tmux client is
+	 * spawned is the whole point: a grouped session starts on the base session's current
+	 * window, so attaching first and selecting after meant the phone always painted a
+	 * second of somebody else's window 0 before snapping to the right one. It also gets
+	 * ignore-size geometry right, which is read off the current window at spawn time.
+	 */
+	async start(cols: number, rows: number, sizeMode: SizeMode, window?: string): Promise<void> {
 		this.cols = Math.max(20, cols);
 		this.rows = Math.max(5, rows);
 		this.sizeMode = sizeMode;
 		await this.tmux.newSessionGrouped(this.sessionName, this.opts.base);
+		if (window) {
+			try {
+				await this.tmux.selectWindow(this.sessionName, window);
+			} catch {
+				// the remembered window is gone; the base session's choice is a fine fallback
+			}
+		}
 		// Session-scoped options: they only affect clients attached to *our* session.
 		this.statusHidden = false;
 		if (!this.opts.statusLine) {

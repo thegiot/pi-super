@@ -400,6 +400,27 @@ footer {
 	align-items: center;
 	padding: 7px 4px;
 	border-bottom: 1px solid #23272f;
+	background: var(--bg);
+}
+
+.wrow.dragging {
+	position: relative;
+	z-index: 2;
+	opacity: 0.9;
+	border-radius: 7px;
+	box-shadow: 0 6px 18px #000a;
+}
+
+/* the grip owns the drag so the rest of the row stays a plain tap target */
+.wrow .grip {
+	flex: 0 0 auto;
+	padding: 4px 8px;
+	color: var(--dim);
+	font-size: 17px;
+	line-height: 1;
+	cursor: grab;
+	touch-action: none;
+	user-select: none;
 }
 
 .wrow .meta {

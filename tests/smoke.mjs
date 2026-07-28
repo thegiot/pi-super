@@ -72,6 +72,32 @@ const up = await (
 log("upload:", up.path);
 if (!up.path.endsWith(".png")) throw new Error("upload ext wrong");
 
+// reordering: put the new window first, and check tmux renumbered 0..n-1 for everyone
+ws.send(JSON.stringify({ t: "moveWindow", window: created.id, target: windows.windows[0].id, where: "before" }));
+await wait(1200);
+const reordered = seen.filter((m) => m.t === "windows").pop().windows;
+log("after move:", reordered.map((w) => `${w.index}:${w.name}`).join(" "));
+if (reordered[0].id !== created.id) throw new Error("moveWindow did not put the window first");
+if (reordered.some((w, i) => w.index !== i)) throw new Error("windows were not renumbered contiguously");
+log("moveWindow + renumber ok");
+
+// a fresh attach must land on the requested window directly — no flash of somebody else's
+const ws2 = new WebSocket(`${base.replace("http", "ws")}/ws?cols=90&rows=25&mode=ignore&window=${created.id}`, {
+	headers: auth,
+});
+const seen2 = [];
+ws2.on("message", (data, isBinary) => {
+	if (!isBinary) seen2.push(JSON.parse(data.toString()));
+});
+await new Promise((r) => ws2.on("open", r));
+await wait(1500);
+const first = seen2.find((m) => m.t === "windows");
+if (!first) throw new Error("no window list on the second connection");
+const active = first.windows.find((w) => w.active);
+log("attached straight to:", `${active?.index}:${active?.name}`);
+if (active?.id !== created.id) throw new Error(`attach landed on ${active?.name}, not the requested window`);
+ws2.close();
+
 ws.send(JSON.stringify({ t: "killWindow", window: created.id }));
 await wait(600);
 ws.close();

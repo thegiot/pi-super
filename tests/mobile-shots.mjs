@@ -75,7 +75,20 @@ async function cdp(url) {
 		writeFileSync(path, Buffer.from(data, "base64"));
 		log(`shot: ${path}`);
 	};
-	return { send, evaluate, shot };
+	/** A one-finger drag, as CDP touch events (which is what produces real pointer events). */
+	const drag = async (from, to, steps = 12) => {
+		const point = (x, y) => [{ x: Math.round(x), y: Math.round(y), radiusX: 8, radiusY: 8, force: 1 }];
+		await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: point(from.x, from.y) });
+		for (let i = 1; i <= steps; i++) {
+			await send("Input.dispatchTouchEvent", {
+				type: "touchMove",
+				touchPoints: point(from.x + ((to.x - from.x) * i) / steps, from.y + ((to.y - from.y) * i) / steps),
+			});
+			await wait(16);
+		}
+		await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+	};
+	return { send, evaluate, shot, drag };
 }
 
 async function main() {
@@ -161,6 +174,18 @@ async function main() {
 	await wait(1500);
 	await c.shot("02-terminal-wide-window");
 
+	// swipe left/right across the terminal to walk the window list
+	const activeName = () =>
+		c.evaluate(`(window.piSuper.state.windows.find(w => w.active) || {}).name || "(none)"`);
+	const beforeSwipe = await activeName();
+	await c.drag({ x: 300, y: 400 }, { x: 90, y: 410 });
+	await wait(1200);
+	const afterSwipe = await activeName();
+	await c.drag({ x: 90, y: 400 }, { x: 300, y: 410 });
+	await wait(1200);
+	const backSwipe = await activeName();
+	log("swipe:", `${beforeSwipe} -> ${afterSwipe} -> ${backSwipe}`);
+
 	await setView("reader");
 	await wait(2000);
 	await c.shot("03-reader");
@@ -169,6 +194,21 @@ async function main() {
 	await c.evaluate(`document.getElementById("btn-menu").click(); 1`);
 	await wait(800);
 	await c.shot("04-drawer");
+
+	// drag the last window to the top of the list by its grip, and let tmux renumber
+	const gripBox = await c.evaluate(`(() => {
+    const rows = [...document.querySelectorAll("#window-list .wrow")];
+    const last = rows[rows.length - 1];
+    const g = last.querySelector(".grip").getBoundingClientRect();
+    const first = rows[0].getBoundingClientRect();
+    return { x: g.x + g.width / 2, y: g.y + g.height / 2, topY: first.y + 4, name: last.textContent.slice(0, 24) };
+  })()`);
+	await c.drag({ x: gripBox.x, y: gripBox.y }, { x: gripBox.x, y: gripBox.topY }, 20);
+	await wait(1500);
+	const order = await c.evaluate(`window.piSuper.state.windows.map(w => w.index + ":" + w.name).join(" ")`);
+	const reorder = { dragged: gripBox.name, order };
+	log("drag-reorder:", JSON.stringify(reorder));
+	await c.shot("04b-drawer-reordered");
 
 	// meta chat with the keyboard-ish state: focus the composer and type
 	// btn-call opens the chat (and would dial); the shot only needs the view, so no click
@@ -260,6 +300,8 @@ async function main() {
 		["touch targets >= 32px tall", metrics.smallestTouchTargets.every((b) => b.h >= 32)],
 		["call bar does not overlay the chat log", callLayout.callH > 0 && callLayout.metaBottom <= callLayout.callTop + 1],
 		["/new reachable in the chat view with no call up", idleBar.barVisible && idleBar.newVisible && !idleBar.hangupVisible],
+		["swipe walks windows and comes back", afterSwipe !== beforeSwipe && backSwipe === beforeSwipe],
+		["dragging a window to the top renumbers it to 0", reorder.order.startsWith("0:agent")],
 		["footer visible above the fold", metrics.footer.top + metrics.footer.h <= metrics.viewport.h + 1],
 		["terminal ribbon hidden in chat view", viewChecks.view !== "meta" || !viewChecks.ribbonVisible],
 		["abort button shown in chat view", viewChecks.view !== "meta" || viewChecks.abortVisible],

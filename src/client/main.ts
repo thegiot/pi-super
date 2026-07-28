@@ -41,6 +41,7 @@ const el = {
 	ribbon: $("ribbon"),
 	drawer: $("drawer"),
 	windowList: $("window-list"),
+	views: $("views"),
 	newCwd: $<HTMLInputElement>("new-cwd"),
 	claim: $<HTMLInputElement>("chk-claim"),
 	passkeyInfo: $("passkey-info"),
@@ -180,7 +181,12 @@ function connect(): void {
 	if (state.ws) return;
 	const { cols, rows } = viewport();
 	const proto = location.protocol === "https:" ? "wss:" : "ws:";
-	const url = `${proto}//${location.host}/ws?cols=${cols}&rows=${rows}&mode=${state.sizeMode}`;
+	// Ask for the remembered window up front: selecting it after the attach means the first
+	// paint is whatever window the desktop happens to sit on, which flashes past for a second.
+	const want = localStorage.getItem("lastWindow");
+	const url =
+		`${proto}//${location.host}/ws?cols=${cols}&rows=${rows}&mode=${state.sizeMode}` +
+		(want ? `&window=${encodeURIComponent(want)}` : "");
 	const ws = new WebSocket(url);
 	ws.binaryType = "arraybuffer";
 	state.ws = ws;
@@ -336,6 +342,15 @@ function selectWindow(id: string): void {
 	}
 }
 
+/** Neighbouring window, in list order. Clamped: wrapping past the ends feels like a bug. */
+function stepWindow(delta: number): void {
+	const at = state.windows.findIndex((w) => w.active);
+	const next = state.windows[at + delta];
+	if (at < 0 || !next) return;
+	selectWindow(next.id);
+	status(`${delta > 0 ? "▸" : "◂"} ${next.index}:${next.name}`, 1200);
+}
+
 function renderTabs(): void {
 	el.tabs.replaceChildren(
 		...state.windows.map((w) => {
@@ -363,11 +378,70 @@ function paneTitle(w: WindowInfo): string {
 	return title;
 }
 
+/**
+ * Drag-to-renumber, on a dedicated grip: the row itself is a tap target (select this
+ * window), and a long-press-to-drag would make every mis-timed tap feel broken. Pointer
+ * events rather than HTML5 drag-and-drop, which does not exist on touch.
+ */
+let dragging: string | undefined;
+function startRowDrag(ev: PointerEvent, row: HTMLElement, id: string): void {
+	ev.preventDefault();
+	const list = el.windowList;
+	const grip = ev.currentTarget as HTMLElement;
+	grip.setPointerCapture(ev.pointerId);
+	dragging = id;
+	row.classList.add("dragging");
+	let origin = ev.clientY;
+
+	const move = (e: PointerEvent) => {
+		row.style.transform = `translateY(${e.clientY - origin}px)`;
+		const mid = row.getBoundingClientRect().top + row.offsetHeight / 2;
+		for (const other of [...list.children] as HTMLElement[]) {
+			if (other === row) continue;
+			const box = other.getBoundingClientRect();
+			if (mid < box.top || mid > box.bottom) continue;
+			const before = row.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING;
+			const was = row.getBoundingClientRect().top;
+			list.insertBefore(row, before ? other.nextSibling : other);
+			// the row just jumped a slot; move the drag origin with it, or the finger and the
+			// row drift apart by one row height per swap
+			origin += row.getBoundingClientRect().top - was;
+			row.style.transform = `translateY(${e.clientY - origin}px)`;
+			break;
+		}
+	};
+	const end = () => {
+		grip.removeEventListener("pointermove", move);
+		grip.removeEventListener("pointerup", end);
+		grip.removeEventListener("pointercancel", end);
+		row.style.transform = "";
+		row.classList.remove("dragging");
+		dragging = undefined;
+		const prev = row.previousElementSibling as HTMLElement | null;
+		const next = row.nextElementSibling as HTMLElement | null;
+		// Anchor on a neighbour rather than an index: the list may have changed under us.
+		if (prev?.dataset.window) send({ t: "moveWindow", window: id, target: prev.dataset.window, where: "after" });
+		else if (next?.dataset.window) send({ t: "moveWindow", window: id, target: next.dataset.window, where: "before" });
+		else renderWindowList();
+	};
+	grip.addEventListener("pointermove", move);
+	grip.addEventListener("pointerup", end);
+	grip.addEventListener("pointercancel", end);
+}
+
 function renderWindowList(): void {
+	// a poll landing mid-drag would replace the node under the finger
+	if (dragging) return;
 	el.windowList.replaceChildren(
 		...state.windows.map((w) => {
 			const row = document.createElement("div");
 			row.className = "wrow";
+			row.dataset.window = w.id;
+			const grip = document.createElement("div");
+			grip.className = "grip";
+			grip.textContent = "⠿";
+			grip.title = "drag to reorder (renumbers the tmux windows)";
+			grip.onpointerdown = (ev) => startRowDrag(ev, row, w.id);
 			const meta = document.createElement("div");
 			meta.className = "meta";
 			const name = document.createElement("div");
@@ -391,7 +465,7 @@ function renderWindowList(): void {
 				selectWindow(w.id);
 				closeDrawer();
 			};
-			row.append(meta);
+			row.append(grip, meta);
 			return row;
 		}),
 	);
@@ -707,6 +781,40 @@ el.claim.onchange = () => {
 	send({ t: "mode", mode: state.sizeMode, cols, rows });
 	setTimeout(refit, 150);
 };
+
+/**
+ * Swipe left/right to walk the window list — the tab strip is small and crowded on a phone.
+ *
+ * Deliberately narrow: one finger, mostly-horizontal, and never while the view can still
+ * scroll sideways (an ignore-size terminal is wider than the screen and panning it is the
+ * more specific gesture). The chat is not a window, so it is out.
+ */
+const SWIPE_MIN_PX = 60;
+const SWIPE_MAX_MS = 700;
+let swipe: { x: number; y: number; at: number } | undefined;
+el.views.addEventListener(
+	"touchstart",
+	(e: TouchEvent) => {
+		const t = e.touches.length === 1 ? e.touches[0] : undefined;
+		swipe = t ? { x: t.clientX, y: t.clientY, at: Date.now() } : undefined;
+	},
+	{ passive: true },
+);
+el.views.addEventListener(
+	"touchend",
+	(e: TouchEvent) => {
+		const from = swipe;
+		swipe = undefined;
+		const t = e.changedTouches[0];
+		if (!from || !t || state.view === "meta" || Date.now() - from.at > SWIPE_MAX_MS) return;
+		const dx = t.clientX - from.x;
+		const dy = t.clientY - from.y;
+		if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 2) return;
+		if (el.term.scrollWidth > el.term.clientWidth + 2) return;
+		stepWindow(dx < 0 ? 1 : -1);
+	},
+	{ passive: true },
+);
 
 const onViewportChange = () => {
 	// Keyboard/URL-bar resizes squeeze the layout; whoever was reading the tail of the

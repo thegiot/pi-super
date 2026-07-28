@@ -584,8 +584,11 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		const cols = Number(url.searchParams.get("cols") ?? 80);
 		const rows = Number(url.searchParams.get("rows") ?? 24);
 		const mode = url.searchParams.get("mode") === "claim" ? "claim" : "ignore";
+		// only a tmux window id (@12) — anything else is somebody probing our tmux targets
+		const wantWindow = url.searchParams.get("window");
+		const window = wantWindow && /^@\d+$/.test(wantWindow) ? wantWindow : undefined;
 		try {
-			await term.start(cols, rows, mode);
+			await term.start(cols, rows, mode, window);
 		} catch (err) {
 			send({ t: "fatal", error: `tmux attach failed: ${String((err as Error).message)}` });
 			cleanup();
@@ -664,6 +667,10 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			case "select":
 				await tmux.selectWindow(s, String(msg.window));
 				await refresh(); // don't make the tab highlight wait for the next poll
+				return;
+			case "moveWindow":
+				await tmux.moveWindow(s, String(msg.window), String(msg.target), msg.where === "after" ? "after" : "before");
+				await refresh();
 				return;
 			case "newWindow": {
 				const windows = await tmux.listWindows(s);

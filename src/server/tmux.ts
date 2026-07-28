@@ -206,6 +206,19 @@ export class Tmux {
 		await this.run(["select-window", "-t", `${session}:${windowId}`]);
 	}
 
+	/**
+	 * Reorder: put `src` immediately before/after `dst`, then renumber the session 0..n-1.
+	 *
+	 * Two commands on purpose — `move-window -r` is not a modifier, it *is* the renumber
+	 * operation, and passing it alongside -s/-t makes tmux renumber and ignore the move.
+	 * The windows are shared with the base session, so this reorders them for everyone.
+	 */
+	async moveWindow(session: string, src: string, dst: string, where: "before" | "after"): Promise<void> {
+		if (src === dst) return;
+		await this.run(["move-window", where === "before" ? "-b" : "-a", "-s", `${session}:${src}`, "-t", `${session}:${dst}`]);
+		await this.run(["move-window", "-r", "-t", `=${session}`]);
+	}
+
 	async newWindow(
 		session: string,
 		opts: { cwd?: string; name?: string; command?: string; index?: number } = {},
