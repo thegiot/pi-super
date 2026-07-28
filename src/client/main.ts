@@ -668,6 +668,10 @@ function pruneDrafts(): void {
 // -------------------------------------------------------------------- input
 
 function sendText(text: string, enter: boolean): void {
+	// Sending is the user saying "done". An open microphone would splice the next word into
+	// the box we just emptied, refilling it with what was already sent — which reads as the
+	// send having silently failed, and leaves stale text behind for every send after it.
+	dictate.stop();
 	if (!text) return;
 	if (state.view === "meta") meta.send(text);
 	else send({ t: "paste", text, enter });

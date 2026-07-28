@@ -203,6 +203,23 @@ async function main() {
 	console.log("\n=== textarea ===");
 	console.log(final.input);
 
+	// Sending with the mic still open used to leave the composer fighting the transcript:
+	// the box emptied, the next fragment refilled it with what had just been sent, and every
+	// send after that looked like it did nothing.
+	await c.evaluate(`document.getElementById("btn-mic").click(); "tapped"`);
+	await wait(2500);
+	const listeningAgain = await c.evaluate(`window.piSuper.dictate.state === "listening"`);
+	const sent = await c.evaluate(`(() => {
+		document.getElementById("btn-send").click();
+		return { state: window.piSuper.dictate.state, input: document.getElementById("input").value };
+	})()`);
+	await wait(2000); // long enough for a late fragment to arrive, if the mic were still open
+	const settled = await c.evaluate(`({
+		state: window.piSuper.dictate.state,
+		input: document.getElementById("input").value,
+		armed: document.getElementById("btn-mic").className.includes("armed"),
+	})`);
+
 	const checks = [
 		["mic button offered", micShown],
 		["mic opened", !!listening],
@@ -212,6 +229,10 @@ async function main() {
 		[`primed jargon transcribed ("${EXPECTED}")`, final.input.includes(EXPECTED)],
 		["not auto-sent", final.input.trim().length > 0],
 		["mic released on the second tap", final.state === "idle" && !final.micClass.includes("armed")],
+		["mic reopened for the send test", listeningAgain],
+		["send closes an open mic", sent.state === "idle" && !settled.armed],
+		["send empties the composer", sent.input === ""],
+		["nothing refills the composer after a send", settled.input === ""],
 	];
 	console.log("\n=== result ===");
 	let failed = 0;
