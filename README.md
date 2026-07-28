@@ -1,9 +1,13 @@
 # pi-super
 
-[![IronMan Design](https://i.ytimg.com/vi/DZaAFADoF1M/hqdefault.jpg)](https://www.youtube.com/watch?v=DZaAFADoF1M)
-
-*Did you know Iron Man's Jarvis is just a GPT-Live hooked to a tmux with a bunch
-of Pi sessions? (Robots and holograms not included in this package.)*
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=DZaAFADoF1M">
+    <img src="docs/ironman.jpg" width="720" alt="Iron Man at his terminal rig — click to watch">
+  </a><br>
+  <em>Did you know Iron Man's Jarvis is just a GPT-Live hooked to a tmux with a bunch
+  of Pi sessions? (Robots and holograms not included in this package.)</em><br>
+  <a href="https://www.youtube.com/watch?v=DZaAFADoF1M">▶ Watch: <i>IronMan Design</i></a>
+</p>
 
 pi-super takes the tmux session already running on your dev box — the one full
 of `pi` agents, shells and editors — and puts the whole thing on your phone,
