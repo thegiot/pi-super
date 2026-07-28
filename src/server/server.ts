@@ -421,7 +421,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				}
 				const voice = detectVoiceConfig();
 				const sdp = (await readBody(req, 1024 * 1024)).toString("utf8");
-				const result = await negotiateOffer(voice, sdp, voiceInstructions(cfg.metaDir));
+				const result = await negotiateOffer(voice, sdp, voiceInstructions(cfg.metaDir, meta.conversationTurns));
 				if (!result.ok) {
 					sendJson(res, result.status >= 400 ? result.status : 502, { error: result.error });
 					return;
@@ -825,12 +825,21 @@ function preview(text: string, max = 80): string {
 }
 
 /** Instructions handed to the realtime voice model (server-side, not client-editable). */
-function voiceInstructions(metaDir: string): string {
+export function voiceInstructions(metaDir: string, priorTurns: number): string {
+	let base: string;
 	try {
-		return readFileSync(join(metaDir, "voice-prompt.md"), "utf8");
+		base = readFileSync(join(metaDir, "voice-prompt.md"), "utf8");
 	} catch {
-		return "You are the voice of super. Delegate anything substantive to the client and keep replies short and spoken.";
+		base = "You are the voice of super. Delegate anything substantive to the client and keep replies short and spoken.";
 	}
+	// A realtime session cannot be resumed: every dial — including the one after a page
+	// reload two minutes ago — starts from these instructions and nothing else. super, on
+	// the other hand, kept the whole conversation. Say so, or the voice greets a user it
+	// has been talking to all morning as a stranger and makes them repeat themselves.
+	if (priorTurns > 0) {
+		base += `\n\n## This call joins a conversation already in progress\n\nYou have just been connected, with no memory of anything: this is a fresh speech session.\nsuper is not — it has been working with this user (${priorTurns} exchanges so far) and\nremembers all of it, as does the chat on their screen. They may well have reloaded the\npage mid-conversation, and to them nothing happened.\n\nSo before anything else, and without narrating any of the above, delegate a request for a\nshort catch-up: what has been going on, what is running, and whether anything is waiting\non the user. Greet them in one short sentence while that lands, then lead with it. Never\nask the user to tell you what you missed — super knows.\n`;
+	}
+	return base;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {

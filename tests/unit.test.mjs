@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isAuthed, originAllowed, parseCookies, requestToken, tokenEquals } from "../dist/server/auth.js";
 import { parseArgs } from "../dist/server/config.js";
+import { voiceInstructions } from "../dist/server/server.js";
 import { Tmux } from "../dist/server/tmux.js";
 import { storeUpload } from "../dist/server/uploads.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -80,6 +81,23 @@ test("uploads are sniffed, renamed and mode 0600", () => {
 });
 
 // --- config ----------------------------------------------------------------
+
+// A realtime session cannot be resumed, so a reload leaves the voice with no memory while
+// super still has all of it. The instructions are the only place that can be said.
+test("a call joining a conversation in progress is told to ask super for the catch-up", () => {
+	const metaDir = join(import.meta.dirname, "..", "src", "meta");
+	const fresh = voiceInstructions(metaDir, 0);
+	assert.equal(fresh, readFileSync(join(metaDir, "voice-prompt.md"), "utf8"), "a first call gets the prompt as written");
+
+	const joined = voiceInstructions(metaDir, 7);
+	assert.ok(joined.startsWith(fresh), "the catch-up is appended, never a replacement");
+	assert.match(joined, /7 exchanges/);
+	assert.match(joined, /catch-up/);
+	assert.match(joined, /Never\nask the user to tell you what you missed/);
+
+	// a missing prompt file must still yield usable instructions, not a crash
+	assert.match(voiceInstructions(join(tmpdir(), "pi-super-no-such-dir"), 3), /catch-up/);
+});
 
 test("parseArgs maps flags and rejects nonsense", () => {
 	const cfg = parseArgs(["-p", "9000", "-s", "work", "-L", "sock", "--status-line", "--no-meta"]);

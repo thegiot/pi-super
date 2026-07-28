@@ -666,8 +666,11 @@ meta.onState = (s) => {
 
 const voice = createVoice(meta);
 meta.onSpeak = ({ message, kind }) => {
-	voice.pushUpdate(message, kind);
-	if (state.view !== "meta") status(`🔊 ${message}`, 6000);
+	const fate = voice.pushUpdate(message, kind);
+	// An update the call could not take is exactly the one worth putting on screen, even
+	// in the chat view where it is also a 🔊 line: otherwise super looks like it went quiet.
+	if (fate === "queued") status(`🔊 ${message} — will be spoken on your next turn`, 8000);
+	else if (state.view !== "meta") status(`🔊 ${message}`, 6000);
 };
 /**
  * gpt-live (the ChatGPT/Codex realtime model) is the mode this thing is built around;
@@ -730,6 +733,8 @@ voice.onState = (s, detail) => {
 voice.onTranscript = (role, text) => {
 	if (role === "user") status(`🎙 ${text}`, 4000);
 };
+// non-fatal realtime errors: worth showing, not worth ending the call over
+voice.onNotice = (text) => status(text, 6000, true);
 
 // One button for super: it opens the chat and places the call in the same press, because
 // on a phone those are never wanted separately — mute and hush handle "not now", and

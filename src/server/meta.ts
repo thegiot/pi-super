@@ -137,6 +137,16 @@ export class MetaAgent extends EventEmitter {
 		return this.latestSessionFile() !== undefined;
 	}
 
+	/**
+	 * How much conversation this agent is already carrying. A voice call is a brand-new
+	 * realtime session every time it is dialled, so this is what tells it whether it is
+	 * joining a conversation in progress (and had better ask super for a recap) or
+	 * starting one.
+	 */
+	get conversationTurns(): number {
+		return this.transcript.filter((i) => i.kind === "user" || i.kind === "assistant").length;
+	}
+
 	start(): void {
 		if (this.running) return;
 		// pi runs with cwd=$HOME, so these must be absolute.

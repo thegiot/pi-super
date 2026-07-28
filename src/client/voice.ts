@@ -41,10 +41,16 @@ export interface VoiceApi {
 	toggleMute(): boolean;
 	/** "stop talking" — an explicit interruption, never guessed from VAD */
 	hush(): void;
-	/** feed a spoken update from the meta agent into the live call */
-	pushUpdate(text: string, kind: string): void;
+	/**
+	 * Feed a spoken update from the meta agent into the live call. `queued` means the call
+	 * is up but has nowhere to put it yet (see pushUpdate); `dropped` means nobody is on
+	 * the line and the text lives only in the chat.
+	 */
+	pushUpdate(text: string, kind: string): "sent" | "queued" | "dropped";
 	onState?: (state: VoiceState, detail?: string) => void;
 	onTranscript?: (role: "user" | "assistant", text: string) => void;
+	/** something worth telling the user that is not a state change (a non-fatal error) */
+	onNotice?: (text: string) => void;
 	/** every realtime event, in and out — used by the e2e harness and by ?debug=1 */
 	onEvent?: (direction: "in" | "out", ev: Record<string, unknown>) => void;
 	/** the remote audio element, once the call is up (lets a test tap the stream) */
@@ -58,6 +64,8 @@ const DISCONNECT_GRACE_MS = 6000;
 const MAX_RECONNECT = 5;
 /** an error arriving this soon after a hush is our own cancel bouncing, not a call fault */
 const HUSH_ERROR_WINDOW_MS = 1500;
+/** updates held for a delegation to attach them to; oldest are dropped past this */
+const MAX_QUEUED_UPDATES = 10;
 
 interface SpeechRecognitionEventLike {
 	resultIndex: number;
@@ -105,6 +113,8 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	let audio: HTMLAudioElement | undefined;
 	let wakeLock: { release(): Promise<void> } | undefined;
 	let delegationId: string | undefined;
+	/** updates that arrived with no delegation open; flushed by the next one */
+	const queuedUpdates: Array<{ text: string; channel: string; at: number }> = [];
 	let muted = false;
 	let state: VoiceState = "idle";
 	let assistantLine = "";
@@ -464,6 +474,8 @@ export function createVoice(meta: MetaApi): VoiceApi {
 
 	function stop(opts?: { clearError?: boolean }): void {
 		generation++;
+		// a reconnect keeps held updates (same call, same conversation); hanging up does not
+		queuedUpdates.length = 0;
 		if (reconnectTimer) clearTimeout(reconnectTimer);
 		reconnectTimer = undefined;
 		reconnectAttempts = 0;
@@ -504,6 +516,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 					.join(" ")
 					.trim();
 				delegationId = item?.id;
+				flushQueued();
 				// no onTranscript here: turn.done already reported what the user said, and the
 				// delegated text is a paraphrase of it
 				if (text) meta.send(text);
@@ -571,29 +584,62 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				// Our own hush bouncing back ("no active response", or an event this backend
 				// does not know) must not present itself as a broken call.
 				if (Date.now() - hushedAt < HUSH_ERROR_WINDOW_MS) break;
-				setState("error", JSON.stringify(ev.error ?? ev).slice(0, 200));
+				// A protocol-level error does not end the session: the call is still up and the
+				// user can keep talking. Flipping to `error` here wedged it instead — the UI
+				// said "error" over a live call, and main.ts's dialFailed then refused to
+				// redial until an explicit hang-up. Only the transport (ICE) decides the call
+				// is dead; everything else is a notice.
+				api.onNotice?.(`voice: ${JSON.stringify(ev.error ?? ev).slice(0, 200)}`);
 				break;
 		}
 	}
 
+	/** Send one update as context on the delegation that is currently open. */
+	function appendToDelegation(text: string, channel: string): void {
+		for (const part of chunk(text)) {
+			sendEvent({
+				type: "delegation.context.append",
+				delegation_item_id: delegationId,
+				channel,
+				content: [{ type: "input_text", text: part }],
+			});
+		}
+	}
+
+	function flushQueued(): void {
+		if (!delegationId || queuedUpdates.length === 0) return;
+		const held = queuedUpdates.splice(0, queuedUpdates.length);
+		for (const u of held) {
+			const mins = Math.round((Date.now() - u.at) / 60_000);
+			// The model would otherwise relay a ten-minute-old report as breaking news.
+			const age = mins >= 1 ? ` (from ${mins} minute${mins === 1 ? "" : "s"} ago)` : "";
+			appendToDelegation(`Earlier update from super${age}: ${u.text}`, u.channel);
+		}
+	}
+
 	/** Route a `speak()` from the meta agent into the live call. */
-	function pushUpdate(text: string, kind: string): void {
-		if (state !== "live" || !text.trim()) return;
+	function pushUpdate(text: string, kind: string): "sent" | "queued" | "dropped" {
+		// No call: the text is in the chat, and the next dial's instructions tell the voice
+		// to ask super for a catch-up, so it is not lost — just not spoken.
+		if (state !== "live" || !text.trim()) return "dropped";
 		if (api.config?.provider === "local") {
 			speakLocal(text);
-			return;
+			return "sent";
 		}
 		const channel = kind === "status" ? "commentary" : "speakable";
-		if (api.config?.delegation === "codex" && delegationId) {
-			for (const part of chunk(text)) {
-				sendEvent({
-					type: "delegation.context.append",
-					delegation_item_id: delegationId,
-					channel,
-					content: [{ type: "input_text", text: part }],
-				});
+		if (api.config?.delegation === "codex") {
+			// gpt-live only accepts our updates as context on a delegation *it* opened. Before
+			// the first user turn of a call there is none (a redial voids the old handle), and
+			// the Realtime-API events below are not part of this protocol — sending them there
+			// dropped the update and answered with an error. Hold it for the next delegation,
+			// which the catch-up request at the start of a call opens almost immediately.
+			if (!delegationId) {
+				queuedUpdates.push({ text, channel, at: Date.now() });
+				if (queuedUpdates.length > MAX_QUEUED_UPDATES) queuedUpdates.shift();
+				return "queued";
 			}
-			return;
+			appendToDelegation(text, channel);
+			return "sent";
 		}
 		sendEvent({
 			type: "conversation.item.create",
@@ -604,6 +650,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 			},
 		});
 		sendEvent({ type: "response.create" });
+		return "sent";
 	}
 
 	return api;
