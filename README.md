@@ -29,7 +29,7 @@ summarizes back.
 * **A real terminal, not an approximation.** A real PTY carrying real bytes: every key,
   every TUI, copy-mode, `vim`, `mutt`, `pi` all behave exactly as they do at your desk.
 * **Built for mobile.** Window tabs, a reader mode that reflows a 200-column agent
-  session to phone width, a key ribbon, a prompt composer (dictation just works), image paste,
+  session to phone width, a key ribbon, a prompt composer (dictation also uses GPT-Live-based high quality STT), image paste,
   and a tap on any path in the output to open that file — screenshots and plots included.
 
 ---
