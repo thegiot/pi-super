@@ -5,34 +5,85 @@ words we type most: `tmux`, `pi-super`, `npm run build`, flag names, file paths.
 records what the alternatives actually are, with numbers measured against the live APIs on
 2026-07-28, and recommends one.
 
-Everything below is about the **composer** (`#input`), not about voice calls. A dictation
-button drops text into the textarea and the user still edits and sends it; the call in
+Everything below is about the **composer** (`#input`), not about voice calls. Dictation
+drops text into the textarea and the user still edits and sends it; the call in
 `src/client/voice.ts` is a separate, conversational thing.
 
-## The constraint that decides it: which credentials this box has
+The measurements come from `tests/dictation-probe.mjs` (gpt-live, real headless Chrome with
+a fake microphone) and from curl against OpenRouter. Both used the same 15.2s clip of
+synthesised speech:
+
+> *"In pi-super, rebase the tmux ribbon commit onto main, run npm run build, then restart
+> the systemd user unit. Also grep the dist directory for stale WebRTC SDP handling."*
+
+## What credentials this box actually has
 
 `~/.pi/agent/auth.json` holds an `openai-codex` OAuth (the ChatGPT subscription), an
-`anthropic` OAuth, and an `openrouter` API key. There is **no `OPENAI_API_KEY`**.
-
-That matters more than any feature comparison, because it rules out the obvious answer:
+`anthropic` OAuth, and an `openrouter` API key. There is **no `OPENAI_API_KEY`**, and the
+subscription does not substitute for one:
 
 | attempt | result |
 | --- | --- |
 | Codex OAuth → `POST api.openai.com/v1/audio/transcriptions` | `401 Missing scopes: api.model.audio.request` |
-| Codex OAuth → `POST chatgpt.com/backend-api/transcribe` (what the ChatGPT app's dictation uses) | `403`, Cloudflare interstitial |
+| Codex OAuth → `POST chatgpt.com/backend-api/transcribe` (ChatGPT's own dictation) | `403`, Cloudflare interstitial |
 
 The token is *recognised* at `api.openai.com` — it is simply not entitled to the Audio API.
-So the subscription buys us realtime *conversation* (which is why voice calls are free) but
-not transcription. Anthropic has no STT at all.
+So the subscription buys realtime *conversation*, and no file transcription at all.
+Anthropic has no STT.
 
-## (1) OpenAI Realtime transcription sessions
+## Option 1: gpt-live as a silent dictation session — free, streaming, and it works
 
-They exist and they are the right shape for a mic button:
-[docs](https://developers.openai.com/api/docs/guides/realtime-transcription). A session with
-`type: "transcription"` has no assistant and no audio output — you append audio, it streams
-`conversation.item.input_audio_transcription.delta` and `.completed` back. WebRTC is
-supported, so our existing `POST /api/voice/offer` proxy pattern (browser sends SDP, server
-attaches the credential, returns the answer) would carry over almost unchanged.
+We already hold a realtime session open during calls, and it already hands us the user's
+words: `voice.ts` reads them out of `turn.done`. Point that at the composer instead of at
+the meta agent and dictation costs nothing, because it rides the ChatGPT subscription.
+
+The naive version is bad, and measurably so. With the normal conversational
+`voice-prompt.md` the model behaves like a partner: it heard the clip as *"In **PySuper**,
+…"*, and its polite *"Mm-hmm"* **split the dictation into two turns** mid-sentence.
+
+Replacing the instructions with a dictation prompt — *"You are a dictation microphone.
+NEVER speak. … The user works on **pi-super** (always spelled `pi-super`, never 'PySuper'
+or 'Pi Super'). Other words you will hear often: tmux, systemd, WebRTC, SDP, npm, dist"* —
+fixes both. Four runs (`node tests/dictation-probe.mjs --dictation`):
+
+| | measured |
+| --- | --- |
+| mic button tap → session live | **0.73–0.83s** |
+| first word appears | ~1.6s after you start speaking, then streams at speaking pace |
+| full text available | **~0.8s** after you stop (last delta / `delegation.created` at +17.07s for speech ending at +16.24s) |
+| `pi-super` transcribed correctly | **4 / 4** |
+| model interjected and split the turn | 1 / 4 |
+| cost | **$0** (subscription) |
+
+That last line about the transcript quality is the surprise: **instructions bias the
+transcript**. The deltas arrive as `" pi"`, `"-super"` — the vocabulary hint is reaching the
+recogniser, not just the persona. That is the one thing Gboard structurally cannot do, and
+we get it for free by writing a prompt.
+
+Things a dictation client has to handle, all of them client-side:
+
+- **Interjections still happen** (1 in 4). The fix is not to fight it: accumulate
+  `input_transcript.added` deltas across *all* user turns until the user taps stop, instead
+  of treating the first `turn.done` as the end. Then a split turn is invisible.
+- The model still fires `delegation.created` despite being told not to. Dictation mode
+  simply does not wire that to `meta.send()`.
+- It still generates a spoken reply (~4s after the turn ends: *"Give me a minute to find
+  that"*). Never attach the remote audio element and hang up when the user taps stop, and
+  nobody hears it.
+- `turn.done` lags the actual text by ~4s — it is bookkeeping. Use the deltas.
+
+The real caveat is the endpoint: `chatgpt.com/backend-api/codex/realtime/calls` is
+undocumented, entitlement-gated and reverse-engineered — no docs, no SLA, and OpenAI can
+change it tomorrow. But `voice.ts` already depends on it entirely, so dictation adds no new
+exposure: if it breaks, calls break with it, and the fallback below is there.
+
+### The documented version of the same thing, if an API key ever appears
+
+OpenAI's public Realtime API has a proper
+[transcription-only session](https://developers.openai.com/api/docs/guides/realtime-transcription):
+`type: "transcription"`, no assistant, no audio out, `conversation.item.input_audio_transcription.delta`
+as text arrives, WebRTC supported — so our `POST /api/voice/offer` SDP-proxy pattern carries
+over unchanged, and none of the interjection/delegation weirdness above exists.
 
 ```jsonc
 { "type": "session.update", "session": {
@@ -44,37 +95,19 @@ attaches the credential, returns the answer) would carry over almost unchanged.
     } } } }
 ```
 
-Cost: `gpt-realtime-whisper` is **$0.034/min** (~$0.0085 per 15-second prompt), roughly 6×
-the file-based models, which is the price of seeing words appear as you speak.
+Cost is **$0.034/min** (~$0.0085 per 15s prompt), ~6× the file-based models — the price of
+live text. Blocked today for want of a key; it is the clean upgrade path, not a different
+design.
 
-**Blocked:** needs an OpenAI API key. If one is ever added, this is the upgrade path from
-the recommendation below, and it is a drop-in for the same UI.
+## Option 2: OpenRouter `/audio/transcriptions` — one HTTP request, best-in-class accuracy
 
-### The free-with-subscription hack, for completeness
-
-A gpt-live call *already* hands us the user's transcript: `voice.ts` reads it out of
-`turn.done` (role `user`). A "dictation" mode could dial the existing codex realtime
-endpoint with instructions to stay silent, never attach the remote audio element, and route
-`turn.done` into the composer instead of into the meta agent. Free, and reuses all the
-plumbing.
-
-It is not recommended: a WebRTC dial costs ~1–2s before the first word (or we keep a call
-warm and burn subscription quota while idle), the model is a conversational one being told
-not to converse, and we would be depending on a private endpoint for a core input path. Nice
-fallback if the budget ever needs to be exactly zero.
-
-## (2) The option we can actually use today: OpenRouter `/audio/transcriptions`
-
-OpenRouter added a transcription endpoint that takes the same Bearer key as chat, and we
-have that key. Tested end to end — 15s of jargon-heavy speech, encoded as Opus in WebM
-(*exactly* what `MediaRecorder` produces on Android Chrome, so no client-side transcoding):
-
-Reference: *"In pi-super, rebase the tmux ribbon commit onto main, run npm run build, then
-restart the systemd user unit. Also grep the dist directory for stale WebRTC SDP handling."*
+OpenRouter's transcription endpoint takes the same Bearer key as chat, and we have that key.
+Tested end to end on the same clip, encoded as Opus-in-WebM — *exactly* what `MediaRecorder`
+produces on Android Chrome, so no client-side transcoding:
 
 | model | latency | cost/clip | errors |
 | --- | --- | --- | --- |
-| `openai/gpt-4o-transcribe` | 1.3s | $0.0008 | **none — perfect, including `pi-super`** |
+| `openai/gpt-4o-transcribe` | 1.3s | $0.0008 | **none — including `pi-super`** |
 | `openai/gpt-4o-mini-transcribe` | 1.0s | $0.0004 | `piSuper` |
 | `openai/whisper-large-v3` (Groq) | 0.9s | $0.0004 | `PI Super` |
 | `qwen/qwen3-asr-flash` | 1.5s | $0.0005 | `Pi Super`, `TMUX` |
@@ -82,82 +115,79 @@ restart the systemd user unit. Also grep the dist directory for stale WebRTC SDP
 | `deepgram/nova-3` | 0.9s | $0.0011 | `PY super`, `TMUX` |
 | `openai/whisper-1` | 1.0s | $0.0016 | `PySuper`, `tmux-ribbon-commit` |
 
-At roughly a tenth of a cent per prompt, cost is not a design input. Latency is: ~1s after
-you stop talking is fine for a hold-to-talk button, and everything here clears that.
+Contract (`POST https://openrouter.ai/api/v1/audio/transcriptions`, JSON): `model`,
+`input_audio: { data: <raw base64, not a data: URI>, format: "webm"|"m4a"|"wav"|… }`,
+optional `language`. Response `{ text, usage: { seconds, cost } }`. Limits: 60s upstream
+timeout, 25 MB, no streaming, no audio URLs.
 
-Contract (`POST https://openrouter.ai/api/v1/audio/transcriptions`, JSON):
-`model`, `input_audio: { data: <raw base64, not a data: URI>, format: "webm"|"m4a"|"wav"|… }`,
-optional `language`. Response is `{ text, usage: { seconds, cost } }`. Limits: 60s upstream
-timeout, 25 MB, no streaming and no audio URLs. Fine for push-to-talk clips, useless for a
-live-caption feel.
-
-### Vocabulary biasing is the real win over Gboard
-
-Top-level `prompt` is ignored, but `provider.options.openai.prompt` (and `.groq.prompt`) is
-forwarded, and it works — same audio, same model:
+Vocabulary biasing works here too, but only through the provider passthrough — top-level
+`prompt` is silently ignored, `provider.options.openai.prompt` (and `.groq.prompt`) is not:
 
 ```
 whisper-1, no prompt : "In PySuper, rebase the tmux-ribbon-commit onto main, …"
 whisper-1, + prompt  : "In pi-super, rebase the tmux-ribbon commit onto main, …"
 ```
 
-We can build that prompt server-side from things we already have: the tmux window names, the
-current pane's recent output, the session's cwd. That is a hint Gboard structurally cannot
-have, and it is what makes this *better* rather than merely *different*.
-
-## (3) The browser's own Web Speech API
+## Option 3: the browser's own Web Speech API
 
 Already in the tree — `voice.ts`'s `local` provider uses `webkitSpeechRecognition` when the
-server has no realtime credential. Pointing it at the composer instead of at the meta agent
-is ~30 lines.
-
-But on Android it delegates to the same Google speech service Gboard uses, so it is unlikely
-to fix the complaint; `continuous` has been unreliable there for a decade (we already
-restart it in `onend`); and there is no way to bias vocabulary. Worth keeping strictly as the
-no-credential fallback, not as the answer.
+server has no realtime credential. But on Android it delegates to the same Google speech
+service Gboard uses, so it cannot fix the complaint; `continuous` has been unreliable there
+for a decade (we already restart it in `onend`); and there is no way to bias vocabulary.
+Keep it strictly as the no-credential fallback.
 
 ## Recommendation
 
-Ship a **hold-to-talk mic button in the composer, recording with `MediaRecorder` and
-transcribing through OpenRouter `gpt-4o-transcribe`**, with a server-built vocabulary prompt
-from the live tmux context. Fall back to the Web Speech API when no STT credential is
-configured, and leave the realtime-session path documented above as the upgrade if an
-`OPENAI_API_KEY` ever appears.
+**Primary: a gpt-live dictation session.** It is free, the words appear while you speak,
+it is listening 0.8s after the tap, it got the jargon right 4/4, and the transport, the
+credential handling and the SDP proxy all exist already. The two rough edges (turn splits,
+an unwanted spoken reply) are handled by accumulating deltas and not attaching the audio.
+
+**Fallback: OpenRouter `gpt-4o-transcribe`** for anyone without ChatGPT auth — a plain POST
+of a `MediaRecorder` blob, equal accuracy, a tenth of a cent per prompt, no WebRTC. This is
+also the sane thing to build *first* if the WebRTC path turns fiddly, since the composer
+side of the work is shared.
+
+Keep the Web Speech API as the last resort, as `voice.ts` already does for calls.
 
 ### Integration sketch
 
-**Client** (`src/client/dictate.ts`, new; ~120 lines)
+**Client** (`src/client/dictate.ts`, new)
 
 - `<button id="btn-mic">🎤</button>` in `#composer`, left of `#btn-insert`. The composer,
   not the ribbon: the ribbon is hidden in the meta view, and dictating at super is the case
   that matters most.
-- Tap to start, tap to stop (not `pointerdown`/`up`: a long press fights the browser's own
-  touch handling, and prompts run long). Button goes red with an elapsed counter; hard cap
-  around 2 minutes.
-- `getUserMedia({ audio: { echoCancellation, noiseSuppression, autoGainControl } })`, then
-  `MediaRecorder` with the first supported of `audio/webm;codecs=opus` → `audio/mp4`
-  (iOS Safari; send it as format `m4a`). Stop the tracks afterwards — a live mic indicator
-  that never goes away is alarming on a phone.
-- POST the blob to `/api/stt`, insert `text` at the cursor exactly like `upload()` does,
-  `autogrow()`, refresh the `draft` in localStorage. **Never auto-send**: the whole point is
-  that the user proofreads the jargon.
-- Disable the button while a voice call is live (one mic, and the call already owns it).
+- Tap to start, tap to stop — not `pointerdown`/`up`: a long press fights the browser's own
+  touch handling, and dictated prompts run long. Red button plus an elapsed counter, hard
+  cap around 2 minutes.
+- gpt-live path: reuse `voice.ts`'s connect/teardown (mic → `RTCPeerConnection` →
+  `POST /api/voice/offer`), but with `?mode=dictation`, no remote audio element, and an
+  event handler that only accumulates `input_transcript.added` deltas. Show them live in the
+  textarea as you speak. Hang up on stop.
+- OpenRouter path: `MediaRecorder` with the first supported of `audio/webm;codecs=opus` →
+  `audio/mp4` (iOS Safari; send that as format `m4a`), POST the blob to `/api/stt`.
+- Either way: insert at the cursor exactly like `upload()` does, `autogrow()`, refresh the
+  `draft` in localStorage, and **never auto-send** — the point is that the user proofreads
+  the jargon. Stop the mic tracks afterwards; a live mic indicator that never goes away is
+  alarming on a phone.
+- Disable the button while a call is live (one mic, and the call owns it).
 
-**Server** (`POST /api/stt` in `server.ts`, logic in a new `src/server/stt.ts`)
+**Server**
 
-- `originAllowed` + `readBody` with a ~10 MB cap, same as `/api/upload`.
-- Credential from `OPENROUTER_API_KEY`, else `openrouter.key` in pi's `auth.json` — mirror
-  `readCodexAuth()`, which already establishes that precedent.
-- Model from `PI_SUPER_STT_MODEL`, default `openai/gpt-4o-transcribe`.
-- Build `provider.options.{openai,groq}.prompt` from the target window's name and a short
-  `tmux.capture()` tail, plus a static core vocabulary. Cap it hard — it is a hint, not
-  context, and a huge one costs latency.
-- Return `{ text, cost }`; log the cost, since this is the first thing in pi-super that
-  spends money per action.
-- Advertise availability in `GET /api/voice/config` (or a sibling `GET /api/stt/config`) so
-  the client can hide the button rather than fail on tap.
+- `src/meta/dictation-prompt.md` next to `voice-prompt.md`, selected by
+  `?mode=dictation` on `POST /api/voice/offer`. Build the vocabulary paragraph at request
+  time from the target window's name plus a short `tmux.capture()` tail — the hint is what
+  makes this better than Gboard rather than merely different. Cap it; it is a hint, not
+  context.
+- `POST /api/stt` (new `src/server/stt.ts`) for the fallback: `originAllowed` + `readBody`
+  with a ~10 MB cap like `/api/upload`; key from `OPENROUTER_API_KEY`, else `openrouter.key`
+  in pi's `auth.json` (mirror `readCodexAuth()`); model from `PI_SUPER_STT_MODEL`, default
+  `openai/gpt-4o-transcribe`; the same vocabulary text into
+  `provider.options.{openai,groq}.prompt`; return `{ text, cost }` and log the cost, since
+  this would be the first thing in pi-super that spends money per action.
+- Advertise which paths are available in `GET /api/voice/config` so the client hides the
+  button instead of failing on tap.
 
-**Privacy**: audio would leave the machine for OpenRouter, which load-balances across
-providers. That is a step beyond the current state, where the only outbound audio is a voice
-call the user explicitly dials. Worth a line in the README and, if it bites, a
-`PI_SUPER_STT_PROVIDER=none` opt-out.
+**Privacy**: with gpt-live the audio goes where call audio already goes. The OpenRouter
+fallback is a step further — OpenRouter load-balances across providers — so it deserves a
+line in the README and a `PI_SUPER_STT_PROVIDER=none` opt-out.
