@@ -4,12 +4,15 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.Manifest
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 
@@ -20,6 +23,8 @@ import androidx.core.app.ServiceCompat
  */
 class CallService : Service() {
 	override fun onBind(intent: Intent?): IBinder? = null
+
+	private fun granted(perm: String) = checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED
 
 	override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 		when (intent?.action) {
@@ -33,12 +38,28 @@ class CallService : Service() {
 		val muted = intent?.getBooleanExtra(EXTRA_MUTED, false) ?: false
 		var type = 0
 		if (Build.VERSION.SDK_INT >= 30) {
-			type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-			// phoneCall requires MANAGE_OWN_CALLS *and* an actual self-managed call; asking
-			// for it in the audio-focus fallback would throw.
-			if (phoneCall) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+			// Each type has to be *earned*: on API 34+ promoting with `microphone` while
+			// RECORD_AUDIO is denied throws, and `phoneCall` needs MANAGE_OWN_CALLS plus an
+			// actual self-managed call. Ask only for what we can back up.
+			if (granted(Manifest.permission.RECORD_AUDIO)) type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+			if (phoneCall && granted(Manifest.permission.MANAGE_OWN_CALLS)) {
+				type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+			}
+			if (type == 0) {
+				// Nothing to justify a foreground service. The call still works; it is just as
+				// killable as a browser tab, which is what the user chose by denying the mic.
+				stopSelf()
+				return START_NOT_STICKY
+			}
 		}
-		ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(muted), type)
+		try {
+			ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(muted), type)
+		} catch (e: Exception) {
+			// An OEM or a background-start restriction refusing the promotion must not take
+			// the call down with it.
+			Log.w("PiSuperCall", "startForeground failed", e)
+			stopSelf()
+		}
 		return START_NOT_STICKY
 	}
 

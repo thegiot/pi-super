@@ -877,11 +877,13 @@ $("btn-hangup").onclick = () => {
 	voice.stop({ clearError: true });
 };
 $("btn-hush").onclick = () => voice.hush();
-$("btn-mute").onclick = () => {
-	const muted = voice.toggleMute();
+function showMuted(muted: boolean): void {
 	$("btn-mute").textContent = muted ? "🔇" : "🎙";
 	$("btn-mute").classList.toggle("armed", muted);
-};
+}
+$("btn-mute").onclick = () => showMuted(voice.toggleMute());
+// the Android wrapper's call can also be muted from a car kit or a watch
+voice.onMute = showMuted;
 
 // Throwing away the conversation is not undoable, and this button sits under the thumb
 // next to hang-up — so it asks, in place, rather than through a modal nobody reads.

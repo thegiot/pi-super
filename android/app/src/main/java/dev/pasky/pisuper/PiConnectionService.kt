@@ -19,7 +19,7 @@ class PiConnectionService : ConnectionService() {
 		account: PhoneAccountHandle?,
 		request: ConnectionRequest?,
 	): Connection {
-		val conn = PiConnection()
+		val conn = PiConnection(attemptOf(request))
 		conn.setAddress(request?.address ?: Uri.fromParts("sip", "super@pi-super", null), TelecomManager.PRESENTATION_ALLOWED)
 		conn.setCallerDisplayName(getString(R.string.app_name), TelecomManager.PRESENTATION_ALLOWED)
 		conn.setDialing()
@@ -28,11 +28,15 @@ class PiConnectionService : ConnectionService() {
 	}
 
 	override fun onCreateOutgoingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest?) {
-		CallHub.onConnectionFailed("telecom refused the call")
+		CallHub.onConnectionFailed(attemptOf(request), "telecom refused the call")
 	}
+
+	/** The dial attempt this callback belongs to; see CallHub.attempt. */
+	private fun attemptOf(request: ConnectionRequest?): Int =
+		request?.extras?.getInt("dev.pasky.pisuper.ATTEMPT", -1) ?: -1
 }
 
-class PiConnection : Connection() {
+class PiConnection(val attempt: Int) : Connection() {
 	init {
 		connectionProperties = PROPERTY_SELF_MANAGED
 		// No CAPABILITY_HOLD: the realtime session cannot actually be held, and claiming
@@ -42,17 +46,17 @@ class PiConnection : Connection() {
 	}
 
 	override fun onDisconnect() {
-		CallHub.onRemoteHangup()
+		CallHub.onRemoteHangup(this)
 		finish(DisconnectCause.LOCAL)
 	}
 
 	override fun onAbort() {
-		CallHub.onRemoteHangup()
+		CallHub.onRemoteHangup(this)
 		finish(DisconnectCause.CANCELED)
 	}
 
 	override fun onReject() {
-		CallHub.onRemoteHangup()
+		CallHub.onRemoteHangup(this)
 		finish(DisconnectCause.REJECTED)
 	}
 
@@ -61,7 +65,7 @@ class PiConnection : Connection() {
 	@Deprecated("CallAudioState is superseded by CallEndpoint on API 34+")
 	@Suppress("DEPRECATION")
 	override fun onCallAudioStateChanged(state: CallAudioState?) {
-		state?.let { CallHub.onAudioStateChanged(it) }
+		state?.let { CallHub.onAudioStateChanged(this, it) }
 	}
 
 	fun finish(cause: Int) {

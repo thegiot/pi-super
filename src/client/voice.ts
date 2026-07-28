@@ -52,6 +52,8 @@ export interface VoiceApi {
 	onTranscript?: (role: "user" | "assistant", text: string) => void;
 	/** something worth telling the user that is not a state change (a non-fatal error) */
 	onNotice?: (text: string) => void;
+	/** the microphone was muted or unmuted from outside the page (a car kit, a watch) */
+	onMute?: (muted: boolean) => void;
 	/** every realtime event, in and out — used by the e2e harness and by ?debug=1 */
 	onEvent?: (direction: "in" | "out", ev: Record<string, unknown>) => void;
 	/** the remote audio element, once the call is up (lets a test tap the stream) */
@@ -183,12 +185,15 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		try {
 			const cfg = await loadConfig();
 			if (!cfg.enabled) throw new Error("voice not configured on the server");
+			// loadConfig() may have been a network round trip; the user could have hung up in it
+			if (stale()) return;
 			// In the Android wrapper this makes the OS treat what follows as a phone call
 			// (bluetooth HFP, music pauses, headset hang-up). Before getUserMedia, because the
 			// audio route is decided when the mic opens. A no-op in a plain browser.
-			await nativeCall.begin();
+			const token = await nativeCall.begin();
 			if (stale()) {
-				nativeCall.end();
+				// only our own attempt: by now the token may belong to a call that replaced us
+				nativeCall.end(token);
 				return;
 			}
 			if (cfg.provider === "local") {
@@ -501,23 +506,32 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	}
 
 	function toggleMute(): boolean {
-		let next: boolean;
+		const next = applyMute(!isMuted());
+		nativeCall.setMuted(next);
+		return next;
+	}
+
+	function isMuted(): boolean {
+		if (api.config?.provider === "local") return muted;
+		const track = mic?.getAudioTracks()[0];
+		return track ? !track.enabled : false;
+	}
+
+	/** Put the microphone in the requested state and report where it ended up. */
+	function applyMute(next: boolean): boolean {
 		if (api.config?.provider === "local") {
-			muted = !muted;
+			muted = next;
 			try {
 				if (muted) recognition?.stop();
 				else if (!speaking) recognition?.start();
 			} catch {
 				/* transitional state; onend will settle it */
 			}
-			next = muted;
-		} else {
-			const track = mic?.getAudioTracks()[0];
-			if (!track) return false;
-			track.enabled = !track.enabled;
-			next = !track.enabled;
+			return muted;
 		}
-		nativeCall.setMuted(next);
+		const track = mic?.getAudioTracks()[0];
+		if (!track) return false;
+		track.enabled = !next;
 		return next;
 	}
 
@@ -676,6 +690,12 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		if (state !== "idle") stop({ clearError: true });
 	};
 	nativeCall.onNotice = (text) => api.onNotice?.(text);
+	// The mute a car kit or a watch applies is the system's; only we can act on it, since
+	// nothing outside this page can silence a WebRTC track.
+	nativeCall.onRoute = (_route, _routes, systemMuted) => {
+		if (state !== "live" || systemMuted === isMuted()) return;
+		api.onMute?.(applyMute(systemMuted));
+	};
 
 	return api;
 }

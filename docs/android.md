@@ -87,6 +87,16 @@ person, not a Play listing.
 On first launch, paste the URL pi-super printed, token and all. The app remembers it; the
 launcher shortcut ("Change server") gets back to that screen.
 
+### Passkeys
+
+WebView has its own cookie jar and does *not* do WebAuthn unless the host app turns it on
+— and even then the passkey is bound to the app through a Digital Asset Link, which means
+the server would have to serve a `/.well-known/assetlinks.json` naming this app's signing
+certificate. The app enables `WEB_AUTHENTICATION_SUPPORT_FOR_APP` when the WebView is new
+enough, but nothing else is set up: **run pi-super with `--auth token` if you use the
+wrapper**, or expect the wrapper to be locked out once a passkey is enrolled. The token in
+the URL you paste is what logs it in.
+
 ### https, and why voice needs it
 
 `getUserMedia` needs a secure origin — in WebView exactly as in Chrome. Over plain http
@@ -95,7 +105,13 @@ the terminal and chat work fine and voice mode cannot start. Put a TLS proxy or
 
 Private CAs are honoured (system + user trust anchors), and if the certificate still does
 not validate the app shows its SHA-256 once and pins that exact certificate if you accept
-it — rather than the usual `handler.proceed()`, which accepts anything forever.
+it — rather than the usual `handler.proceed()`, which accepts anything forever. Below
+Android 10 there is no way to get the certificate's own bytes out of `SslCertificate`, so
+nothing can be pinned there and the question is asked every time.
+
+Plain http is allowed but the setup screen argues with you first: that URL carries the
+token to a page with shell access, so on http anyone on the network can read it and
+replace the page.
 
 ## Testing
 
@@ -105,7 +121,10 @@ it — rather than the usual `handler.proceed()`, which accepts anything forever
 * `node tests/android-call.mjs` — boots a headless emulator, installs the APK, drives the
   bridge from a throwaway page and then asks the *system*: `dumpsys telecom` for a real
   self-managed call, `dumpsys activity services` for the foreground service, `dumpsys
-  audio` for the audio mode. Needs an SDK with a system image and KVM; skips otherwise.
+  audio` for the audio mode, `dumpsys notification` for the ongoing-call notification. It
+  also covers the two ways a call gets orphaned — a page reload and a revoked microphone
+  permission (which kills the app) — because both leave a phantom call in the car if the
+  native side is not reconciled. Needs an SDK with a system image and KVM; skips otherwise.
 
 **What no test here can tell us**, and what therefore needs an actual phone with an actual
 headset: whether WebView's WebRTC audio follows the Telecom route onto HFP. Chromium's

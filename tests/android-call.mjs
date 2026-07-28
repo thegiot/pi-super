@@ -69,6 +69,7 @@ const reports = [];
 const commands = [];
 
 const PAGE = `<!doctype html><meta charset=utf-8><title>bridge</title><body><pre id=out></pre><script>
+if (location.search.includes("reloaded")) fetch("/report", { method: "POST", body: JSON.stringify({ type: "reloaded" }) });
 const out = document.getElementById("out");
 const say = (o) => { out.textContent += JSON.stringify(o) + "\\n";
 	fetch("/report", { method: "POST", body: JSON.stringify(o) }); };
@@ -76,7 +77,10 @@ say({ type: "loaded", bridge: typeof window.PiNative?.postMessage === "function"
 window.addEventListener("pi-native", (e) => say({ type: "event", detail: e.detail }));
 setInterval(async () => {
 	const cmd = await (await fetch("/cmd")).json();
-	if (cmd) window.PiNative.postMessage(JSON.stringify(cmd));
+	if (!cmd) return;
+	// a real navigation, not a fragment change, so the document is genuinely replaced
+	if (cmd.type === "reload") location.href = "/?reloaded=1";
+	else window.PiNative.postMessage(JSON.stringify(cmd));
 }, 300);
 </script>`;
 
@@ -243,6 +247,41 @@ async function main() {
 	check(!callsRegion(after).includes(PKG), "hanging up leaves no call behind");
 	const servicesAfter = adb("shell", "dumpsys", "activity", "services", PKG).stdout ?? "";
 	check(!/CallService/.test(servicesAfter), "the foreground service is gone with it");
+
+	// --- the ongoing-call notification ------------------------------------------------
+	// Its hang-up action cannot be fired from here (CallService is not exported, which is
+	// the point), so this checks that the thing a thumb would press is actually there.
+	commands.push({ type: "startCall", callId: "test3" });
+	await expect((e) => e.detail?.type === "callReady" && e.detail.callId === "test3", "a second call");
+	const notifs = adb("shell", "dumpsys", "notification", "--noredact").stdout ?? "";
+	const ours = notifs.split(`pkg=${PKG}`)[1]?.slice(0, 4000) ?? "";
+	writeFileSync("/tmp/pi-super-notification.txt", ours);
+	check(/category=call/.test(ours), "the ongoing notification is a call notification");
+	check(/flags=0x[0-9a-f]*[23ab]/.test(ours) || /FLAG_ONGOING/.test(ours), "…and it is ongoing");
+	check(/actions=1/.test(ours), "…with one action on it, which is hang up");
+
+	// --- a page reload must not orphan a call ----------------------------------------
+	commands.push({ type: "reload" });
+	await expect((e) => e.type === "reloaded", "the page to come back");
+	await wait(2000);
+	const afterReload = adb("shell", "dumpsys", "telecom").stdout ?? "";
+	check(!callsRegion(afterReload).includes(PKG), "a reload leaves no call behind");
+	const servicesReload = adb("shell", "dumpsys", "activity", "services", PKG).stdout ?? "";
+	check(!/CallService/.test(servicesReload), "…nor a foreground service");
+
+	// --- with the microphone denied, the call must degrade rather than crash ----------
+	// Revoking a runtime permission kills the app, so the page has to come back first.
+	adb("shell", "pm", "revoke", PKG, "android.permission.RECORD_AUDIO");
+	await wait(2000);
+	reports.length = 0;
+	adb("shell", "am", "start", "-n", `${PKG}/.MainActivity`);
+	await expect((e) => e.type === "loaded", "the page after the app was killed", 60_000);
+	await wait(1500);
+	commands.push({ type: "startCall", callId: "test4" });
+	await expect((e) => e.detail?.type === "callReady" && e.detail.callId === "test4", "a call without a mic");
+	check(true, "a call with RECORD_AUDIO denied still comes up");
+	commands.push({ type: "endCall", callId: "test4" });
+	await wait(2000);
 
 	const crash = adb("logcat", "-d", "-s", "AndroidRuntime:E").stdout ?? "";
 	check(!crash.includes(PKG), "nothing crashed");

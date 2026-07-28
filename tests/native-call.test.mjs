@@ -76,8 +76,9 @@ test("a dial waits for the OS, then reports the mode it got", async () => {
 	assert.equal(call.available, true);
 
 	let settled = false;
-	const dial = call.begin().then(() => {
+	const dial = call.begin().then((t) => {
 		settled = true;
+		return t;
 	});
 	assert.equal(win.sent.length, 1);
 	assert.equal(win.sent[0].type, "startCall");
@@ -90,7 +91,7 @@ test("a dial waits for the OS, then reports the mode it got", async () => {
 	const notices = [];
 	call.onNotice = (t) => notices.push(t);
 	win.emit({ type: "callReady", callId, mode: "telecom" });
-	await dial;
+	assert.equal(await dial, callId, "begin() resolves with the token that scopes the call");
 	assert.equal(call.mode, "telecom");
 	assert.deepEqual(notices, [], "a plain telecom call is not worth a notice");
 
@@ -108,8 +109,9 @@ test("a wedged OS does not stop the dial", async () => {
 	const call = await load(win);
 	const started = Date.now();
 	await call.begin();
-	// the timeout is 3s; allow the clock some slack but insist it did wait
-	assert.ok(Date.now() - started >= 2500, "begin() waits for the OS before giving up");
+	// The watchdog is 6s and must outlast the native side's own 2.5s telecom timeout, or we
+	// would open the microphone while the fallback is still claiming the audio route.
+	assert.ok(Date.now() - started >= 5000, "begin() waits for the OS before giving up");
 	assert.equal(call.mode, undefined, "no mode: the call is media audio and the page may say so");
 });
 
@@ -144,7 +146,7 @@ test("a hang-up from the car ends the call here too, and only once", async () =>
 	win.emit({ type: "callReady", callId: win.sent[0].callId, mode: "telecom" });
 	await dial;
 
-	win.emit({ type: "disconnect" });
+	win.emit({ type: "disconnect", callId: win.sent[0].callId });
 	assert.equal(hangups, 1);
 	assert.equal(call.mode, undefined);
 	// voice.ts answers a native disconnect by calling stop(), which calls end(): the
@@ -159,8 +161,53 @@ test("route changes reach the page", async () => {
 	const call = await load(win);
 	const seen = [];
 	call.onRoute = (route, routes, muted) => seen.push([route, routes, muted]);
-	win.emit({ type: "audioRoute", route: "bluetooth", routes: ["speaker", "bluetooth"], muted: false });
-	assert.deepEqual(seen, [["bluetooth", ["speaker", "bluetooth"], false]]);
+	const dial = call.begin();
+	const callId = win.sent[0].callId;
+	win.emit({ type: "callReady", callId, mode: "telecom" });
+	await dial;
+	win.emit({ type: "audioRoute", callId, route: "bluetooth", routes: ["speaker", "bluetooth"], muted: true });
+	assert.deepEqual(seen, [["bluetooth", ["speaker", "bluetooth"], true]]);
+
+	call.setRoute("speaker");
+	assert.deepEqual(win.sent.at(-1), { type: "setRoute", callId, route: "speaker" });
+});
+
+test("events for a call that has ended are ignored", async () => {
+	const win = fakeWindow();
+	const call = await load(win);
+	let hangups = 0;
+	call.onDisconnect = () => hangups++;
+	call.onRoute = () => assert.fail("a stale route change must not reach the page");
+	const dial = call.begin();
+	const first = win.sent[0].callId;
+	win.emit({ type: "callReady", callId: first, mode: "telecom" });
+	await dial;
+	call.end();
+
+	// the second dial is a different call; the first one's leftovers must not touch it
+	const second = call.begin();
+	win.emit({ type: "disconnect", callId: first });
+	win.emit({ type: "audioRoute", callId: first, route: "speaker", routes: ["speaker"], muted: true });
+	assert.equal(hangups, 0);
+	call.end();
+	await second;
+});
+
+test("an abandoned dial cannot hang up the call that replaced it", async () => {
+	const win = fakeWindow();
+	const call = await load(win);
+	const stale = call.begin();
+	const staleToken = win.sent[0].callId;
+	call.end(); // the user hung up while the OS was still thinking
+	await stale;
+
+	const fresh = call.begin();
+	const freshToken = win.sent.at(-1).callId;
+	assert.notEqual(freshToken, staleToken);
+	call.end(staleToken); // the stale attempt finally gives up
+	assert.equal(win.sent.filter((m) => m.type === "endCall").length, 1, "the live call survives");
+	call.end(freshToken);
+	await fresh;
 });
 
 test("a dial that is never admitted still cancels cleanly", async () => {

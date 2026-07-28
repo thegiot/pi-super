@@ -43,8 +43,16 @@ import org.json.JSONObject
 object CallHub {
 	private const val TAG = "PiSuperCall"
 	private const val ACCOUNT_ID = "pi-super-voice"
-	/** Telecom is asynchronous and may simply never call us back; don't hang the call on it */
-	private const val TELECOM_TIMEOUT_MS = 4000L
+	/**
+	 * Telecom is asynchronous and may simply never call us back; don't hang the call on it.
+	 * Must stay comfortably under the page's own watchdog (native-call.ts), or the page
+	 * opens the microphone before either mode has claimed the audio route — which is the
+	 * one ordering this whole app exists to get right.
+	 */
+	private const val TELECOM_TIMEOUT_MS = 2500L
+
+	/** the extra we tag a placeCall with, to recognise our own callback later */
+	private const val EXTRA_ATTEMPT = "dev.pasky.pisuper.ATTEMPT"
 
 	enum class Mode { NONE, TELECOM, AUDIO_FOCUS }
 
@@ -63,6 +71,12 @@ object CallHub {
 	private var pendingId: String? = null
 	private var timeout: Runnable? = null
 	private var muted = false
+	/**
+	 * Bumped by every dial and every hang-up. `placeCall` cannot be cancelled, so the only
+	 * way to tell our own callback from the ghost of a call the user already hung up on is
+	 * to tag the request and compare on the way back.
+	 */
+	private var attempt = 0
 
 	val active: Boolean
 		get() = mode != Mode.NONE
@@ -107,6 +121,7 @@ object CallHub {
 		}
 		muted = false
 		callId = id
+		attempt++
 		if (tryTelecom(app, id)) return
 		startAudioFocus(app, "telecom unavailable")
 	}
@@ -121,6 +136,10 @@ object CallHub {
 			val extras = Bundle().apply {
 				putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
 				putBoolean(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, false)
+				putBundle(
+					TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS,
+					Bundle().apply { putInt(EXTRA_ATTEMPT, attempt) },
+				)
 			}
 			pendingId = id
 			// Not a real address; Telecom needs *some* handle and shows it in car/watch UIs.
@@ -135,8 +154,9 @@ object CallHub {
 			return false
 		}
 		// placeCall() returning is not admission: onCreateOutgoingConnection may never come.
+		val mine = attempt
 		val t = Runnable {
-			if (pendingId != null && connection == null) {
+			if (mine == attempt && pendingId != null && connection == null) {
 				pendingId = null
 				appContext?.let { startAudioFocus(it, "telecom did not answer") }
 			}
@@ -157,6 +177,7 @@ object CallHub {
 		if (id != null && callId != null && id != callId) return
 		val hadConnection = connection
 		clearTimeout()
+		attempt++ // any Telecom callback still in flight is now a ghost
 		pendingId = null
 		callId = null
 		connection = null
@@ -195,38 +216,59 @@ object CallHub {
 
 	// ------------------------------------------------------------- from the framework
 
+	/**
+	 * Telecom admitted a call. Possibly not *the* call: placeCall cannot be cancelled, so
+	 * this may be the ghost of an attempt the user already hung up on, or one that timed
+	 * out into the audio-focus fallback. Either way it must be destroyed, not adopted — the
+	 * two modes may never be live at once.
+	 */
 	fun onConnectionCreated(conn: PiConnection) {
+		if (conn.attempt != attempt || callId == null || mode == Mode.AUDIO_FOCUS) {
+			Log.i(TAG, "discarding a stale telecom connection (attempt ${conn.attempt}, ours $attempt)")
+			conn.finish(DisconnectCause.CANCELED)
+			return
+		}
 		clearTimeout()
-		val id = pendingId ?: callId
 		pendingId = null
-		callId = id
 		connection = conn
 		mode = Mode.TELECOM
 		appContext?.let { CallService.start(it, phoneCall = true) }
 		emitReady()
 	}
 
-	fun onConnectionFailed(reason: String) {
+	fun onConnectionFailed(attemptOf: Int, reason: String) {
+		if (attemptOf != attempt || callId == null) return
 		clearTimeout()
 		pendingId = null
 		if (connection != null) return
 		appContext?.let { startAudioFocus(it, reason) }
 	}
 
-	/** Hang-up that did not come from the page: headset button, car, notification, system. */
-	fun onRemoteHangup() {
+	/**
+	 * Hang-up that did not come from the page: headset button, car, notification, system.
+	 * [from] is the connection that is telling us, if any — Telecom is already tearing that
+	 * one down, but a hang-up from our own notification has to finish it by hand or the call
+	 * outlives its own UI.
+	 */
+	fun onRemoteHangup(from: PiConnection? = null) {
 		if (!active && callId == null) return
+		val hadConnection = connection
+		val id = callId
 		connection = null
 		clearTimeout()
+		attempt++
 		pendingId = null
 		callId = null
+		if (hadConnection != null && hadConnection !== from) hadConnection.finish(DisconnectCause.LOCAL)
 		releaseAudioFocus()
 		mode = Mode.NONE
+		muted = false
 		appContext?.let { CallService.stop(it) }
-		emit(JSONObject().put("type", "disconnect"))
+		emit(JSONObject().put("type", "disconnect").put("callId", id))
 	}
 
-	fun onAudioStateChanged(state: CallAudioState) {
+	fun onAudioStateChanged(from: PiConnection, state: CallAudioState) {
+		if (from !== connection) return
 		val routes = JSONArray()
 		val mask = state.supportedRouteMask
 		if (mask and CallAudioState.ROUTE_EARPIECE != 0) routes.put("earpiece")
@@ -243,6 +285,7 @@ object CallHub {
 		emit(
 			JSONObject()
 				.put("type", "audioRoute")
+				.put("callId", callId)
 				.put("route", current)
 				.put("routes", routes)
 				.put("muted", state.isMuted),

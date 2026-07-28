@@ -18,6 +18,7 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
@@ -76,6 +77,14 @@ class MainActivity : AppCompatActivity() {
 			mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
 			userAgentString = "$userAgentString pi-super-android/${BuildConfig.VERSION_NAME}"
 		}
+		// WebView does not do WebAuthn unless asked, and even then the passkey is bound to
+		// the app's signature via the server's /.well-known/assetlinks.json — see docs/android.md.
+		if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
+			WebSettingsCompat.setWebAuthenticationSupport(
+				web.settings,
+				WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP,
+			)
+		}
 		if (Build.VERSION.SDK_INT >= 29) web.isForceDarkAllowed = false
 		WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
@@ -99,6 +108,20 @@ class MainActivity : AppCompatActivity() {
 		}
 
 		web.webViewClient = object : WebViewClient() {
+			override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+				// A new document has no idea a call is up, and pi-super reloads itself whenever
+				// the server is rebuilt. Without this the Telecom call and its notification
+				// outlive the WebRTC session they were wrapping, with nobody left to hang up.
+				CallHub.endCall(null)
+			}
+
+			override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+				CallHub.endCall(null)
+				toast("the page crashed")
+				finish()
+				return true // we handled it; not doing so kills the whole process
+			}
+
 			override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
 				val target = request.url.toString()
 				if (originOf(target) == origin) return false
@@ -116,9 +139,18 @@ class MainActivity : AppCompatActivity() {
 					handler.proceed()
 					return
 				}
+				// Below API 29 there is no way to get the certificate's own bytes out of
+				// SslCertificate — only the two distinguished names, which anyone can copy. So
+				// there is nothing to pin: ask every time, and say why.
+				val body = if (fp != null) {
+					"SHA-256:\n$fp\n\nTrust this exact certificate?"
+				} else {
+					"This Android is too old to identify the certificate, so it cannot be " +
+						"remembered or verified. Continue anyway, this once?"
+				}
 				AlertDialog.Builder(this@MainActivity)
 					.setTitle("Untrusted certificate")
-					.setMessage("${error.url}\n\nSHA-256:\n${fp ?: "unknown"}\n\nTrust this exact certificate?")
+					.setMessage("${error.url}\n\n$body")
 					.setPositiveButton("Trust") { _, _ ->
 						if (fp != null) Prefs.setPinnedCert(this@MainActivity, fp)
 						handler.proceed()
@@ -130,11 +162,11 @@ class MainActivity : AppCompatActivity() {
 		}
 	}
 
+	/** The certificate's own SHA-256, or null when this Android cannot give us its bytes. */
 	private fun fingerprint(error: SslError): String? {
-		val cert = error.certificate ?: return null
-		val der = if (Build.VERSION.SDK_INT >= 29) cert.x509Certificate?.encoded else null
-		val bytes = der ?: cert.toString().toByteArray()
-		return MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(":") { "%02X".format(it) }
+		if (Build.VERSION.SDK_INT < 29) return null
+		val der = error.certificate?.x509Certificate?.encoded ?: return null
+		return MessageDigest.getInstance("SHA-256").digest(der).joinToString(":") { "%02X".format(it) }
 	}
 
 	// ------------------------------------------------------------------------- bridge
