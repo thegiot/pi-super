@@ -52,7 +52,7 @@ const state = {
 	windows: [] as WindowInfo[],
 	view: "raw" as "raw" | "reader" | "meta",
 	lastTermView: "raw" as "raw" | "reader",
-	sizeMode: (localStorage.getItem("sizeMode") as "ignore" | "claim" | null) ?? "ignore",
+	sizeMode: (localStorage.getItem("sizeMode") as "ignore" | "claim" | null) ?? "claim",
 	fontSize: Number(localStorage.getItem("fontSize") ?? 13),
 	zoom: Number(localStorage.getItem("zoom") ?? 1),
 	session: "",

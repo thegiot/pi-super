@@ -2,19 +2,21 @@
 
 [![IronMan Design](https://i.ytimg.com/vi/DZaAFADoF1M/hqdefault.jpg)](https://www.youtube.com/watch?v=DZaAFADoF1M)
 
-*A bit juvenile, but this is how it finally makes your pi setup feel.*
-
-Your desk setup, in your pocket.
+*Did you know Iron Man's Jarvis is just a GPT-Live hooked to a tmux with bunch
+of Pi sessions? (Robots and holograms not included in this package.)*
 
 pi-super takes the tmux session already running on your dev box — the one full of `pi`
-agents, side-agents, shells and editors — and puts the whole thing on your phone. Not a
-copy, not a sync: the *same* session, live. Your desktop keeps showing exactly what it
-always showed; your phone just gets a seat at the table too.
+agents, shells and editors — and puts the whole thing on your phone, while
+on the tmux side you do not need to change anything at all.  Your desktop keeps showing exactly
+what it always showed; your phone just gets a seat at the table too.
 
-And because you're not always in a typing mood, there's *super* — a meta agent, i.e. an
-agent whose job is your other agents. It can peek into every window and act for you:
-text it from the garden, dictate an order from the kitchen, or call it hands-free from
-the car. It inspects, it steers, it reports back.
+And because you're not always in a typing mood, there's *super* — a meta agent,
+i.e. an agent whose job is your other agents, that you talk with using your
+voice just like you'd talk with the ChatGPT app. It can peek into every window and
+act for you: text it from the garden, dictate an order from the kitchen, or
+call it hands-free from the car. It isn't just a speech-to-text-to-speech but
+a voice-controlled agent - it inspects Pi sessions (and anything else, really),
+it steers, it reports and summarizes back.
 
 * **Nothing moves.** pi-super attaches to your running tmux server, never replaces it.
   Your desktop client keeps working at the same time, on the same windows.
@@ -26,19 +28,23 @@ the car. It inspects, it steers, it reports back.
   `sh`), a key ribbon, a prompt composer (so Gboard dictation just works), and image paste
   that lands as a real file path in the session.
 
-Where things stand: terminal, chat and voice all work today — voice runs on your ChatGPT
-login (gpt-live) when pi has one, an `OPENAI_API_KEY` otherwise, and falls back to the
-browser's own speech engine when there is neither. What it is not yet is a *real* call:
-Android suspends the tab when the screen goes off (details in [DESIGN.md](DESIGN.md)).
+Where things stand: terminal, chat and voice all work today — voice runs on
+your Codex login (gpt-live) and can fall back to the browser's own speech
+engine (but you'd be missing a lot).
+
+The voice experience is full-duplex and async-first, already feeling just like
+the new GPT-Live based ChatGPT voice. However, phone integration wise it is not
+yet compatible with handsfrees and with screen locked - a standalone mobile app
+will be required to actually emulate a call.
 
 ## Driving, or delegating
 
 Two ways to work:
 
 * **Drive it yourself — the terminal** (📖 toggles raw ↔ reader). Your tmux, one tab per
-  window, real keys into a real PTY.
+  window, real keys into a real PTY. (Oh, and PgUp/PgDn in Pi actually scroll!)
 * **Hand it to super — the agent** (📞). Opens the chat and places the call in one press.
-  Ask for anything on the machine: "what's the status of the grand endeavors work?", "tell
+  Ask for anything on the machine: "what's the status of the muaddib work?", "tell
   it to run the tests", "open the kitchen radio project and find out why it stopped
   working". Super reads panes, sends prompts, opens windows and waits on builds, then
   answers in the chat and out loud.
@@ -46,7 +52,15 @@ Two ways to work:
 📞 again returns to the terminal and keeps the call up; hang up from the call bar. *mute*
 and *hush* (or the headset button) shut super up without ending anything.
 
+YMMV, but pi-super is best combined with **pi-side-agents** that allow seamless
+parallel work on multiple prompts in the same project using tmux windows (and
+worktrees, handled transparently behind the scenes).
+
 ## Quick start
+
+(Honestly, just point your `pi` at this repo and ask it to walk you through a secure setup.)
+
+...anyway:
 
 ```bash
 npm install
