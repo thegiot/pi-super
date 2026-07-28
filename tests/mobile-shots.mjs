@@ -182,6 +182,23 @@ async function main() {
 	await wait(500);
 	await c.shot("05-meta-composer");
 
+	// call bar: it must push the chat log up, never float over its tail
+	const callLayout = await c.evaluate(`(() => {
+    const call = document.getElementById("call");
+    const warn = document.getElementById("call-warn");
+    call.hidden = false;
+    document.getElementById("call-state").textContent = "connected \u2014 talk to super";
+    warn.hidden = false;
+    warn.textContent = "\u26a0 degraded: browser speech \u2014 half duplex, no barge-in";
+    const meta = document.getElementById("meta").getBoundingClientRect();
+    const bar = call.getBoundingClientRect();
+    return { metaBottom: Math.round(meta.bottom), callTop: Math.round(bar.top), callH: Math.round(bar.height) };
+  })()`);
+	await wait(400);
+	await c.shot("05b-call-bar");
+	await c.evaluate(`document.getElementById("call").hidden = true; 1`);
+	log("call layout:", JSON.stringify(callLayout));
+
 	// simulate the soft keyboard eating 45% of the viewport, like Gboard does
 	await c.send("Emulation.setDeviceMetricsOverride", {
 		...DEVICE,
@@ -204,6 +221,7 @@ async function main() {
       bar: r(document.getElementById("bar")),
       main: r(document.querySelector("main")),
       footer: r(document.querySelector("footer")),
+      sizeMode: window.piSuper.state.sizeMode,
       termScale: term ? term.style.transform : "(none)",
       termNaturalWidth: screen ? Math.round(screen.offsetWidth) : 0,
       horizontalOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -222,8 +240,16 @@ async function main() {
 	console.log("\n=== checks ===");
 	const checks = [
 		["no horizontal page overflow", metrics.horizontalOverflow <= 0],
-		["terminal scaled to fit width", metrics.termScale.includes("scale")],
+		// claim mode owns the tmux geometry, so the grid is already phone-sized and must NOT
+		// be transformed; only in ignore mode (a desktop-wide grid) do we scale it down.
+		[
+			"terminal fits the width (scaled in ignore mode, native in claim mode)",
+			metrics.sizeMode === "claim"
+				? !metrics.termScale.includes("scale") && metrics.termNaturalWidth <= metrics.viewport.w + 1
+				: metrics.termScale.includes("scale"),
+		],
 		["touch targets >= 32px tall", metrics.smallestTouchTargets.every((b) => b.h >= 32)],
+		["call bar does not overlay the chat log", callLayout.callH > 0 && callLayout.metaBottom <= callLayout.callTop + 1],
 		["footer visible above the fold", metrics.footer.top + metrics.footer.h <= metrics.viewport.h + 1],
 		["terminal ribbon hidden in chat view", viewChecks.view !== "meta" || !viewChecks.ribbonVisible],
 		["abort button shown in chat view", viewChecks.view !== "meta" || viewChecks.abortVisible],

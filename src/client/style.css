@@ -92,11 +92,21 @@ button.icon {
 
 /* -------------------------------------------------------------------- main */
 
+/* main is a column: the view stack takes what is left, the call bar sits *below* it
+ * rather than floating over the tail of the chat log. */
 main {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	background: #000;
+}
+
+#views {
 	flex: 1;
 	position: relative;
 	overflow: hidden;
-	background: #000;
+	min-height: 0;
 }
 
 #term {
@@ -180,10 +190,7 @@ main {
 }
 
 #call {
-	position: absolute;
-	left: 0;
-	right: 0;
-	bottom: 0;
+	flex: 0 0 auto;
 	display: flex;
 	align-items: center;
 	gap: 8px;
