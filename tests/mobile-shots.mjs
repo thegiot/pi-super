@@ -199,6 +199,42 @@ async function main() {
 	const pagedKeys = await c.evaluate(`window.__keys.join(",")`);
 	log("vertical swipe keys:", pagedKeys);
 
+	// A ribbon key must reach the pty without taking focus off the composer: on a phone that
+	// would drop the on-screen keyboard mid-prompt. Focus normally moves on mousedown, so
+	// the harness reproduces that fallback explicitly.
+	const ribbon = await c.evaluate(`(() => {
+    const i = document.getElementById("input");
+    i.focus();
+    const btn = document.querySelector('#ribbon [data-key="C-t"]');
+    const md = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    btn.dispatchEvent(md);
+    if (!md.defaultPrevented) btn.focus();
+    btn.click();
+    return { sent: window.__keys[window.__keys.length - 1], focused: document.activeElement.id };
+  })()`);
+	log("ribbon key:", JSON.stringify(ribbon));
+
+	// A half-typed prompt belongs to the window it was aimed at, not to whichever window
+	// happens to be up when it is finally sent.
+	const drafts = await c.evaluate(`(() => {
+    const S = window.piSuper, i = document.getElementById("input");
+    const a = S.state.windows.find(w => w.active), b = S.state.windows.find(w => !w.active);
+    const type = (t) => { i.value = t; i.dispatchEvent(new Event("input")); };
+    type("for A");
+    S.selectWindow(b.id);
+    const onB = i.value;
+    type("for B");
+    S.selectWindow(a.id);
+    const backOnA = i.value;
+    S.setView("meta");
+    const onMeta = i.value;
+    S.setView("raw");
+    type("");
+    return { onB, backOnA, onMeta };
+  })()`);
+	log("drafts:", JSON.stringify(drafts));
+	await wait(800);
+
 	await setView("reader");
 	await wait(2000);
 	await c.shot("03-reader");
@@ -292,7 +328,9 @@ async function main() {
   })()`);
 	const viewChecks = await c.evaluate(`(() => {
     const vis = (id) => { const e = document.getElementById(id); return !!(e.offsetWidth || e.offsetHeight); };
-    return { view: window.piSuper.state.view, ribbonVisible: vis("ribbon"), insertVisible: vis("btn-insert"), abortVisible: vis("btn-abort") };
+    const tab = document.querySelector("#tabs .tab.active");
+    return { view: window.piSuper.state.view, ribbonVisible: vis("ribbon"), insertVisible: vis("btn-insert"), abortVisible: vis("btn-abort"),
+             activeTabColor: tab ? getComputedStyle(tab).borderTopColor : "(none)" };
   })()`);
 	console.log("\nmeta view:", JSON.stringify(viewChecks));
 
@@ -319,6 +357,10 @@ async function main() {
 		["footer visible above the fold", metrics.footer.top + metrics.footer.h <= metrics.viewport.h + 1],
 		["terminal ribbon hidden in chat view", viewChecks.view !== "meta" || !viewChecks.ribbonVisible],
 		["abort button shown in chat view", viewChecks.view !== "meta" || viewChecks.abortVisible],
+		// green is reserved for "this is what the view is showing"; in the chat it is not
+		["current window tab is blue in chat view", viewChecks.view !== "meta" || viewChecks.activeTabColor === "rgb(79, 127, 208)"],
+		["ribbon key reaches the pty without stealing focus", ribbon.sent === "C-t" && ribbon.focused === "input"],
+		["drafts are per window and per view", drafts.onB === "" && drafts.backOnA === "for A" && drafts.onMeta === ""],
 	];
 	let failed = 0;
 	for (const [name, ok] of checks) {

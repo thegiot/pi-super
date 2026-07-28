@@ -242,6 +242,8 @@ function connect(): void {
 				}
 				renderTabs();
 				renderWindowList();
+				syncDraft();
+				pruneDrafts();
 				if (state.view === "reader") void refreshReader();
 				break;
 			}
@@ -342,6 +344,7 @@ function selectWindow(id: string): void {
 		localStorage.setItem("lastWindow", id);
 		renderTabs();
 		renderWindowList();
+		syncDraft();
 		if (state.view === "reader") void refreshReader();
 	}
 }
@@ -506,6 +509,9 @@ function setView(view: "raw" | "reader" | "meta"): void {
 	el.meta.hidden = view !== "meta";
 	el.term.style.visibility = view === "raw" ? "visible" : "hidden";
 	el.ribbon.hidden = view === "meta";
+	// the tab strip stays up in the chat view, but it is no longer what you are looking at:
+	// the highlight drops from accent green to the chat's blue so the two cannot be confused
+	document.body.classList.toggle("meta-view", view === "meta");
 	el.abort.hidden = view !== "meta";
 	$("btn-insert").hidden = view === "meta"; // "insert without Enter" is a terminal thing
 	el.input.placeholder = view === "meta" ? "ask super…" : "prompt…";
@@ -521,6 +527,62 @@ function setView(view: "raw" | "reader" | "meta"): void {
 		toBottom(el.term);
 	}
 	if (view === "meta") el.meta.scrollTop = el.meta.scrollHeight;
+	// the chat and the terminal are different conversations; so is every window
+	syncDraft();
+}
+
+// ------------------------------------------------------------------- drafts
+
+/**
+ * A half-typed prompt belongs to the thing it was aimed at: switching windows (or over to
+ * the chat) must not carry it along, and must not lose it either. So drafts are keyed by
+ * target and swapped in and out of the one textarea as the target changes.
+ */
+function draftKey(): string | undefined {
+	if (state.view === "meta") return "draft:meta";
+	const w = activeWindow();
+	return w ? `draft:${w.id}` : undefined;
+}
+
+/** What the textarea currently holds a draft *for* — undefined before the first window list. */
+let draftFor: string | undefined;
+
+function saveDraft(): void {
+	if (!draftFor) return;
+	if (el.input.value) localStorage.setItem(draftFor, el.input.value);
+	else localStorage.removeItem(draftFor);
+}
+
+/** Park the current text under its own key and load whatever belongs to the new target. */
+function syncDraft(): void {
+	const key = draftKey();
+	if (!key || key === draftFor) return;
+	// typed before the first window list arrived: that text was meant for this target, so
+	// adopt it rather than clobbering it with whatever was stored
+	const orphan = draftFor === undefined && el.input.value !== "";
+	saveDraft();
+	draftFor = key;
+	// one-time carry-over from the single shared draft of older builds
+	const legacy = localStorage.getItem("draft");
+	if (legacy !== null) {
+		localStorage.removeItem("draft");
+		if (!localStorage.getItem(key)) localStorage.setItem(key, legacy);
+	}
+	if (orphan) {
+		saveDraft();
+		return;
+	}
+	el.input.value = localStorage.getItem(key) ?? "";
+	autogrow();
+}
+
+/** Windows die; their drafts must not pile up in localStorage forever. */
+function pruneDrafts(): void {
+	const live = new Set(state.windows.map((w) => `draft:${w.id}`));
+	live.add("draft:meta");
+	for (const k of Object.keys(localStorage)) {
+		if (k.startsWith("draft:") && !live.has(k)) localStorage.removeItem(k);
+	}
 }
 
 // -------------------------------------------------------------------- input
@@ -530,7 +592,7 @@ function sendText(text: string, enter: boolean): void {
 	if (state.view === "meta") meta.send(text);
 	else send({ t: "paste", text, enter });
 	el.input.value = "";
-	localStorage.removeItem("draft");
+	saveDraft();
 	autogrow();
 }
 
@@ -717,8 +779,7 @@ $("btn-insert").onclick = () => sendText(el.input.value, false);
 // The draft survives reloads, server restarts and the phone evicting the tab.
 el.input.addEventListener("input", () => {
 	autogrow();
-	if (el.input.value) localStorage.setItem("draft", el.input.value);
-	else localStorage.removeItem("draft");
+	saveDraft();
 });
 window.visualViewport?.addEventListener("resize", autogrow);
 el.input.addEventListener("keydown", (e) => {
@@ -732,6 +793,16 @@ el.ribbon.addEventListener("click", (e) => {
 	const key = (e.target as HTMLElement).dataset.key;
 	if (key) send({ t: "keys", keys: [key] });
 });
+
+// A ribbon key is a modifier for what you are typing, not a change of subject: taking
+// focus would drop the on-screen keyboard and the caret with it. mousedown (not
+// pointerdown) is where focus moves and it fires after the touch is over, so cancelling it
+// keeps the textarea focused without interfering with scrolling the ribbon sideways.
+for (const strip of [el.ribbon, $("composer")]) {
+	strip.addEventListener("mousedown", (e) => {
+		if ((e.target as HTMLElement).closest("button")) e.preventDefault();
+	});
+}
 
 $("btn-font-inc").onclick = () => zoomBy(1.25);
 $("btn-font-dec").onclick = () => zoomBy(1 / 1.25);
@@ -875,6 +946,7 @@ if (new URLSearchParams(location.search).has("debug")) {
 		state,
 		// lets a harness open the chat without also placing a call
 		setView,
+		selectWindow,
 		events,
 		spoken,
 		transcript,
@@ -920,8 +992,7 @@ $("btn-lock").onclick = () => {
 	void logout().then(() => location.reload());
 };
 
-el.input.value = localStorage.getItem("draft") ?? "";
-if (el.input.value) autogrow();
+syncDraft();
 el.claim.checked = state.sizeMode === "claim";
 // On a phone the desktop-width raw terminal is unreadable at a glance, and reader mode is
 // the whole point; on a wide screen the real terminal is what you want. Remembered after

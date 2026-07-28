@@ -84,6 +84,13 @@ button.icon {
 	color: var(--accent);
 }
 
+/* in the chat view the terminal is not on screen: mark the current window in the chat's
+ * blue, so green always means "this is what the view is showing" */
+body.meta-view .tab.active {
+	border-color: #4f7fd0;
+	color: #7fa8e8;
+}
+
 .tab.activity::after {
 	content: "•";
 	color: var(--warn);
