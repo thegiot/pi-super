@@ -50,6 +50,88 @@ export function pathAt(text: string, index: number): PeekTarget | undefined {
 	return a === b ? undefined : parsePath(text.slice(a, b));
 }
 
+// ------------------------------------------------------------- highlighting
+
+/**
+ * A deliberately small, line-at-a-time tokenizer: strings, comments, numbers, keywords,
+ * one shared keyword set across languages. It is not a parser and will get exotic code
+ * subtly wrong — but on a phone the job is "tell code apart from prose at a glance",
+ * which four colours do, and a real grammar pack would outweigh the whole client bundle.
+ */
+const KEYWORDS = [
+	"as","async","await","break","case","catch","chan","class","const","continue","def","defer","del","delete",
+	"do","done","elif","else","elsif","end","enum","esac","except","export","extends","false","fi","final",
+	"finally","fn","for","from","func","function","global","go","if","impl","implements","import","in","interface",
+	"is","lambda","let","local","loop","match","mod","module","mut","new","nil","None","none","not","null",
+	"package","pass","private","protected","pub","public","raise","readonly","return","select","self","static",
+	"struct","super","switch","then","this","throw","trait","true","try","type","typeof","undefined","unless",
+	"until","use","var","void","where","while","with","yield",
+].join("|");
+
+const SLASH = new Set("js mjs cjs jsx ts tsx c h cc cpp cxx hpp go rs java kt kts swift cs php scala dart zig proto glsl css scss less".split(" "));
+const HASH = new Set("py pyi sh bash zsh fish rb pl r tf yml yaml toml ini cfg conf mk makefile dockerfile gitignore env service nix".split(" "));
+
+const STRING = String.raw`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\`(?:[^\`\\]|\\.)*\``;
+const NUMBER = String.raw`\b\d[\w.]*\b`;
+
+/** The token rules for a file, or undefined for "this is prose, leave it alone". */
+function rulesFor(path: string): RegExp | undefined {
+	const name = path.split("/").pop() ?? "";
+	const ext = (name.includes(".") ? name.split(".").pop()! : name).toLowerCase();
+	// a lone `/*` is its own token: it opens a block comment that runs into the next lines
+	if (SLASH.has(ext)) return new RegExp(`(?<c>/\\*[\\s\\S]*?\\*/|/\\*|//.*)|(?<s>${STRING})|(?<n>${NUMBER})|(?<k>\\b(?:${KEYWORDS})\\b)`, "g");
+	if (HASH.has(ext)) return new RegExp(`(?<c>#.*)|(?<s>${STRING})|(?<n>${NUMBER})|(?<k>\\b(?:${KEYWORDS})\\b)`, "g");
+	if (ext === "json" || ext === "jsonl") return new RegExp(`(?<s>${STRING})|(?<n>${NUMBER})|(?<k>\\b(?:true|false|null)\\b)`, "g");
+	return undefined;
+}
+
+/** Render one line into `div`, carrying block-comment state to the next one. */
+function highlightLine(div: HTMLElement, line: string, re: RegExp | undefined, st: { block: boolean }): void {
+	const push = (text: string, cls?: string): void => {
+		if (!text) return;
+		if (!cls) {
+			div.append(text);
+			return;
+		}
+		const span = document.createElement("span");
+		span.className = cls;
+		span.textContent = text;
+		div.append(span);
+	};
+	if (line === "") {
+		div.append("\u200b"); // keep blank lines tall, and numbered
+		return;
+	}
+	let rest = line;
+	if (st.block) {
+		const end = rest.indexOf("*/");
+		if (end < 0) {
+			push(rest, "c");
+			return;
+		}
+		push(rest.slice(0, end + 2), "c");
+		st.block = false;
+		rest = rest.slice(end + 2);
+	}
+	if (!re) {
+		push(rest);
+		return;
+	}
+	let last = 0;
+	for (const m of rest.matchAll(re)) {
+		push(rest.slice(last, m.index));
+		if (m.groups?.c === "/*") {
+			st.block = true;
+			push(rest.slice(m.index), "c");
+			return;
+		}
+		const g = m.groups ?? {};
+		push(m[0], g.c ? "c" : g.s ? "s" : g.n ? "n" : "k");
+		last = m.index + m[0].length;
+	}
+	push(rest.slice(last));
+}
+
 interface PeekOptions {
 	/** cwd of the pane on screen — relative paths are printed relative to it */
 	cwd: () => string;
@@ -145,10 +227,12 @@ export function initPeek(opts: PeekOptions): Peek {
 		if (mine !== epoch) return;
 		const pre = document.createElement("pre");
 		pre.className = "peek-code";
+		const re = rulesFor(resolved);
+		const st = { block: false };
 		let hit: HTMLElement | undefined;
 		for (const [i, l] of text.replace(/\n$/, "").split("\n").entries()) {
 			const div = document.createElement("div");
-			div.textContent = l === "" ? "\u200b" : l; // keep blank lines tall and numbered
+			highlightLine(div, l, re, st);
 			if (target.line === i + 1) {
 				div.className = "hit";
 				hit = div;

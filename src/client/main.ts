@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { authState, enrollPasskey, gate, loginWithPasskey, logout } from "./auth.js";
 import { createMeta } from "./meta.js";
-import { initPeek } from "./peek.js";
+import { initPeek, pathAt } from "./peek.js";
 import "./style.css";
 import { createVoice } from "./voice.js";
 
@@ -518,6 +518,48 @@ for (const host of [el.reader, el.meta]) {
 	});
 }
 
+/**
+ * The raw view is a grid, not text: there is no DOM node under the finger to hit-test, so
+ * the tap is turned into a cell by hand. The screen's on-screen rect already accounts for
+ * the ignore-mode scale transform and any font size, so cell size is just that rect over
+ * the grid — no need to know either.
+ */
+el.term.addEventListener("click", (e) => {
+	if (term.hasSelection()) return; // a tap that ended a selection meant the selection
+	const screen = el.term.querySelector<HTMLElement>(".xterm-screen");
+	if (!screen) return;
+	const r = screen.getBoundingClientRect();
+	if (!r.width || !r.height) return;
+	const col = Math.floor(((e.clientX - r.left) / r.width) * term.cols);
+	const row = Math.floor(((e.clientY - r.top) / r.height) * term.rows);
+	if (col < 0 || row < 0 || col >= term.cols || row >= term.rows) return;
+	const hit = cellText(row, col);
+	const target = hit && pathAt(hit.text, hit.index);
+	if (target) peek.open(target);
+});
+
+/**
+ * The whole logical line the given viewport cell sits on, and where in it the cell landed.
+ * Logical, because at 80 columns a long path is usually split across two rows — the buffer
+ * flags the continuation, and a path broken in half is exactly the one worth opening.
+ */
+function cellText(row: number, col: number): { text: string; index: number } | undefined {
+	const buf = term.buffer.active;
+	const y = buf.viewportY + row;
+	let start = y;
+	while (start > 0 && buf.getLine(start)?.isWrapped) start--;
+	let text = "";
+	let index = -1;
+	for (let k = start; k < buf.length; k++) {
+		const line = buf.getLine(k);
+		if (!line || (k > start && !line.isWrapped)) break;
+		if (k === y) index = text.length + col;
+		// untrimmed: the padding is what keeps column arithmetic true across the join
+		text += line.translateToString(false);
+	}
+	return index < 0 ? undefined : { text, index };
+}
+
 function setView(view: "raw" | "reader" | "meta"): void {
 	state.view = view;
 	if (view !== "meta") state.lastTermView = view;
@@ -969,6 +1011,7 @@ if (new URLSearchParams(location.search).has("debug")) {
 		setView,
 		selectWindow,
 		peek,
+		term,
 		events,
 		spoken,
 		transcript,

@@ -610,3 +610,21 @@ button.primary {
 	font-size: 12px;
 	padding: 4px 0;
 }
+
+/* four colours is all the phone needs to tell code from prose (github-dark-ish) */
+.peek-code .s {
+	color: #a5d6ff;
+}
+
+.peek-code .c {
+	color: #8b949e;
+	font-style: italic;
+}
+
+.peek-code .n {
+	color: #79c0ff;
+}
+
+.peek-code .k {
+	color: #ff7b72;
+}

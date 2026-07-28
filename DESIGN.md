@@ -66,11 +66,14 @@ Named after hbomberguy's *super*: one remote that drives everything.
   out of the box, no STT of our own needed for text mode) sends bracketed-paste text
   + optional Enter; a key ribbon covers Esc/Tab/Ctrl/arrows/PgUp/PgDn/Ctrl-C; raw xterm
   focus is available for exact TUI typing.
-* **Peek at files.** A tap on a path in the reader capture (or in the chat) resolves the
-  token under the finger against the pane's cwd and pops the file up: images as images,
-  text in a `<pre>`, `file:42` scrolled to that line. There is no sandbox root — everyone
-  who gets this far already has a shell — only size caps, so a phone is never handed a
-  core dump. Only the DOM views: the raw xterm would need a link provider of its own.
+* **Peek at files.** A tap on a path resolves the token under the finger against the
+  pane's cwd and pops the file up: images as images, text syntax-highlighted in a `<pre>`,
+  `file:42` scrolled to that line. Works in all three views, by two different hit tests —
+  the reader and the chat are DOM text (`caretRangeFromPoint`), while the raw grid has no
+  node under the finger, so the tap is divided into a cell and read back out of the xterm
+  buffer (following `isWrapped`, because at phone width a long path spans two rows).
+  There is no sandbox root — everyone who gets this far already has a shell — only size
+  caps, so a phone is never handed a core dump.
 * **Images.** Clipboard/file-picker upload → `~/.pi/super/uploads/<rand>.<ext>` (0600) →
   the absolute path is pasted into the focused pane, which is exactly what pi/claude
   TUIs want.

@@ -306,6 +306,67 @@ async function main() {
 	const afterProse = await c.evaluate(`!document.getElementById("peek").hidden`);
 	log("peek on prose stays closed:", !afterProse);
 
+	// code gets the four colours; open it directly, the tap itself is covered above
+	const sample = join(STATE_DIR, "sample.ts");
+	writeFileSync(
+		sample,
+		[
+			"/* a block comment",
+			"   that runs across lines */",
+			'import { Terminal } from "@xterm/xterm";',
+			"",
+			"// how many lines of scrollback a phone can afford",
+			"const scrollback = 5000;",
+			"",
+			"export function open(path: string): boolean {",
+			'\tif (path === "") return false;',
+			"\treturn new Terminal({ scrollback }) !== null;",
+			"}",
+			"",
+		].join("\n"),
+	);
+	await c.evaluate(`window.piSuper.peek.open({ path: ${JSON.stringify(sample)}, line: 6 }); 1`);
+	await wait(1500);
+	const hl = await c.evaluate(`(() => {
+    const q = (s) => document.querySelectorAll("#peek-body .peek-code " + s).length;
+    const l = [...document.querySelectorAll("#peek-body .peek-code div")];
+    return { k: q(".k"), s: q(".s"), c: q(".c"), n: q(".n"), blockLine2: !!(l[1] && l[1].querySelector(".c")) };
+  })()`);
+	log("peek highlighting:", JSON.stringify(hl));
+	await c.shot("03e-peek-highlight");
+	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
+
+	// The same tap in the raw view, where there is no DOM text under the finger at all.
+	// A bare filename also proves the round trip through the pane's own cwd.
+	sh("tmux", ["-L", SOCKET, "send-keys", "-t", "phone:notes", `cd ${STATE_DIR}; clear; echo peek-me.png`, "Enter"]);
+	await setView("raw");
+	await wait(2500);
+	// find the cell the filename occupies on the grid, then convert that back to pixels
+	const rawSpot = await c.evaluate(`(() => {
+    const screen = document.querySelector("#term .xterm-screen");
+    const rows = [...document.querySelectorAll("#term .xterm-rows > div")];
+    const row = rows.findIndex(r => /^peek-me\\.png\\s*$/.test(r.textContent));
+    if (row < 0) return null;
+    const b = screen.getBoundingClientRect();
+    const cols = window.piSuper.term.cols;
+    return { x: b.x + (b.width / cols) * 4.5, y: b.y + (b.height / rows.length) * (row + 0.5) };
+  })()`);
+	if (!rawSpot) throw new Error("the raw terminal never showed the filename we printed");
+	await c.tap(rawSpot.x, rawSpot.y);
+	await wait(1500);
+	const rawPeek = await c.evaluate(`(() => {
+    const img = document.querySelector("#peek-body img");
+    return {
+      open: !document.getElementById("peek").hidden,
+      path: document.getElementById("peek-path").textContent.replace(/[\\u2066\\u2069]/g, ""),
+      decoded: !!img && img.naturalWidth > 0,
+    };
+  })()`);
+	log("peek from the raw terminal:", JSON.stringify(rawPeek));
+	await c.shot("03d-peek-from-raw");
+	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
+	await setView("reader");
+
 	// drawer
 	await c.evaluate(`document.getElementById("btn-menu").click(); 1`);
 	await wait(800);
@@ -451,6 +512,8 @@ async function main() {
 		["a :line suffix lands on that line", peeked.hit === "beta"],
 		["tapping an image path shows the image", peekedImg.open && peekedImg.decoded],
 		["tapping prose opens nothing", !afterProse],
+		["tapping a path in the raw terminal opens it too", rawPeek.open && rawPeek.decoded && rawPeek.path.endsWith("peek-me.png")],
+		["code is highlighted, block comments across lines", hl.k > 0 && hl.s > 0 && hl.c > 0 && hl.n > 0 && hl.blockLine2],
 	];
 	let failed = 0;
 	for (const [name, ok] of checks) {
