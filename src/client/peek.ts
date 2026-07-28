@@ -74,20 +74,41 @@ const HASH = new Set("py pyi sh bash zsh fish rb pl r tf yml yaml toml ini cfg c
 const STRING = String.raw`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\`(?:[^\`\\]|\\.)*\``;
 const NUMBER = String.raw`\b\d[\w.]*\b`;
 
+/**
+ * Markdown gets rules of its own rather than the code ones, which are actively wrong on
+ * prose: every apostrophe would open a string and every `# heading` become a comment.
+ * It is also the format most worth reading on a phone — half of what agents leave behind
+ * is a README or a note.
+ */
+const MD = new Set(["md", "markdown", "mdx", "mkd"]);
+const MD_INLINE =
+	/(?<s>`[^`]+`)|(?<l>\[[^\]]*\]\([^)\s]*\))|(?<b>\*\*[^*]+\*\*|__[^_]+__)|(?<e>\*[^*\s][^*]*\*|_[^_\s][^_]*_)/g;
+
+type Rules = { md: true; re?: undefined } | { md?: undefined; re: RegExp };
+
 /** The token rules for a file, or undefined for "this is prose, leave it alone". */
-function rulesFor(path: string): RegExp | undefined {
+function rulesFor(path: string): Rules | undefined {
 	const name = path.split("/").pop() ?? "";
 	const ext = (name.includes(".") ? name.split(".").pop()! : name).toLowerCase();
+	const code = (src: string): Rules => ({ re: new RegExp(src, "g") });
+	if (MD.has(ext)) return { md: true };
 	// a lone `/*` is its own token: it opens a block comment that runs into the next lines
-	if (SLASH.has(ext)) return new RegExp(`(?<c>/\\*[\\s\\S]*?\\*/|/\\*|//.*)|(?<s>${STRING})|(?<n>${NUMBER})|(?<k>\\b(?:${KEYWORDS})\\b)`, "g");
-	if (HASH.has(ext)) return new RegExp(`(?<c>#.*)|(?<s>${STRING})|(?<n>${NUMBER})|(?<k>\\b(?:${KEYWORDS})\\b)`, "g");
-	if (ext === "json" || ext === "jsonl") return new RegExp(`(?<s>${STRING})|(?<n>${NUMBER})|(?<k>\\b(?:true|false|null)\\b)`, "g");
+	if (SLASH.has(ext)) return code(`(?<c>/\\*[\\s\\S]*?\\*/|/\\*|//.*)|(?<s>${STRING})|(?<n>${NUMBER})|(?<k>\\b(?:${KEYWORDS})\\b)`);
+	if (HASH.has(ext)) return code(`(?<c>#.*)|(?<s>${STRING})|(?<n>${NUMBER})|(?<k>\\b(?:${KEYWORDS})\\b)`);
+	if (ext === "json" || ext === "jsonl") return code(`(?<s>${STRING})|(?<n>${NUMBER})|(?<k>\\b(?:true|false|null)\\b)`);
 	return undefined;
 }
 
-/** Render one line into `div`, carrying block-comment state to the next one. */
-function highlightLine(div: HTMLElement, line: string, re: RegExp | undefined, st: { block: boolean }): void {
-	const push = (text: string, cls?: string): void => {
+type Push = (text: string, cls?: string) => void;
+/** `block`: inside a C comment. `fence`: inside a markdown fence, with its own rules. */
+interface HlState {
+	block: boolean;
+	fence?: Rules | null;
+}
+
+/** Render one line into `div`, carrying comment/fence state to the next one. */
+function highlightLine(div: HTMLElement, line: string, rules: Rules | undefined, st: HlState): void {
+	const push: Push = (text, cls) => {
 		if (!text) return;
 		if (!cls) {
 			div.append(text);
@@ -102,6 +123,11 @@ function highlightLine(div: HTMLElement, line: string, re: RegExp | undefined, s
 		div.append("\u200b"); // keep blank lines tall, and numbered
 		return;
 	}
+	if (rules?.md) markdownLine(push, line, st);
+	else codeLine(push, line, rules?.re, st);
+}
+
+function codeLine(push: Push, line: string, re: RegExp | undefined, st: HlState): void {
 	let rest = line;
 	if (st.block) {
 		const end = rest.indexOf("*/");
@@ -127,6 +153,46 @@ function highlightLine(div: HTMLElement, line: string, re: RegExp | undefined, s
 		}
 		const g = m.groups ?? {};
 		push(m[0], g.c ? "c" : g.s ? "s" : g.n ? "n" : "k");
+		last = m.index + m[0].length;
+	}
+	push(rest.slice(last));
+}
+
+function markdownLine(push: Push, line: string, st: HlState): void {
+	// A fence flips state, and carries the language of what is inside it: a ```ts block in
+	// a README is code, and gets coloured as the code it is.
+	const fence = line.match(/^\s{0,3}(?:```|~~~)\s*([\w+#.-]*)/);
+	if (fence) {
+		push(line, "c");
+		st.fence = st.fence === undefined ? (rulesFor(`x.${fence[1] || "txt"}`) ?? null) : undefined;
+		return;
+	}
+	if (st.fence !== undefined) {
+		codeLine(push, line, st.fence?.re, st);
+		return;
+	}
+	if (/^\s{0,3}#{1,6}\s/.test(line)) {
+		push(line, "h");
+		return;
+	}
+	// a quote and a rule are both "not the text itself", and dim says that in one colour
+	if (/^\s{0,3}>/.test(line) || /^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) {
+		push(line, "c");
+		return;
+	}
+	let rest = line;
+	const bullet = rest.match(/^(\s*)([-*+]|\d+[.)])(\s+)/);
+	if (bullet) {
+		push(bullet[1]!);
+		push(bullet[2]!, "k");
+		push(bullet[3]!);
+		rest = rest.slice(bullet[0].length);
+	}
+	let last = 0;
+	for (const m of rest.matchAll(MD_INLINE)) {
+		push(rest.slice(last, m.index));
+		const g = m.groups ?? {};
+		push(m[0], g.s ? "s" : g.l ? "l" : g.b ? "b" : "e");
 		last = m.index + m[0].length;
 	}
 	push(rest.slice(last));
@@ -307,15 +373,15 @@ export function initPeek(opts: PeekOptions): Peek {
 		if (mine !== epoch) return;
 		const pre = document.createElement("pre");
 		pre.className = "peek-code";
-		const re = rulesFor(resolved);
-		const st = { block: false };
+		const rules = rulesFor(resolved);
+		const st: HlState = { block: false };
 		let hit: HTMLElement | undefined;
 		const all = text.replace(/\n$/, "").split("\n");
 		// 256 KB of newlines is a quarter of a million nodes: enough to wedge the phone
 		const lines = all.length > MAX_RENDER_LINES ? all.slice(0, MAX_RENDER_LINES) : all;
 		for (const [i, l] of lines.entries()) {
 			const div = document.createElement("div");
-			highlightLine(div, l, re, st);
+			highlightLine(div, l, rules, st);
 			if (target.line === i + 1) {
 				div.className = "hit";
 				hit = div;

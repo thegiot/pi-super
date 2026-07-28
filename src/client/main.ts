@@ -66,6 +66,8 @@ const state = {
 	/** after (re)connect: re-select the remembered window once the list arrives */
 	restorePending: false,
 	readerTimer: 0 as number | ReturnType<typeof setInterval>,
+	/** cwd of the pane the reader text was captured from, snapshotted with it */
+	readerCwd: "",
 	reconnectTimer: 0 as number | ReturnType<typeof setTimeout>,
 	/** a sticky "disconnected" notice is showing; the next open says "reconnected" */
 	wasDown: false,
@@ -496,6 +498,7 @@ async function refreshReader(): Promise<void> {
 		const body = (await res.text()).replace(/\n+$/, "");
 		if (state.view !== "reader" || activeWindow()?.paneId !== pane) return; // stale
 		el.readerText.textContent = body;
+		state.readerCwd = w.paneCwd; // snapshotted with the text, for resolving paths tapped in it
 		if (keepBottom) el.reader.scrollTop = el.reader.scrollHeight;
 	} catch (err) {
 		status(`capture failed: ${String((err as Error).message)}`, 3000, true);
@@ -509,7 +512,14 @@ async function refreshReader(): Promise<void> {
  * printed relative to the pane's own cwd, which is the one thing the phone knows and the
  * server would have to guess.
  */
-const peek = initPeek({ cwd: () => activeWindow()?.paneCwd ?? "", status });
+const peek = initPeek({
+	// The reader is a capture taken at some past moment; the pane may have been switched
+	// or `cd`ed since, and resolving against the pane's *current* cwd would then quietly
+	// open the same-named file from the wrong worktree. So the capture carries its own.
+	// (The popup always shows the resolved path, which is the check on any guess here.)
+	cwd: () => (state.view === "reader" ? state.readerCwd : activeWindow()?.paneCwd ?? ""),
+	status,
+});
 for (const host of [el.reader, el.meta]) {
 	host.addEventListener("click", (e) => {
 		// a tap that ended a selection or landed on a control was aimed at something else
@@ -527,6 +537,10 @@ for (const host of [el.reader, el.meta]) {
  */
 el.term.addEventListener("click", (e) => {
 	if (term.hasSelection()) return; // a tap that ended a selection meant the selection
+	// A mouse-tracking TUI (vim, a pager, tmux copy-mode) has already been sent this tap as
+	// a click of its own; opening a popup on top of whatever it just did is not what anyone
+	// meant by it. Those apps own the pointer, and the reader view is one button away.
+	if (term.modes.mouseTrackingMode !== "none") return;
 	const screen = el.term.querySelector<HTMLElement>(".xterm-screen");
 	if (!screen) return;
 	const r = screen.getBoundingClientRect();
@@ -554,9 +568,13 @@ function cellText(row: number, col: number): { text: string; index: number } | u
 	for (let k = start; k < buf.length; k++) {
 		const line = buf.getLine(k);
 		if (!line || (k > start && !line.isWrapped)) break;
-		if (k === y) index = text.length + col;
-		// untrimmed: the padding is what keeps column arithmetic true across the join
-		text += line.translateToString(false);
+		// Columns are not string offsets: a CJK glyph is two columns wide and one character
+		// long, so the prefix has to be translated to be measured.
+		if (k === y) index = text.length + line.translateToString(false, 0, col).length;
+		// untrimmed, and clamped to the grid: the padding is what keeps the arithmetic true
+		// across the join, while a line left wider than the grid by a resize has an invisible
+		// tail that must not count
+		text += line.translateToString(false, 0, term.cols);
 	}
 	return index < 0 ? undefined : { text, index };
 }

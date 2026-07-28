@@ -684,3 +684,22 @@ button.primary {
 	font-size: 11px;
 	flex: none;
 }
+
+/* markdown: prose is the text, so only its structure is coloured */
+.peek-code .h {
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.peek-code .l {
+	color: #79c0ff;
+	text-decoration: underline;
+}
+
+.peek-code .b {
+	font-weight: 600;
+}
+
+.peek-code .e {
+	font-style: italic;
+}

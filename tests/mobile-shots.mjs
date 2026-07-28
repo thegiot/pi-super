@@ -358,6 +358,45 @@ async function main() {
 	await c.shot("03e-peek-highlight");
 	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
 
+	// markdown is prose, and gets rules of its own — the code ones would call every
+	// apostrophe a string; a fenced block inside it is still coloured as the code it is
+	const readme = join(STATE_DIR, "sample.md");
+	writeFileSync(
+		readme,
+		[
+			"# pi-super",
+			"",
+			"It doesn't replace your tmux, and **never** will — see [the design](DESIGN.md).",
+			"",
+			"* `npm test` — unit tests, no tmux needed",
+			"* run it under `timeout`",
+			"",
+			"```sh",
+			"npm run build && systemctl --user restart pi-super",
+			"```",
+			"",
+			"> a stale server serves the new client and ignores it",
+			"",
+		].join("\n"),
+	);
+	await c.evaluate(`window.piSuper.peek.open({ path: ${JSON.stringify(readme)} }); 1`);
+	await wait(1500);
+	const md = await c.evaluate(`(() => {
+    const l = [...document.querySelectorAll("#peek-body .peek-code div")];
+    const cls = (i, s) => !!(l[i] && l[i].querySelector(s));
+    return {
+      heading: cls(0, ".h"),
+      // the apostrophe in "doesn't" must not open a string, but the bold and link must show
+      prose: !cls(2, ".s") && cls(2, ".b") && cls(2, ".l"),
+      bullet: cls(4, ".k") && cls(4, ".s"),
+      fenced: cls(8, ".k"),
+      quote: cls(11, ".c"),
+    };
+  })()`);
+	log("peek markdown:", JSON.stringify(md));
+	await c.shot("03g-peek-markdown");
+	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
+
 	// The same tap in the raw view, where there is no DOM text under the finger at all.
 	// A bare filename also proves the round trip through the pane's own cwd.
 	sh("tmux", ["-L", SOCKET, "send-keys", "-t", "phone:notes", `cd ${STATE_DIR}; clear; echo peek-me.png`, "Enter"]);
@@ -387,6 +426,20 @@ async function main() {
 	log("peek from the raw terminal:", JSON.stringify(rawPeek));
 	await c.shot("03d-peek-from-raw");
 	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
+
+	// a TUI that tracks the mouse owns the tap: it has already been sent one, and a popup
+	// on top of whatever it did with it is nobody's intent
+	const mouseMode = await c.evaluate(`(() => {
+    const t = window.piSuper.term;
+    // what an app asserts with DECSET 1000; xterm exposes it as term.modes
+    t.write("\\x1b[?1000h");
+    return new Promise(r => setTimeout(() => r(t.modes.mouseTrackingMode), 300));
+  })()`);
+	await c.tap(rawSpot.x, rawSpot.y);
+	await wait(900);
+	const mouseTapped = await c.evaluate(`!document.getElementById("peek").hidden`);
+	await c.evaluate(`window.piSuper.term.write("\\x1b[?1000l"); 1`);
+	log("mouse-mode tap:", JSON.stringify({ mode: mouseMode, opened: mouseTapped }));
 	await setView("reader");
 
 	// drawer
@@ -536,6 +589,8 @@ async function main() {
 		["tapping prose opens nothing", !afterProse],
 		["tapping a path in the raw terminal opens it too", rawPeek.open && rawPeek.decoded && rawPeek.path.endsWith("peek-me.png")],
 		["code is highlighted, block comments across lines", hl.k > 0 && hl.s > 0 && hl.c > 0 && hl.n > 0 && hl.blockLine2],
+		["markdown gets prose rules, and code rules inside its fences", md.heading && md.prose && md.bullet && md.fenced && md.quote],
+		["a mouse-tracking TUI keeps its taps", mouseMode === "vt200" && !mouseTapped],
 		[
 			"a directory lists itself and its rows open files",
 			dirRows.includes("..") && dirRows.includes("peek-me.png") && fromRow.decoded && fromRow.path.endsWith("peek-me.png"),
