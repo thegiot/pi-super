@@ -77,7 +77,9 @@ const SLASH = new Set("js mjs cjs jsx ts tsx c h cc cpp cxx hpp go rs java kt kt
 const HASH = new Set("py pyi sh bash zsh fish rb pl r tf yml yaml toml ini cfg conf mk makefile dockerfile gitignore env service nix".split(" "));
 
 const STRING = String.raw`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\`(?:[^\`\\]|\\.)*\``;
-const NUMBER = String.raw`\b\d[\w.]*\b`;
+// `2003.crt` in a config file is not a number: digits may take a fraction, an exponent and
+// a unit, but they do not get to swallow a file extension (measured, on /etc: 216 of these)
+const NUMBER = String.raw`\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?[a-zA-Z%]{0,3}\b`;
 
 /**
  * Markdown gets rules of its own rather than the code ones, which are actively wrong on
@@ -157,6 +159,17 @@ function codeLine(push: Push, line: string, re: RegExp | undefined, st: HlState)
 			return;
 		}
 		const g = m.groups ?? {};
+		// An apostrophe glued to a word is prose, not a quote: in "it doesn't validate; that's
+		// the job" the naive rule paints from the first apostrophe to the second, which is the
+		// single most visible thing this tokenizer used to get wrong (docstrings, comments,
+		// every README-ish line inside code). A string prefix (f'', r'', b'') is one letter
+		// with a non-letter before it, so it still opens a string.
+		const before = rest.slice(Math.max(0, m.index - 2), m.index);
+		if (g.s?.startsWith("'") && /[A-Za-z][A-Za-z]$/.test(before)) {
+			push(m[0]);
+			last = m.index + m[0].length;
+			continue;
+		}
 		push(m[0], g.c ? "c" : g.s ? "s" : g.n ? "n" : "k");
 		last = m.index + m[0].length;
 	}

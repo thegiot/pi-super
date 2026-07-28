@@ -358,6 +358,25 @@ async function main() {
 	await c.shot("03e-peek-highlight");
 	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
 
+	// prose inside code: an apostrophe glued to a word is not a quote, or every docstring
+	// and comment in the file gets painted as one long string
+	const py = join(STATE_DIR, "sample.py");
+	// the apostrophes must be on a *continuation* line: where a quote opens the docstring,
+	// painting the rest as a string is right, and the naive rule only shows up further down
+	writeFileSync(
+		py,
+		["def f(x):", '    """Return the thing.', "", "    It doesn't validate; that's the caller's job.", '    """', "    return x + 1.5e3", ""].join("\n"),
+	);
+	await c.evaluate(`window.piSuper.peek.open({ path: ${JSON.stringify(py)} }); 1`);
+	await wait(1200);
+	const prose = await c.evaluate(`(() => {
+    const l = [...document.querySelectorAll("#peek-body .peek-code div")];
+    const strings = [...l[3].querySelectorAll(".s")].map(e => e.textContent);
+    return { runaway: strings.some(t => /validate|caller/.test(t)), number: !!l[5].querySelector(".n") };
+  })()`);
+	log("peek prose-in-code:", JSON.stringify(prose));
+	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
+
 	// markdown is prose, and gets rules of its own — the code ones would call every
 	// apostrophe a string; a fenced block inside it is still coloured as the code it is
 	const readme = join(STATE_DIR, "sample.md");
@@ -590,6 +609,7 @@ async function main() {
 		["tapping a path in the raw terminal opens it too", rawPeek.open && rawPeek.decoded && rawPeek.path.endsWith("peek-me.png")],
 		["code is highlighted, block comments across lines", hl.k > 0 && hl.s > 0 && hl.c > 0 && hl.n > 0 && hl.blockLine2],
 		["markdown gets prose rules, and code rules inside its fences", md.heading && md.prose && md.bullet && md.fenced && md.quote],
+		["an apostrophe in prose does not open a string", !prose.runaway && prose.number],
 		["a mouse-tracking TUI keeps its taps", mouseMode === "vt200" && !mouseTapped],
 		[
 			"a directory lists itself and its rows open files",
