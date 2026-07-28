@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+	<string name="app_name">super</string>
+	<string name="setup_title">pi-super server</string>
+	<string name="setup_hint">https://host:port/?token=…</string>
+	<string name="setup_explain">Paste the URL pi-super printed (token and all). Voice mode needs an https origin — over plain http the browser refuses the microphone.</string>
+	<string name="setup_save">Connect</string>
+	<string name="call_channel">Voice call</string>
+	<string name="call_ongoing">super — voice call</string>
+	<string name="call_hangup">Hang up</string>
+	<string name="change_server">Change server</string>
+</resources>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+	<!--
+	  This app talks to one self-hosted box, not the web. Cleartext is allowed because a
+	  plain-http LAN or ssh-tunnel deployment is a normal pi-super setup (the terminal and
+	  chat work fine there; voice does not, because http is not a secure origin and the
+	  browser will refuse getUserMedia). User-installed CAs are trusted so a private CA or
+	  a tailscale/proxy cert works without patching the app.
+	-->
+	<base-config cleartextTrafficPermitted="true">
+		<trust-anchors>
+			<certificates src="system" />
+			<certificates src="user" />
+		</trust-anchors>
+	</base-config>
+</network-security-config>

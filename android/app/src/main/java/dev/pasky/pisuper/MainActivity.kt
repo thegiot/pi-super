@@ -1,0 +1,216 @@
+package dev.pasky.pisuper
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.net.http.SslError
+import android.os.Build
+import android.os.Bundle
+import android.view.ViewGroup
+import android.webkit.PermissionRequest
+import android.webkit.SslErrorHandler
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+import org.json.JSONObject
+import java.security.MessageDigest
+
+/**
+ * The whole app, UI-wise: the existing pi-super PWA in a WebView, plus a bridge that lets
+ * its voice mode open a real Android call around itself. Nothing about the web app is
+ * reimplemented here — if the bridge is missing (plain Chrome), voice.ts just runs as it
+ * always did.
+ */
+class MainActivity : AppCompatActivity() {
+	private lateinit var web: WebView
+	private var origin: String = ""
+
+	private val permissionLauncher = registerForActivityResult(
+		androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
+	) { }
+
+	override fun onCreate(savedInstanceState: Bundle?) {
+		super.onCreate(savedInstanceState)
+		val url = Prefs.url(this)
+		if (url.isNullOrBlank()) {
+			startActivity(Intent(this, SetupActivity::class.java))
+			finish()
+			return
+		}
+		origin = originOf(url)
+
+		web = WebView(this)
+		setContentView(web, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+		configure(web)
+		bridge(web)
+		CallHub.registerAccount(this)
+		askPermissions()
+		if (savedInstanceState == null) web.loadUrl(url)
+	}
+
+	private fun askPermissions() {
+		val wanted = mutableListOf(Manifest.permission.RECORD_AUDIO)
+		if (Build.VERSION.SDK_INT >= 33) wanted += Manifest.permission.POST_NOTIFICATIONS
+		if (Build.VERSION.SDK_INT >= 31) wanted += Manifest.permission.BLUETOOTH_CONNECT
+		val missing = wanted.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+		if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
+	}
+
+	private fun configure(web: WebView) {
+		web.settings.apply {
+			javaScriptEnabled = true
+			domStorageEnabled = true
+			// The remote audio element is created deep inside an async dial, long after the
+			// tap that started it, so gesture-gated playback would silence the call.
+			mediaPlaybackRequiresUserGesture = false
+			allowFileAccess = false
+			allowContentAccess = false
+			mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+			userAgentString = "$userAgentString pi-super-android/${BuildConfig.VERSION_NAME}"
+		}
+		if (Build.VERSION.SDK_INT >= 29) web.isForceDarkAllowed = false
+		WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+
+		web.webChromeClient = object : WebChromeClient() {
+			override fun onPermissionRequest(request: PermissionRequest) {
+				val wantsMic = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+				val trusted = originOf(request.origin.toString()) == origin
+				val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+				if (wantsMic && trusted && granted) {
+					// only the mic: never hand over the camera or protected media just because
+					// the page asked for them in the same request
+					request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+				} else {
+					request.deny()
+					if (wantsMic && !granted) {
+						askPermissions()
+						toast("microphone permission is needed for voice mode")
+					}
+				}
+			}
+		}
+
+		web.webViewClient = object : WebViewClient() {
+			override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+				val target = request.url.toString()
+				if (originOf(target) == origin) return false
+				// anything off our own server is the open web: hand it to a real browser
+				startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target)))
+				return true
+			}
+
+			override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+				// A self-hosted box often has a private CA the phone does not know. Rather
+				// than proceed() blindly (which would accept any cert, forever), pin: show the
+				// fingerprint once and remember exactly that certificate.
+				val fp = fingerprint(error)
+				if (fp != null && fp == Prefs.pinnedCert(this@MainActivity)) {
+					handler.proceed()
+					return
+				}
+				AlertDialog.Builder(this@MainActivity)
+					.setTitle("Untrusted certificate")
+					.setMessage("${error.url}\n\nSHA-256:\n${fp ?: "unknown"}\n\nTrust this exact certificate?")
+					.setPositiveButton("Trust") { _, _ ->
+						if (fp != null) Prefs.setPinnedCert(this@MainActivity, fp)
+						handler.proceed()
+					}
+					.setNegativeButton("Cancel") { _, _ -> handler.cancel() }
+					.setOnCancelListener { handler.cancel() }
+					.show()
+			}
+		}
+	}
+
+	private fun fingerprint(error: SslError): String? {
+		val cert = error.certificate ?: return null
+		val der = if (Build.VERSION.SDK_INT >= 29) cert.x509Certificate?.encoded else null
+		val bytes = der ?: cert.toString().toByteArray()
+		return MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(":") { "%02X".format(it) }
+	}
+
+	// ------------------------------------------------------------------------- bridge
+
+	private fun bridge(web: WebView) {
+		if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+			// Origin-scoped, unlike addJavascriptInterface, which is injected into every frame
+			// (including a third-party iframe) with no way to tell who called.
+			WebViewCompat.addWebMessageListener(web, "PiNative", setOf(origin)) { _, message, sourceOrigin, isMainFrame, _ ->
+				if (!isMainFrame || sourceOrigin.toString().trimEnd('/') != origin) return@addWebMessageListener
+				handle(message.data ?: return@addWebMessageListener)
+			}
+			CallHub.listener = { ev -> post(ev) }
+		} else {
+			// Without the bridge the page is still perfectly usable; voice mode just behaves
+			// exactly as it does in Chrome, which is the thing this app exists to fix.
+			toast("this Android WebView is too old for native call support")
+		}
+	}
+
+	private fun handle(raw: String) {
+		val msg = try {
+			JSONObject(raw)
+		} catch (_: Exception) {
+			return
+		}
+		val id = msg.optString("callId")
+		when (msg.optString("type")) {
+			"startCall" -> CallHub.startCall(this, id)
+			"markActive" -> CallHub.markActive(id)
+			"endCall" -> CallHub.endCall(id.ifBlank { null })
+			"setMuted" -> CallHub.setMuted(id, msg.optBoolean("muted"))
+			"setRoute" -> CallHub.setRoute(msg.optString("route"))
+		}
+	}
+
+	private fun post(ev: JSONObject) {
+		val json = ev.toString().replace("\\", "\\\\").replace("'", "\\'")
+		web.evaluateJavascript("window.dispatchEvent(new CustomEvent('pi-native',{detail:JSON.parse('$json')}))", null)
+	}
+
+	// ------------------------------------------------------------------------ plumbing
+
+	private fun originOf(url: String): String = try {
+		val u = Uri.parse(url)
+		val port = if (u.port == -1) "" else ":${u.port}"
+		"${u.scheme}://${u.host}$port"
+	} catch (_: Exception) {
+		""
+	}
+
+	private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
+
+	override fun onSaveInstanceState(outState: Bundle) {
+		super.onSaveInstanceState(outState)
+		if (::web.isInitialized) web.saveState(outState)
+	}
+
+	override fun onRestoreInstanceState(state: Bundle) {
+		super.onRestoreInstanceState(state)
+		if (::web.isInitialized) web.restoreState(state)
+	}
+
+	override fun onDestroy() {
+		// The page is going away, so the WebRTC session is too; leaving a Telecom call
+		// registered would show a phantom call in the car forever.
+		if (!isChangingConfigurations) {
+			CallHub.listener = null
+			CallHub.endCall(null)
+		}
+		if (::web.isInitialized) web.destroy()
+		super.onDestroy()
+	}
+
+	@Deprecated("androidx back handling not worth a dependency for one WebView")
+	override fun onBackPressed() {
+		if (::web.isInitialized && web.canGoBack()) web.goBack() else @Suppress("DEPRECATION") super.onBackPressed()
+	}
+}

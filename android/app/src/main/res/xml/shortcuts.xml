@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+	<shortcut
+		android:enabled="true"
+		android:shortcutId="setup"
+		android:shortcutShortLabel="@string/change_server">
+		<intent
+			android:action="android.intent.action.VIEW"
+			android:targetClass="dev.pasky.pisuper.SetupActivity"
+			android:targetPackage="dev.pasky.pisuper" />
+	</shortcut>
+</shortcuts>

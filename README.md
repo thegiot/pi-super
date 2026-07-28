@@ -193,10 +193,13 @@ The call is meant to behave like a phone call, within what a browser allows:
   server restarts it, tells you out loud, and asks it to pick the request back up after
   checking what it already did. Voice cannot afford a failure mode whose only symptom is
   silence after "checking".
-* **not yet a real call** — with the screen off, Android suspends the tab and the call
-  dies. The screen wake lock we hold is the opposite of what a call wants. Genuine
-  screen-off, Bluetooth-routed, ducking-aware audio needs a native foreground service
-  (`microphone|phone_call`) or `ConnectionService` — see M4 in `docs/todo.md`.
+* **an actual call, in the Android app** — in a browser a WebRTC call is *media*: the car
+  kit plays it over A2DP with the phone's own mic, music ducks instead of stopping, the
+  headset's call button does nothing, and the tab may be suspended with the screen off.
+  There is no web API to fix this. The thin WebView wrapper in `android/` loads this very
+  PWA and wraps voice mode in a self-managed Telecom call plus a foreground service, which
+  is what makes Android route it as a call — see [docs/android.md](docs/android.md). In
+  plain Chrome nothing changes.
 
 
 
@@ -215,6 +218,8 @@ node tests/smoke.mjs http://127.0.0.1:8799 "$(cat ~/.pi/super/token)"   # e2e ag
 npm run test:voice     # unattended voice call: fake mic + headless Chrome + recorded reply
 npm run test:mobile    # Pixel-metrics screenshots + layout checks -> /tmp/pi-super-shots/
 npm run test:passkey   # full WebAuthn flow via Chrome's virtual authenticator
+npm run build:android  # the Android wrapper's debug APK (needs an Android SDK)
+node tests/android-call.mjs   # the wrapper on a headless emulator: telecom + fgs checks
 ```
 
 ## Running under systemd (user service)

@@ -17,6 +17,7 @@
  */
 
 import type { MetaApi } from "./meta.js";
+import { nativeCall } from "./native-call.js";
 
 export interface VoiceConfig {
 	enabled: boolean;
@@ -182,6 +183,14 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		try {
 			const cfg = await loadConfig();
 			if (!cfg.enabled) throw new Error("voice not configured on the server");
+			// In the Android wrapper this makes the OS treat what follows as a phone call
+			// (bluetooth HFP, music pauses, headset hang-up). Before getUserMedia, because the
+			// audio route is decided when the mic opens. A no-op in a plain browser.
+			await nativeCall.begin();
+			if (stale()) {
+				nativeCall.end();
+				return;
+			}
 			if (cfg.provider === "local") {
 				startLocal();
 				return;
@@ -263,6 +272,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 			}
 
 			await keepAwake();
+			nativeCall.active();
 			setState("live");
 		} catch (err) {
 			if (stale()) return;
@@ -404,6 +414,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		recognition = recog;
 		recog.start();
 		void keepAwake();
+		nativeCall.active();
 		setState("live");
 	}
 
@@ -480,6 +491,8 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		reconnectTimer = undefined;
 		reconnectAttempts = 0;
 		teardown();
+		// the native call spans reconnects too — only a real hang-up retires it
+		nativeCall.end();
 		// the wake lock spans reconnects, so it is only released on a real hang-up
 		void wakeLock?.release().catch(() => {});
 		wakeLock = undefined;
@@ -488,6 +501,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	}
 
 	function toggleMute(): boolean {
+		let next: boolean;
 		if (api.config?.provider === "local") {
 			muted = !muted;
 			try {
@@ -496,12 +510,15 @@ export function createVoice(meta: MetaApi): VoiceApi {
 			} catch {
 				/* transitional state; onend will settle it */
 			}
-			return muted;
+			next = muted;
+		} else {
+			const track = mic?.getAudioTracks()[0];
+			if (!track) return false;
+			track.enabled = !track.enabled;
+			next = !track.enabled;
 		}
-		const track = mic?.getAudioTracks()[0];
-		if (!track) return false;
-		track.enabled = !track.enabled;
-		return !track.enabled;
+		nativeCall.setMuted(next);
+		return next;
 	}
 
 	// ------------------------------------------------------------ realtime events
@@ -652,6 +669,13 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		sendEvent({ type: "response.create" });
 		return "sent";
 	}
+
+	// A hang-up from the car/headset/notification ends the call here too. The native side
+	// has already dropped its own call by then, so stop() finds nothing left to end.
+	nativeCall.onDisconnect = () => {
+		if (state !== "idle") stop({ clearError: true });
+	};
+	nativeCall.onNotice = (text) => api.onNotice?.(text);
 
 	return api;
 }
