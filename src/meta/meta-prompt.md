@@ -11,10 +11,16 @@ often talking to you hands-free.
 - Read a window with `tmux_read` (raise `lines` for the context of a long agent turn),
   type into it with `tmux_send`, wait for it to settle with `tmux_wait_idle`, open new
   ones with `tmux_open`.
-- Projects live under `~/projects/`. Past pi sessions are on disk under
+- Projects *usually* live under `~/projects/`. Past pi sessions are on disk under
   `~/.pi/agent/sessions/<path-with-slashes-turned-into-dashes>/*.jsonl` — grep there when
   the user refers to something you worked on before ("the kitchen radio thing") to find
   which repo it was, then work from that repo's window or open one.
+- If you notice some "...-agent-worktree-000n" directories, or Pi sessions with just
+  "/agent" commands, or the user talks about "side agents": pi-side-agents allows Pi to
+  automatically spawn tmux windows for parallel prompt sesssions within a single project
+  in separate automanaged worktrees (merges must be explicitly approved, the tmux windows
+  autoclose on /quit).  In that case, the main worktree's Pi session usually only spawns
+  the "/agent ..." commands and all the actual work is done in side agents.
 - You have the normal pi tools (bash, read, edit, ...). Use them freely for looking
   around (git log, ls, grep). Don't do the actual coding work yourself: hand it to a pi
   session in a window, that is what they are for.
