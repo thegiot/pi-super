@@ -2,20 +2,20 @@
 
 [![IronMan Design](https://i.ytimg.com/vi/DZaAFADoF1M/hqdefault.jpg)](https://www.youtube.com/watch?v=DZaAFADoF1M)
 
-*Did you know Iron Man's Jarvis is just a GPT-Live hooked to a tmux with bunch
+*Did you know Iron Man's Jarvis is just a GPT-Live hooked to a tmux with a bunch
 of Pi sessions? (Robots and holograms not included in this package.)*
 
 pi-super takes the tmux session already running on your dev box — the one full
 of `pi` agents, shells and editors — and puts the whole thing on your phone,
-while on the tmux side you do not need to change anything at all.  Your desktop
+while on the tmux side you do not need to change anything at all. Your desktop
 keeps showing exactly what it always showed; your phone just gets a seat at the
 table too.
 
-And because you're not always in a typing mood on your phone, there's the meta
+And because you're not always in a typing mood on your phone, there's *super*, the meta
 agent — an agent whose job is your other agents, that you talk with using your
 voice just like you'd talk with the ChatGPT app. It can peek into every window
 and act for you while you are driving, cooking or hiking. It isn't just
-a speech-to-text-to-speech but a voice-controlled full duplex agent - it
+a speech-to-text-to-speech but a voice-controlled full-duplex agent — it
 inspects Pi sessions (and anything else, really), it steers, it reports and
 summarizes back.
 
@@ -31,9 +31,9 @@ your Codex login (gpt-live) and can fall back to the browser's own speech
 engine (but you'd be missing a lot).
 
 The voice experience is full-duplex and async-first, already feeling just like
-the new GPT-Live based ChatGPT voice. However, phone integration wise it is not
-yet compatible with handsfrees and with screen locked - a standalone mobile app
-will be required to actually emulate a call.
+the new GPT-Live-based ChatGPT voice. However, phone-integration-wise it is not
+yet compatible with hands-free devices or with the screen locked — a standalone
+mobile app will be required to actually emulate a call.
 
 ## Driving, or delegating
 
@@ -41,7 +41,7 @@ Two ways to work:
 
 * **Drive it yourself — the terminal** (📖 toggles raw ↔ reader). Your tmux, one tab per
   window, real keys into a real PTY. (Oh, and PgUp/PgDn in Pi actually scroll!)
-* **Hand it to voice — the meta agent** (📞). Opens the chat and places the call in one press.
+* **Hand it to super — the meta agent** (📞). Opens the chat and places the call in one press.
   Ask for anything on the machine: "what's the status of the muaddib work?", "tell
   it to run the tests", "open the kitchen radio project and find out why it stopped
   working". Super reads panes, sends prompts, opens windows and waits on builds, then
@@ -120,10 +120,12 @@ Each browser connection creates its own tmux session **grouped** with the base s
 the processes but keep their own *current window*, so the phone can watch window 8 while
 the desktop stays on window 3. On disconnect only that grouped session is killed.
 
-By default the phone attaches with `-f ignore-size`, so it observes at the desktop's
-geometry and never reflows anybody else's terminal; the UI scales the view to fit. Flip
-**claim terminal size** in the drawer when you want to actually work at phone geometry
-(that *does* resize the window for every client — that's what claiming means).
+By default the phone **claims** the terminal size: it works at its own geometry, which
+resizes the window for every client, desktop included — that's what claiming means, and
+it's what you want when the phone is where the work is happening. Uncheck **claim
+terminal size** in the drawer to attach with `-f ignore-size` instead: the phone then
+observes at the desktop's geometry and never reflows anybody else's terminal, and the
+UI scales the view to fit.
 
 Window switching, creation, renaming and killing go out-of-band as plain tmux commands,
 not keystroke stuffing. Reader mode is `capture-pane` rendered as selectable DOM text.
