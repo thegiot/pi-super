@@ -84,13 +84,6 @@ button.icon {
 	color: var(--accent);
 }
 
-/* in the chat view the terminal is not on screen: mark the current window in the chat's
- * blue, so green always means "this is what the view is showing" */
-body.meta-view .tab.active {
-	border-color: #4f7fd0;
-	color: #7fa8e8;
-}
-
 .tab.activity::after {
 	content: "•";
 	color: var(--warn);
@@ -256,25 +249,29 @@ main {
 	font-size: 13px;
 }
 
-#btn-call.armed {
-	border-color: var(--accent);
-	color: var(--accent);
-}
-
-#btn-call.busy {
-	border-color: var(--warn);
-	color: var(--warn);
-}
-
 button.armed {
 	border-color: var(--accent);
 	color: var(--accent);
 }
 
-/* the chat is open: distinct from `armed` (a live call), which may be either */
+/* On this bar green answers exactly one question — which tmux window is active — so
+ * super's button stays out of it and says everything in blue: outlined while the chat is
+ * merely open, filled while the call is actually up. Amber is loudest and comes last: a
+ * dial in progress or super still thinking outranks both. */
 #btn-call.open {
 	background: #1c2430;
 	border-color: #4f7fd0;
+}
+
+#btn-call.armed {
+	background: #2c4a80;
+	border-color: #6f9fe0;
+	color: #dce8fb;
+}
+
+#btn-call.busy {
+	border-color: var(--warn);
+	color: var(--warn);
 }
 
 #status {
