@@ -5,28 +5,26 @@
 *Did you know Iron Man's Jarvis is just a GPT-Live hooked to a tmux with bunch
 of Pi sessions? (Robots and holograms not included in this package.)*
 
-pi-super takes the tmux session already running on your dev box — the one full of `pi`
-agents, shells and editors — and puts the whole thing on your phone, while
-on the tmux side you do not need to change anything at all.  Your desktop keeps showing exactly
-what it always showed; your phone just gets a seat at the table too.
+pi-super takes the tmux session already running on your dev box — the one full
+of `pi` agents, shells and editors — and puts the whole thing on your phone,
+while on the tmux side you do not need to change anything at all.  Your desktop
+keeps showing exactly what it always showed; your phone just gets a seat at the
+table too.
 
-And because you're not always in a typing mood, there's *super* — a meta agent,
-i.e. an agent whose job is your other agents, that you talk with using your
-voice just like you'd talk with the ChatGPT app. It can peek into every window and
-act for you: text it from the garden, dictate an order from the kitchen, or
-call it hands-free from the car. It isn't just a speech-to-text-to-speech but
-a voice-controlled agent - it inspects Pi sessions (and anything else, really),
-it steers, it reports and summarizes back.
+And because you're not always in a typing mood on your phone, there's the meta
+agent — an agent whose job is your other agents, that you talk with using your
+voice just like you'd talk with the ChatGPT app. It can peek into every window
+and act for you while you are driving, cooking or hiking. It isn't just
+a speech-to-text-to-speech but a voice-controlled full duplex agent - it
+inspects Pi sessions (and anything else, really), it steers, it reports and
+summarizes back.
 
-* **Nothing moves.** pi-super attaches to your running tmux server, never replaces it.
+* **Nothing changes.** pi-super attaches to your running tmux server, never replaces it.
   Your desktop client keeps working at the same time, on the same windows.
 * **A real terminal, not an approximation.** A real PTY carrying real bytes: every key,
   every TUI, copy-mode, `vim`, `mutt`, `pi` all behave exactly as they do at your desk.
-* **Built for thumbs.** Window tabs, a reader mode that reflows a 200-column agent
-  session to phone width, a window list that shows each pane's *title* (which is where an
-  agent says what it is currently doing — far more use than a column of windows all named
-  `sh`), a key ribbon, a prompt composer (so Gboard dictation just works), and image paste
-  that lands as a real file path in the session.
+* **Built for mobile.** Window tabs, a reader mode that reflows a 200-column agent
+  session to phone width, a key ribbon, a prompt composer (dictation just works), and image paste.
 
 Where things stand: terminal, chat and voice all work today — voice runs on
 your Codex login (gpt-live) and can fall back to the browser's own speech
@@ -43,7 +41,7 @@ Two ways to work:
 
 * **Drive it yourself — the terminal** (📖 toggles raw ↔ reader). Your tmux, one tab per
   window, real keys into a real PTY. (Oh, and PgUp/PgDn in Pi actually scroll!)
-* **Hand it to super — the agent** (📞). Opens the chat and places the call in one press.
+* **Hand it to voice — the meta agent** (📞). Opens the chat and places the call in one press.
   Ask for anything on the machine: "what's the status of the muaddib work?", "tell
   it to run the tests", "open the kitchen radio project and find out why it stopped
   working". Super reads panes, sends prompts, opens windows and waits on builds, then
