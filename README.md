@@ -26,6 +26,15 @@ summarizes back.
 * **Built for mobile.** Window tabs, a reader mode that reflows a 200-column agent
   session to phone width, a key ribbon, a prompt composer (dictation just works), and image paste.
 
+<p>
+  <img src="docs/screenshots/terminal.jpg" width="32%" alt="Terminal view: a live pi session, key ribbon and prompt composer">
+  <img src="docs/screenshots/windows.jpg" width="32%" alt="Window list: pane titles say what each agent is doing">
+  <img src="docs/screenshots/super-call.jpg" width="32%" alt="On a call with super: transcript plus mute, hush, hang up">
+</p>
+
+*Your tmux, live — the window list where pane titles say what each agent is up to — and
+mid-call with super.*
+
 Where things stand: terminal, chat and voice all work today — voice runs on
 your Codex login (gpt-live) and can fall back to the browser's own speech
 engine (but you'd be missing a lot).
