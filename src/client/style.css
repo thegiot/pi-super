@@ -203,6 +203,15 @@ main {
 	display: none;
 }
 
+/* no call in progress: the bar is only still here to carry /new */
+#call.idle {
+	background: var(--bg2);
+}
+
+#call.idle #call-state {
+	color: var(--dim);
+}
+
 #call-text {
 	flex: 1;
 	min-width: 0;
@@ -228,6 +237,16 @@ main {
 #call-buttons {
 	display: flex;
 	gap: 6px;
+}
+
+/* emoji controls need no word-sized box; /new keeps its own */
+#call-buttons button {
+	padding: 7px 8px;
+	font-size: 15px;
+}
+
+#btn-new-session {
+	font-size: 13px;
 }
 
 #btn-call.armed {

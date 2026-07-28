@@ -156,6 +156,59 @@ setInterval(() => {}, 1000);
 	assert.ok(asked[1].includes(asked[0]), "the recovery prompt still carries the original request");
 });
 
+test("compaction is announced and survives the watchdog", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-compact-"));
+	// Compaction is one long blocking summarization call: start event, then nothing on the
+	// wire for as long as it takes. That silence must not be mistaken for a wedged stream.
+	const fakePi = join(dir, "fake-pi.mjs");
+	writeFileSync(
+		fakePi,
+		`process.stdin.setEncoding("utf8");
+let buf = "";
+const say = (ev) => process.stdout.write(JSON.stringify(ev) + "\\n");
+process.stdin.on("data", (c) => {
+	buf += c;
+	let i;
+	while ((i = buf.indexOf("\\n")) >= 0) {
+		const line = buf.slice(0, i);
+		buf = buf.slice(i + 1);
+		if (!line.trim()) continue;
+		if (JSON.parse(line).type !== "prompt") continue;
+		say({ type: "agent_start" });
+		say({ type: "compaction_start", reason: "threshold" });
+		// far longer than stallMs, with not a byte in between
+		setTimeout(() => {
+			say({ type: "compaction_end", reason: "threshold", aborted: false, result: { tokensBefore: 150000, estimatedTokensAfter: 32000 } });
+			say({ type: "agent_settled" });
+		}, 900);
+	}
+});
+setInterval(() => {}, 1000);
+`,
+	);
+	const shim = join(dir, "pi");
+	writeFileSync(shim, `#!/bin/sh\nexec ${process.execPath} ${fakePi}\n`, { mode: 0o755 });
+	const { MetaAgent } = await import("../dist/server/meta.js");
+	const meta = new MetaAgent({
+		metaDir: join(import.meta.dirname, "..", "src", "meta"),
+		socketArgs: [],
+		piBin: shim,
+		sessionDir: join(dir, "sessions"),
+		stallMs: 200,
+		watchdogMs: 50,
+	});
+	const systems = [];
+	meta.on("item", (item) => item.kind === "system" && systems.push(item.text));
+	meta.prompt("summarize the day");
+	const deadline = Date.now() + 6000;
+	while (Date.now() < deadline && !systems.some((t) => /compacted/.test(t))) await new Promise((r) => setTimeout(r, 50));
+	await meta.stop();
+
+	assert.ok(systems.some((t) => /compacting context \(threshold\)/.test(t)), systems.join(" | "));
+	assert.ok(systems.some((t) => /context compacted: 150k → 32k tokens/.test(t)), systems.join(" | "));
+	assert.ok(!systems.some((t) => /restarting/.test(t)), `the watchdog shot a healthy compaction: ${systems.join(" | ")}`);
+});
+
 // --- passkey store ---------------------------------------------------------
 
 test("a second process's revocation is honoured, not overwritten", async () => {

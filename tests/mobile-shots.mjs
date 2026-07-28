@@ -182,11 +182,21 @@ async function main() {
 	await wait(500);
 	await c.shot("05-meta-composer");
 
-	// call bar: it must push the chat log up, never float over its tail
+	// idle chat view: no call, but the bar stays to carry /new
+	const idleBar = await c.evaluate(`(() => {
+    const vis = (id) => { const e = document.getElementById(id); return !!(e.offsetWidth || e.offsetHeight); };
+    return { barVisible: vis("call"), newVisible: vis("btn-new-session"), hangupVisible: vis("btn-hangup") };
+  })()`);
+	log("idle call bar:", JSON.stringify(idleBar));
+	await c.shot("05b-idle-new-button");
+
+	// call bar in its tallest state: it must push the chat log up, never float over its tail
 	const callLayout = await c.evaluate(`(() => {
     const call = document.getElementById("call");
     const warn = document.getElementById("call-warn");
     call.hidden = false;
+    call.classList.remove("idle");
+    for (const id of ["btn-mute", "btn-hush", "btn-hangup"]) document.getElementById(id).hidden = false;
     document.getElementById("call-state").textContent = "connected \u2014 talk to super";
     warn.hidden = false;
     warn.textContent = "\u26a0 degraded: browser speech \u2014 half duplex, no barge-in";
@@ -195,8 +205,7 @@ async function main() {
     return { metaBottom: Math.round(meta.bottom), callTop: Math.round(bar.top), callH: Math.round(bar.height) };
   })()`);
 	await wait(400);
-	await c.shot("05b-call-bar");
-	await c.evaluate(`document.getElementById("call").hidden = true; 1`);
+	await c.shot("05c-call-bar");
 	log("call layout:", JSON.stringify(callLayout));
 
 	// simulate the soft keyboard eating 45% of the viewport, like Gboard does
@@ -250,6 +259,7 @@ async function main() {
 		],
 		["touch targets >= 32px tall", metrics.smallestTouchTargets.every((b) => b.h >= 32)],
 		["call bar does not overlay the chat log", callLayout.callH > 0 && callLayout.metaBottom <= callLayout.callTop + 1],
+		["/new reachable in the chat view with no call up", idleBar.barVisible && idleBar.newVisible && !idleBar.hangupVisible],
 		["footer visible above the fold", metrics.footer.top + metrics.footer.h <= metrics.viewport.h + 1],
 		["terminal ribbon hidden in chat view", viewChecks.view !== "meta" || !viewChecks.ribbonVisible],
 		["abort button shown in chat view", viewChecks.view !== "meta" || viewChecks.abortVisible],

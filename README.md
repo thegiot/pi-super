@@ -65,8 +65,10 @@ Two ways to work:
   working". Super reads panes, sends prompts, opens windows and waits on builds, then
   answers in the chat and out loud.
 
-📞 again returns to the terminal and keeps the call up; hang up from the call bar. *mute*
-and *hush* (or the headset button) shut super up without ending anything.
+📞 again returns to the terminal and keeps the call up; hang up (📴) from the call bar. 🎙 *mute*
+and 🤫 *hush* (or the headset button) shut super up without ending anything. The bar stays in
+the chat after the call ends to carry **/new**, which forgets the conversation and starts a
+fresh super session (tap twice — it asks first).
 
 YMMV, but pi-super is best combined with **pi-side-agents** that allow seamless
 parallel work on multiple prompts in the same project using tmux windows (and

@@ -433,6 +433,7 @@ function setView(view: "raw" | "reader" | "meta"): void {
 	el.input.placeholder = view === "meta" ? "ask super…" : "prompt…";
 	$("btn-view").textContent = view === "reader" ? "▣" : "📖";
 	refreshCallButton();
+	refreshCallBar();
 	clearInterval(state.readerTimer as ReturnType<typeof setInterval>);
 	if (view === "reader") {
 		void refreshReader();
@@ -543,22 +544,39 @@ function degradedVoiceWarning(): string {
 	return "";
 }
 
-function refreshCallWarning(): void {
-	const warn = degradedVoiceWarning();
+/**
+ * The bar carries two different things: the call (only while there is one) and /new, which
+ * is how you drop a conversation that has wandered off. The second is most wanted exactly
+ * when the first is over, so in the chat view the bar stays after the hang-up — with the
+ * call controls gone, since there is nothing left to mute.
+ */
+function refreshCallBar(detail?: string): void {
+	const s = voice.state;
+	const idle = s === "idle";
+	el.call.hidden = idle && state.view !== "meta";
+	el.call.classList.toggle("idle", idle);
+	for (const id of ["btn-mute", "btn-hush", "btn-hangup"]) $(id).hidden = idle;
+	el.callState.textContent = idle
+		? "not on a call"
+		: s === "live"
+			? "connected — talk to super"
+			: detail
+				? `${s}: ${detail}`
+				: s;
+	const warn = idle ? "" : degradedVoiceWarning();
 	el.callWarn.textContent = warn;
 	el.callWarn.hidden = !warn;
+	if (idle) disarmNewSession();
 }
 
 voice.onState = (s, detail) => {
-	el.callState.textContent = s === "live" ? "connected — talk to super" : detail ? `${s}: ${detail}` : s;
-	el.call.hidden = s === "idle";
-	refreshCallWarning();
+	refreshCallBar(detail);
 	// A failed dial must not be retried on every visit to the chat; hanging up clears it.
 	if (s === "error") dialFailed = true;
 	refreshCallButton();
 	// a redial re-acquires the mic, so the mute button must not keep claiming otherwise
 	if (s !== "live") {
-		$("btn-mute").textContent = "mute";
+		$("btn-mute").textContent = "🎙";
 		$("btn-mute").classList.remove("armed");
 	}
 	if (s === "error" && detail) status(detail, 8000, true);
@@ -585,8 +603,29 @@ $("btn-hangup").onclick = () => {
 $("btn-hush").onclick = () => voice.hush();
 $("btn-mute").onclick = () => {
 	const muted = voice.toggleMute();
-	$("btn-mute").textContent = muted ? "unmute" : "mute";
+	$("btn-mute").textContent = muted ? "🔇" : "🎙";
 	$("btn-mute").classList.toggle("armed", muted);
+};
+
+// Throwing away the conversation is not undoable, and this button sits under the thumb
+// next to hang-up — so it asks, in place, rather than through a modal nobody reads.
+let newSessionTimer: ReturnType<typeof setTimeout> | undefined;
+function disarmNewSession(): void {
+	clearTimeout(newSessionTimer);
+	newSessionTimer = undefined;
+	$("btn-new-session").textContent = "/new";
+	$("btn-new-session").classList.remove("armed");
+}
+$("btn-new-session").onclick = () => {
+	if (newSessionTimer) {
+		disarmNewSession();
+		meta.newSession();
+		status("started a fresh super session", 4000);
+		return;
+	}
+	$("btn-new-session").textContent = "sure?";
+	$("btn-new-session").classList.add("armed");
+	newSessionTimer = setTimeout(disarmNewSession, 4000);
 };
 
 $("btn-send").onclick = () => sendText(el.input.value, true);

@@ -77,6 +77,8 @@ export class MetaAgent extends EventEmitter {
 	private lastRescueAt = 0;
 	/** the user turn in flight, so a rescue can ask it again instead of losing it */
 	private lastPrompt: string | undefined;
+	/** pi is summarizing the conversation; see checkStall() for why this matters */
+	private compacting = false;
 
 	constructor(private readonly opts: MetaOptions) {
 		super();
@@ -245,6 +247,7 @@ export class MetaAgent extends EventEmitter {
 		this.turnPending = false;
 		this.lastPrompt = undefined;
 		this.assistant = undefined;
+		this.compacting = false;
 		this.pendingTools.clear();
 		this.emit("state", this.state);
 	}
@@ -261,6 +264,11 @@ export class MetaAgent extends EventEmitter {
 		if (!this.busy && !this.turnPending) return;
 		// a tool is legitimately allowed to take a very long time (tmux_wait_idle)
 		if (this.pendingTools.size > 0) return;
+		// Compaction is a single blocking LLM call that emits nothing between its start and
+		// end events, so on a full context it looks exactly like a dead provider stream.
+		// Killing pi here would be self-defeating: the resumed child hits the same threshold
+		// and compacts again, only now from a cold start.
+		if (this.compacting) return;
 		const silent = Date.now() - this.lastEventAt;
 		if (silent < (this.opts.stallMs ?? STALL_MS)) return;
 		const mins = Math.round(silent / 60_000);
@@ -382,6 +390,28 @@ export class MetaAgent extends EventEmitter {
 			case "auto_retry_end":
 				if (ev.finalError) this.push({ kind: "system", id: 0, text: `retries gave up: ${String(ev.finalError).slice(0, 200)}` });
 				break;
+			// Compaction can hold a turn for a minute with nothing on the wire. Unannounced,
+			// that is indistinguishable from the agent having died — and in voice mode it is
+			// pure silence. Say it out loud in the chat, and let the watchdog know.
+			case "compaction_start":
+				this.compacting = true;
+				this.push({ kind: "system", id: 0, text: `compacting context (${String(ev.reason ?? "threshold")})…` });
+				break;
+			case "compaction_end": {
+				this.compacting = false;
+				const result = ev.result as { tokensBefore?: number; estimatedTokensAfter?: number } | null | undefined;
+				const k = (n: unknown) => (typeof n === "number" ? `${Math.round(n / 1000)}k` : "?");
+				if (ev.aborted) this.push({ kind: "system", id: 0, text: "compaction aborted" });
+				else if (!result)
+					this.push({ kind: "system", id: 0, text: `compaction failed: ${String(ev.errorMessage ?? "unknown").slice(0, 200)}` });
+				else
+					this.push({
+						kind: "system",
+						id: 0,
+						text: `context compacted: ${k(result.tokensBefore)} → ${k(result.estimatedTokensAfter)} tokens`,
+					});
+				break;
+			}
 			case "extension_error":
 				this.push({ kind: "system", id: 0, text: `extension error: ${String(ev.error ?? "").slice(0, 200)}` });
 				break;
