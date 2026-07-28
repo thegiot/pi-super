@@ -6,8 +6,9 @@
   </a><br>
   <em>Did you know Iron Man's Jarvis is just a GPT-Live hooked to a tmux with a bunch
   of Pi sessions? (Robots and holograms not included in this package.)</em><br>
-  <a href="https://www.youtube.com/watch?v=DZaAFADoF1M">▶ Watch: <i>IronMan Design</i></a>
 </p>
+
+---
 
 pi-super takes the tmux session already running on your dev box — the one full
 of `pi` agents, shells and editors — and puts the whole thing on your phone,
@@ -30,6 +31,8 @@ summarizes back.
 * **Built for mobile.** Window tabs, a reader mode that reflows a 200-column agent
   session to phone width, a key ribbon, a prompt composer (dictation just works), and image paste.
 
+---
+
 <p>
   <img src="docs/screenshots/terminal.jpg" width="32%" alt="Terminal view: a live pi session, key ribbon and prompt composer">
   <img src="docs/screenshots/windows.jpg" width="32%" alt="Window list: pane titles say what each agent is doing">
@@ -38,6 +41,8 @@ summarizes back.
 
 *Your tmux, live — the window list where pane titles say what each agent is up to — and
 mid-call with super.*
+
+---
 
 Where things stand: terminal, chat and voice all work today — voice runs on
 your Codex login (gpt-live) and can fall back to the browser's own speech
