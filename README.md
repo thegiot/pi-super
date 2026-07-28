@@ -59,8 +59,8 @@ Two ways to work:
 
 * **Drive it yourself — the terminal** (📖 toggles raw ↔ reader). Your tmux, one tab per
   window, real keys into a real PTY. (Oh, and PgUp/PgDn in Pi actually scroll!) Swipe
-  left/right to walk the windows, and drag them by the ⠿ grip in the window list to
-  reorder — that renumbers them in tmux, for every client.
+  left/right to walk the windows and up/down to page through the terminal; drag windows by
+  the ⠿ grip in the list to reorder — that renumbers them in tmux, for every client.
 * **Hand it to super — the meta agent** (📞). Opens the chat and places the call in one press.
   Ask for anything on the machine: "what's the status of the muaddib work?", "tell
   it to run the tests", "open the kitchen radio project and find out why it stopped
