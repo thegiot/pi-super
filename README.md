@@ -29,7 +29,8 @@ summarizes back.
 * **A real terminal, not an approximation.** A real PTY carrying real bytes: every key,
   every TUI, copy-mode, `vim`, `mutt`, `pi` all behave exactly as they do at your desk.
 * **Built for mobile.** Window tabs, a reader mode that reflows a 200-column agent
-  session to phone width, a key ribbon, a prompt composer (dictation just works), and image paste.
+  session to phone width, a key ribbon, a prompt composer (dictation just works), image paste,
+  and a tap on any path in the output to open that file — screenshots and plots included.
 
 ---
 
@@ -60,7 +61,9 @@ Two ways to work:
 * **Drive it yourself — the terminal** (📖 toggles raw ↔ reader). Your tmux, one tab per
   window, real keys into a real PTY. (Oh, and PgUp/PgDn in Pi actually scroll!) Swipe
   left/right to walk the windows and up/down to page through the terminal; drag windows by
-  the ⠿ grip in the list to reorder — that renumbers them in tmux, for every client.
+  the ⠿ grip in the list to reorder — that renumbers them in tmux, for every client. In
+  reader mode (and in the chat), tapping a file path an agent printed opens the file right
+  there: `plot.png` as an image, `src/server/term.ts:88` as text scrolled to line 88.
 * **Hand it to super — the meta agent** (📞). Opens the chat and places the call in one press.
   Ask for anything on the machine: "what's the status of the muaddib work?", "tell
   it to run the tests", "open the kitchen radio project and find out why it stopped

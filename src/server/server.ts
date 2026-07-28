@@ -4,6 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { COOKIE_NAME, isAuthed, isSecureRequest, originAllowed, requestToken, tokenEquals } from "./auth.js";
 import type { Config } from "./config.js";
+import { readPeek } from "./files.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
 import { SESSION_PREFIX, sweepStaleSessions, TermConnection } from "./term.js";
 import { Tmux } from "./tmux.js";
@@ -401,6 +402,29 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				const text = await tmux.capture(target, { lines: Math.min(Math.max(lines, 0), 50000) });
 				res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
 				res.end(text);
+				return;
+			}
+			case "GET /api/file": {
+				const path = url.searchParams.get("path");
+				if (!path) {
+					sendJson(res, 400, { error: "path required" });
+					return;
+				}
+				const peek = readPeek(path, url.searchParams.get("cwd") ?? undefined);
+				if (!peek.ok) {
+					sendJson(res, peek.status, { error: peek.error });
+					return;
+				}
+				res.writeHead(200, {
+					"content-type": peek.type,
+					"cache-control": "no-store",
+					...SECURITY_HEADERS,
+					// the client shows the resolved path (it only knows the token it was tapped on)
+					"x-peek-path": encodeURIComponent(peek.path),
+					"x-peek-bytes": String(peek.bytes),
+					"x-peek-truncated": peek.truncated ? "1" : "0",
+				});
+				res.end(peek.body);
 				return;
 			}
 			case "GET /api/voice/config": {

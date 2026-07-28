@@ -88,7 +88,14 @@ async function cdp(url) {
 		}
 		await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 	};
-	return { send, evaluate, shot, drag };
+	/** A tap, as the real thing: touchstart/end at one point. */
+	const tap = async (x, y) => {
+		const p = [{ x: Math.round(x), y: Math.round(y), radiusX: 8, radiusY: 8, force: 1 }];
+		await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: p });
+		await wait(60);
+		await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+	};
+	return { send, evaluate, shot, drag, tap };
 }
 
 async function main() {
@@ -239,6 +246,66 @@ async function main() {
 	await wait(2000);
 	await c.shot("03-reader");
 
+	// tapping a path in the capture opens the file (the phone has no second window)
+	const peekTxt = join(STATE_DIR, "peek-me.txt");
+	const peekPng = join(STATE_DIR, "peek-me.png");
+	writeFileSync(peekTxt, "alpha\nbeta\ngamma\n");
+	// smallest possible real PNG: 1x1, so the check is "did the browser decode it"
+	writeFileSync(
+		peekPng,
+		Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+			"base64",
+		),
+	);
+	sh("tmux", ["-L", SOCKET, "send-keys", "-t", "phone:notes", `clear; echo wrote ${peekTxt}:2 and ${peekPng}`, "Enter"]);
+	await c.evaluate(`[...document.querySelectorAll("#tabs .tab")].find(b => /notes/.test(b.textContent)).click(); 1`);
+	await wait(3000);
+	// where on screen the *output* line prints the path (the echoed command line has it too)
+	const spotOf = (needle) => c.evaluate(`(() => {
+    const node = document.getElementById("reader-text").firstChild;
+    const text = node.data, at = text.lastIndexOf(${JSON.stringify(needle)});
+    if (at < 0) return null;
+    const r = document.createRange();
+    r.setStart(node, at); r.setEnd(node, at + 4);
+    const b = r.getBoundingClientRect();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  })()`);
+	const txtSpot = await spotOf(peekTxt);
+	if (!txtSpot) throw new Error("the capture never showed the path we printed");
+	await c.tap(txtSpot.x, txtSpot.y);
+	await wait(1200);
+	const peeked = await c.evaluate(`(() => {
+    const p = document.getElementById("peek");
+    return {
+      open: !p.hidden,
+      path: document.getElementById("peek-path").textContent.replace(/[\u2066\u2069]/g, ""),
+      lines: [...document.querySelectorAll("#peek-body .peek-code div")].map(d => d.textContent).join("|"),
+      hit: (document.querySelector("#peek-body .peek-code div.hit") || {}).textContent,
+    };
+  })()`);
+	log("peek text:", JSON.stringify(peeked));
+	await c.shot("03b-peek-text");
+	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
+
+	const pngSpot = await spotOf(peekPng);
+	if (!pngSpot) throw new Error("the capture never showed the image path we printed");
+	await c.tap(pngSpot.x, pngSpot.y);
+	await wait(1500);
+	const peekedImg = await c.evaluate(`(() => {
+    const img = document.querySelector("#peek-body img");
+    return { open: !document.getElementById("peek").hidden, decoded: !!img && img.naturalWidth > 0 };
+  })()`);
+	log("peek image:", JSON.stringify(peekedImg));
+	await c.shot("03c-peek-image");
+	// a tap on prose must stay inert — no popup over the terminal you were reading
+	await c.evaluate(`document.getElementById("peek-close").click(); 1`);
+	const proseSpot = await spotOf("wrote");
+	if (proseSpot) await c.tap(proseSpot.x, proseSpot.y);
+	await wait(800);
+	const afterProse = await c.evaluate(`!document.getElementById("peek").hidden`);
+	log("peek on prose stays closed:", !afterProse);
+
 	// drawer
 	await c.evaluate(`document.getElementById("btn-menu").click(); 1`);
 	await wait(800);
@@ -380,6 +447,10 @@ async function main() {
 		["the two views never look the same", bar.term.tab !== bar.meta.tab && bar.term.call !== bar.meta.call],
 		["ribbon key reaches the pty without stealing focus", ribbon.sent === "C-t" && ribbon.focused === "input"],
 		["drafts are per window and per view", drafts.onB === "" && drafts.backOnA === "for A" && drafts.onMeta === ""],
+		["tapping a path opens the file", peeked.open && peeked.path.startsWith(peekTxt) && peeked.lines === "alpha|beta|gamma"],
+		["a :line suffix lands on that line", peeked.hit === "beta"],
+		["tapping an image path shows the image", peekedImg.open && peekedImg.decoded],
+		["tapping prose opens nothing", !afterProse],
 	];
 	let failed = 0;
 	for (const [name, ok] of checks) {

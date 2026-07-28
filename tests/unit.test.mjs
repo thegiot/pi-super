@@ -357,3 +357,33 @@ test("one session logs out without evicting the others", async () => {
 	assert.equal(store.sessionAlive("a"), false);
 	assert.equal(store.sessionAlive("b"), true);
 });
+
+// --- peeking at a file the terminal mentioned ------------------------------
+
+test("readPeek resolves against the pane cwd and classifies what it finds", async () => {
+	const { readPeek, MAX_TEXT_BYTES } = await import("../dist/server/files.js");
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-peek-"));
+	writeFileSync(join(dir, "note.txt"), "hello\nworld\n");
+	writeFileSync(join(dir, "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+	writeFileSync(join(dir, "core.bin"), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0, 1]));
+
+	// a bare token, as printed by an agent working in that directory
+	const rel = readPeek("note.txt", dir);
+	assert.equal(rel.ok, true);
+	assert.equal(rel.path, join(dir, "note.txt"));
+	assert.equal(rel.body.toString(), "hello\nworld\n");
+	assert.equal(rel.type, "text/plain; charset=utf-8");
+	assert.equal(rel.truncated, false);
+
+	assert.equal(readPeek(join(dir, "shot.png")).type, "image/png");
+	assert.equal(readPeek("core.bin", dir).error, "binary file", "no point rendering ELF in a <pre>");
+	assert.equal(readPeek("nope.txt", dir).status, 404);
+	assert.equal(readPeek(dir).error, "directory");
+
+	// a phone must not be handed a whole log file
+	writeFileSync(join(dir, "big.log"), "x".repeat(MAX_TEXT_BYTES + 5000));
+	const big = readPeek("big.log", dir);
+	assert.equal(big.body.length, MAX_TEXT_BYTES);
+	assert.equal(big.truncated, true);
+	assert.equal(big.bytes, MAX_TEXT_BYTES + 5000);
+});

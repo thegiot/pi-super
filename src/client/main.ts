@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { authState, enrollPasskey, gate, loginWithPasskey, logout } from "./auth.js";
 import { createMeta } from "./meta.js";
+import { initPeek } from "./peek.js";
 import "./style.css";
 import { createVoice } from "./voice.js";
 
@@ -502,6 +503,21 @@ async function refreshReader(): Promise<void> {
 	}
 }
 
+/**
+ * Tapping a path in the capture (or in the chat) opens the file. Relative paths are
+ * printed relative to the pane's own cwd, which is the one thing the phone knows and the
+ * server would have to guess.
+ */
+const peek = initPeek({ cwd: () => activeWindow()?.paneCwd ?? "", status });
+for (const host of [el.reader, el.meta]) {
+	host.addEventListener("click", (e) => {
+		// a tap that ended a selection or landed on a control was aimed at something else
+		if (!(window.getSelection()?.isCollapsed ?? true)) return;
+		if ((e.target as HTMLElement).closest("a,button,input,textarea")) return;
+		peek.fromPoint(e.clientX, e.clientY);
+	});
+}
+
 function setView(view: "raw" | "reader" | "meta"): void {
 	state.view = view;
 	if (view !== "meta") state.lastTermView = view;
@@ -952,6 +968,7 @@ if (new URLSearchParams(location.search).has("debug")) {
 		// lets a harness open the chat without also placing a call
 		setView,
 		selectWindow,
+		peek,
 		events,
 		spoken,
 		transcript,

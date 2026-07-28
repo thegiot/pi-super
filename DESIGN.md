@@ -66,6 +66,11 @@ Named after hbomberguy's *super*: one remote that drives everything.
   out of the box, no STT of our own needed for text mode) sends bracketed-paste text
   + optional Enter; a key ribbon covers Esc/Tab/Ctrl/arrows/PgUp/PgDn/Ctrl-C; raw xterm
   focus is available for exact TUI typing.
+* **Peek at files.** A tap on a path in the reader capture (or in the chat) resolves the
+  token under the finger against the pane's cwd and pops the file up: images as images,
+  text in a `<pre>`, `file:42` scrolled to that line. There is no sandbox root — everyone
+  who gets this far already has a shell — only size caps, so a phone is never handed a
+  core dump. Only the DOM views: the raw xterm would need a link provider of its own.
 * **Images.** Clipboard/file-picker upload → `~/.pi/super/uploads/<rand>.<ext>` (0600) →
   the absolute path is pasted into the focused pane, which is exactly what pi/claude
   TUIs want.

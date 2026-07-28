@@ -515,3 +515,98 @@ button.primary {
 	border-color: var(--accent);
 	color: var(--accent);
 }
+
+/* -------------------------------------------------------------------- peek */
+
+#peek {
+	position: fixed;
+	inset: 0;
+	background: #000b;
+	z-index: 20;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 12px;
+}
+
+#peek[hidden] {
+	display: none;
+}
+
+.peek-sheet {
+	background: var(--bg2);
+	border: 1px solid #2a303a;
+	border-radius: 10px;
+	width: min(900px, 100%);
+	max-height: 90dvh;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.peek-title {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	padding: 8px 6px 8px 10px;
+	border-bottom: 1px solid #23272f;
+	font-size: 12px;
+	color: var(--dim);
+}
+
+#peek-path {
+	flex: 1;
+	/* long paths matter at the end (basename), so keep that end on screen */
+	direction: rtl;
+	text-align: left;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+#peek-body {
+	overflow: auto;
+	-webkit-overflow-scrolling: touch;
+	padding: 8px 10px;
+}
+
+#peek-body img {
+	max-width: 100%;
+	display: block;
+	margin: 0 auto;
+}
+
+#peek-body img.zoom {
+	max-width: none;
+}
+
+.peek-code {
+	margin: 0;
+	font: 12px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+	white-space: pre;
+	counter-reset: peekline;
+}
+
+.peek-code div {
+	counter-increment: peekline;
+}
+
+.peek-code div::before {
+	content: counter(peekline);
+	display: inline-block;
+	width: 3.5em;
+	margin-right: 8px;
+	text-align: right;
+	color: #4a505b;
+	user-select: none;
+}
+
+.peek-code div.hit {
+	background: #2a3140;
+}
+
+.peek-note {
+	color: var(--dim);
+	font-size: 12px;
+	padding: 4px 0;
+}
