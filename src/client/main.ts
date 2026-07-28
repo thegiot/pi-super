@@ -509,6 +509,9 @@ function setView(view: "raw" | "reader" | "meta"): void {
 	el.meta.hidden = view !== "meta";
 	el.term.style.visibility = view === "raw" ? "visible" : "hidden";
 	el.ribbon.hidden = view === "meta";
+	// the tab strip stays up in the chat view, but it is no longer what you are looking at:
+	// it drops to the secondary blue and super's button takes the green (see style.css)
+	document.body.classList.toggle("meta-view", view === "meta");
 	el.abort.hidden = view !== "meta";
 	$("btn-insert").hidden = view === "meta"; // "insert without Enter" is a terminal thing
 	el.input.placeholder = view === "meta" ? "ask super…" : "prompt…";

@@ -84,6 +84,14 @@ button.icon {
 	color: var(--accent);
 }
 
+/* In the chat the terminal is not on screen, but this window is still the selected one —
+ * a secondary selection, so it keeps a marker in the chat's blue and hands the green to
+ * super's button. Green is never in two places at once. */
+body.meta-view .tab.active {
+	border-color: #4f7fd0;
+	color: #7fa8e8;
+}
+
 .tab.activity::after {
 	content: "•";
 	color: var(--warn);
@@ -254,19 +262,27 @@ button.armed {
 	color: var(--accent);
 }
 
-/* On this bar green answers exactly one question — which tmux window is active — so
- * super's button stays out of it and says everything in blue: outlined while the chat is
- * merely open, filled while the call is actually up. Amber is loudest and comes last: a
- * dial in progress or super still thinking outranks both. */
+/* The tab strip and this button are two halves of one switch, so they trade the green as
+ * the view changes: green is always "this is what you are looking at". That leaves the
+ * call itself to be said by fill rather than hue — a live call is loud, but it must not
+ * pretend to be the thing on screen. Amber comes last and wins: dialling, or super
+ * thinking, outranks both. */
 #btn-call.open {
-	background: #1c2430;
-	border-color: #4f7fd0;
+	background: #16241a;
+	border-color: var(--accent);
+	color: var(--accent);
 }
 
 #btn-call.armed {
 	background: #2c4a80;
 	border-color: #6f9fe0;
 	color: #dce8fb;
+}
+
+#btn-call.open.armed {
+	background: #1e3d26;
+	border-color: var(--accent);
+	color: var(--accent);
 }
 
 #btn-call.busy {

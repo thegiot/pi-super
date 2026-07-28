@@ -328,13 +328,25 @@ async function main() {
   })()`);
 	const viewChecks = await c.evaluate(`(() => {
     const vis = (id) => { const e = document.getElementById(id); return !!(e.offsetWidth || e.offsetHeight); };
-    const tab = document.querySelector("#tabs .tab.active");
-    const call = document.getElementById("btn-call");
-    return { view: window.piSuper.state.view, ribbonVisible: vis("ribbon"), insertVisible: vis("btn-insert"), abortVisible: vis("btn-abort"),
-             activeTabColor: tab ? getComputedStyle(tab).borderTopColor : "(none)",
-             callColor: getComputedStyle(call).borderTopColor };
+    return { view: window.piSuper.state.view, ribbonVisible: vis("ribbon"), insertVisible: vis("btn-insert"), abortVisible: vis("btn-abort") };
   })()`);
 	console.log("\nmeta view:", JSON.stringify(viewChecks));
+
+	// Green marks what is on screen, and it moves: the tab strip owns it in the terminal,
+	// super's button owns it in the chat. Sampled in both views, since the bug this guards
+	// against is precisely "the two views look identical".
+	const bar = await c.evaluate(`(() => {
+    const S = window.piSuper;
+    const read = () => ({ tab: getComputedStyle(document.querySelector("#tabs .tab.active")).borderTopColor,
+                          call: getComputedStyle(document.getElementById("btn-call")).borderTopColor });
+    S.setView("meta"); const meta = read();
+    S.setView("raw"); const term = read();
+    S.setView("meta");
+    return { meta, term };
+  })()`);
+	console.log("top bar colours:", JSON.stringify(bar));
+	const GREEN = "rgb(126, 231, 135)";
+	const BLUE = "rgb(79, 127, 208)";
 
 	console.log("\n=== phone metrics ===");
 	console.log(JSON.stringify(metrics, null, 1));
@@ -361,8 +373,11 @@ async function main() {
 		["abort button shown in chat view", viewChecks.view !== "meta" || viewChecks.abortVisible],
 		// green is the active tmux window and nothing else, in every view; super's button
 		// answers in blue, so the two signals can never be mistaken for each other
-		["current window tab stays green in chat view", viewChecks.activeTabColor === "rgb(126, 231, 135)"],
-		["super's button is never green", viewChecks.callColor === "rgb(79, 127, 208)"],
+		["terminal view: the window tab is green", bar.term.tab === GREEN],
+		["terminal view: super's button is not green", bar.term.call !== GREEN],
+		["chat view: super's button is green", bar.meta.call === GREEN],
+		["chat view: the window tab drops to blue", bar.meta.tab === BLUE],
+		["the two views never look the same", bar.term.tab !== bar.meta.tab && bar.term.call !== bar.meta.call],
 		["ribbon key reaches the pty without stealing focus", ribbon.sent === "C-t" && ribbon.focused === "input"],
 		["drafts are per window and per view", drafts.onB === "" && drafts.backOnA === "for A" && drafts.onMeta === ""],
 	];
