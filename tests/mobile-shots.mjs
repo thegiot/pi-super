@@ -329,8 +329,10 @@ async function main() {
 	const viewChecks = await c.evaluate(`(() => {
     const vis = (id) => { const e = document.getElementById(id); return !!(e.offsetWidth || e.offsetHeight); };
     const tab = document.querySelector("#tabs .tab.active");
+    const border = (e) => e ? getComputedStyle(e).borderTopColor : "(none)";
     return { view: window.piSuper.state.view, ribbonVisible: vis("ribbon"), insertVisible: vis("btn-insert"), abortVisible: vis("btn-abort"),
-             activeTabColor: tab ? getComputedStyle(tab).borderTopColor : "(none)" };
+             activeTabColor: border(tab), callColor: border(document.getElementById("btn-call")),
+             accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() };
   })()`);
 	console.log("\nmeta view:", JSON.stringify(viewChecks));
 
@@ -357,8 +359,13 @@ async function main() {
 		["footer visible above the fold", metrics.footer.top + metrics.footer.h <= metrics.viewport.h + 1],
 		["terminal ribbon hidden in chat view", viewChecks.view !== "meta" || !viewChecks.ribbonVisible],
 		["abort button shown in chat view", viewChecks.view !== "meta" || viewChecks.abortVisible],
-		// green is reserved for "this is what the view is showing"; in the chat it is not
-		["current window tab is blue in chat view", viewChecks.view !== "meta" || viewChecks.activeTabColor === "rgb(79, 127, 208)"],
+		// One hue, one meaning: in the chat view the tab is neither green ("on screen") nor
+		// the call button's blue ("the chat is open") — those two must stay unambiguous.
+		[
+			"current window tab is neutral in chat view",
+			viewChecks.view !== "meta" ||
+				(viewChecks.activeTabColor !== "rgb(126, 231, 135)" && viewChecks.activeTabColor !== viewChecks.callColor),
+		],
 		["ribbon key reaches the pty without stealing focus", ribbon.sent === "C-t" && ribbon.focused === "input"],
 		["drafts are per window and per view", drafts.onB === "" && drafts.backOnA === "for A" && drafts.onMeta === ""],
 	];
