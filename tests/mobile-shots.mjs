@@ -186,6 +186,19 @@ async function main() {
 	const backSwipe = await activeName();
 	log("swipe:", `${beforeSwipe} -> ${afterSwipe} -> ${backSwipe}`);
 
+	// vertical swipes must reach the pty as PageUp/PageDown
+	await c.evaluate(`window.__keys = []; (() => {
+    const ws = window.piSuper.state.ws;
+    const send = ws.send.bind(ws);
+    ws.send = (d) => { try { const m = JSON.parse(d); if (m.t === "keys") window.__keys.push(m.keys.join("")); } catch {} return send(d); };
+  })(); 1`);
+	await c.drag({ x: 200, y: 600 }, { x: 205, y: 300 });
+	await wait(500);
+	await c.drag({ x: 200, y: 300 }, { x: 205, y: 600 });
+	await wait(500);
+	const pagedKeys = await c.evaluate(`window.__keys.join(",")`);
+	log("vertical swipe keys:", pagedKeys);
+
 	await setView("reader");
 	await wait(2000);
 	await c.shot("03-reader");
@@ -301,6 +314,7 @@ async function main() {
 		["call bar does not overlay the chat log", callLayout.callH > 0 && callLayout.metaBottom <= callLayout.callTop + 1],
 		["/new reachable in the chat view with no call up", idleBar.barVisible && idleBar.newVisible && !idleBar.hangupVisible],
 		["swipe walks windows and comes back", afterSwipe !== beforeSwipe && backSwipe === beforeSwipe],
+		["swipe up/down pages the terminal", pagedKeys === "PageDown,PageUp"],
 		["dragging a window to the top renumbers it to 0", reorder.order.startsWith("0:agent")],
 		["footer visible above the fold", metrics.footer.top + metrics.footer.h <= metrics.viewport.h + 1],
 		["terminal ribbon hidden in chat view", viewChecks.view !== "meta" || !viewChecks.ribbonVisible],

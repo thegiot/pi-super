@@ -1,0 +1,49 @@
+#!/bin/sh
+# Rebuild and restart the live pi-super after a commit that touches the code.
+#
+# Why this exists: the client half of a change lands by itself (files are streamed from
+# disk and the build hash makes the phone reload itself), while the server half does NOT.
+# An old server process keeps serving the new bundle and silently ignores every control
+# message and query parameter the new client sends — new features simply do nothing, with
+# no error anywhere. That is a miserable thing to debug from a phone.
+#
+# Enable it once per clone:
+#     git config core.hooksPath contrib/hooks
+#
+# Never fails a commit: the commit is already made, and a build error here would only be
+# confusing. It reports, and leaves the fixing to you.
+
+set -u
+root=$(git rev-parse --show-toplevel) || exit 0
+cd "$root" || exit 0
+
+# only code changes matter; docs and screenshots do not need a restart
+if ! git diff-tree --no-commit-id --name-only -r HEAD | grep -qE '^(src/|package(-lock)?\.json|vite\.config\.ts|tsconfig)'; then
+	exit 0
+fi
+
+echo "post-commit: rebuilding pi-super…"
+if ! npm run build >/tmp/pi-super-post-commit.log 2>&1; then
+	echo "post-commit: BUILD FAILED — the running server still has the old code"
+	echo "post-commit: see /tmp/pi-super-post-commit.log"
+	exit 0
+fi
+
+# Restart only a service that is already up: if it was deliberately stopped, leave it so.
+if systemctl --user is-active --quiet pi-super.service 2>/dev/null; then
+	if systemctl --user restart pi-super.service 2>/dev/null; then
+		echo "post-commit: rebuilt, restarted pi-super.service"
+	else
+		echo "post-commit: rebuilt, but 'systemctl --user restart pi-super' FAILED — restart it by hand"
+	fi
+	exit 0
+fi
+
+# Not under systemd: a server started by hand is still stale, and only its owner can say
+# when it may go down.
+if pgrep -f "dist/server/index.js" >/dev/null 2>&1; then
+	echo "post-commit: rebuilt — a hand-started pi-super is running the OLD server code, restart it"
+else
+	echo "post-commit: rebuilt (no pi-super running)"
+fi
+exit 0

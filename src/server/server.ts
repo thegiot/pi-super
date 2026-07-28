@@ -65,6 +65,9 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		sessionDir: join(cfg.stateDir, "meta-sessions"),
 	});
 
+	/** when this process began running the code it is running (see serverStale()) */
+	const startedAt = Date.now();
+
 	/** journald adds timestamps/unit; we just add the facts worth grepping for */
 	const log = (msg: string): void => {
 		process.stdout.write(`${msg}\n`);
@@ -466,6 +469,24 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		}
 	}
 
+	/**
+	 * Is the code on disk newer than the process running it?
+	 *
+	 * The client half of a redeploy lands by itself — files are streamed from disk and the
+	 * build hash makes the phone reload. The server half does not: an old process keeps
+	 * serving the new bundle, silently ignoring every control message and query parameter
+	 * the new client sends. That failure is completely invisible from the phone (features
+	 * simply do nothing), so it is worth one line of nagging.
+	 */
+	function serverStale(): boolean {
+		try {
+			const self = new URL("./server.js", import.meta.url).pathname;
+			return statSync(self).mtimeMs > startedAt;
+		} catch {
+			return false;
+		}
+	}
+
 	function serveStatic(res: ServerResponse, pathname: string): void {
 		const rel = normalize(decodeURIComponent(pathname)).replace(/^(\.\.[/\\])+/, "");
 		let file = join(cfg.clientDir, rel);
@@ -597,7 +618,15 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		}
 		if (closed) return; // browser gave up while we were attaching
 		log(`term: ${ip} attached (${term.sessionName} → ${base}, ${term.mode})`);
-		send({ t: "hello", base, session: term.sessionName, mode: term.mode, build: clientBuild(), ...term.geometry });
+		send({
+			t: "hello",
+			base,
+			session: term.sessionName,
+			mode: term.mode,
+			build: clientBuild(),
+			stale: serverStale(),
+			...term.geometry,
+		});
 
 		let lastWindows = "";
 		const pushWindows = async () => {

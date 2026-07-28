@@ -217,6 +217,10 @@ function connect(): void {
 				state.sizeMode = msg.mode === "claim" ? "claim" : "ignore";
 				el.claim.checked = state.sizeMode === "claim";
 				el.sessionInfo.textContent = `${state.base} · via ${state.session}`;
+				// The phone reloads itself into a new client bundle, but the server it talks to
+				// does not restart itself — and an old server ignores new control messages in
+				// silence, so the symptom is "the new feature does nothing". Say it instead.
+				if (msg.stale) status("server is running older code than this page — restart pi-super", 10000, true);
 				resizeTerm(Number(msg.cols), Number(msg.rows));
 				break;
 			case "geometry":
@@ -783,11 +787,13 @@ el.claim.onchange = () => {
 };
 
 /**
- * Swipe left/right to walk the window list — the tab strip is small and crowded on a phone.
+ * Swipes: left/right walks the window list, up/down pages the terminal — the tab strip and
+ * the pgup/pgdn keys are both small targets on a phone.
  *
- * Deliberately narrow: one finger, mostly-horizontal, and never while the view can still
- * scroll sideways (an ignore-size terminal is wider than the screen and panning it is the
- * more specific gesture). The chat is not a window, so it is out.
+ * Deliberately narrow: one finger, clearly along one axis, and never while the view can
+ * still scroll that way itself. An ignore-size terminal is bigger than the screen and
+ * panning it is the more specific gesture; the reader and the chat scroll natively. So
+ * the gesture only fires where there is nothing else it could have meant.
  */
 const SWIPE_MIN_PX = 60;
 const SWIPE_MAX_MS = 700;
@@ -809,9 +815,21 @@ el.views.addEventListener(
 		if (!from || !t || state.view === "meta" || Date.now() - from.at > SWIPE_MAX_MS) return;
 		const dx = t.clientX - from.x;
 		const dy = t.clientY - from.y;
-		if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 2) return;
-		if (el.term.scrollWidth > el.term.clientWidth + 2) return;
-		stepWindow(dx < 0 ? 1 : -1);
+		if (Math.abs(dx) >= Math.abs(dy)) {
+			if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 2) return;
+			if (el.term.scrollWidth > el.term.clientWidth + 2) return;
+			stepWindow(dx < 0 ? 1 : -1);
+			return;
+		}
+		// Vertical: only over the live terminal. The reader is a scrollable capture and the
+		// chat is a log — both already do the right thing with a drag.
+		if (state.view !== "raw") return;
+		if (Math.abs(dy) < SWIPE_MIN_PX || Math.abs(dy) < Math.abs(dx) * 2) return;
+		if (el.term.scrollHeight > el.term.clientHeight + 2) return;
+		// Dragging the content up reveals what is below it, i.e. pages forward.
+		const key = dy < 0 ? "PageDown" : "PageUp";
+		send({ t: "keys", keys: [key] });
+		status(dy < 0 ? "▾ pgdn" : "▴ pgup", 900);
 	},
 	{ passive: true },
 );
