@@ -1,4 +1,4 @@
-import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, opendirSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, isAbsolute, resolve } from "node:path";
 
@@ -15,18 +15,18 @@ export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const MAX_TEXT_BYTES = 256 * 1024;
 export const MAX_DIR_ENTRIES = 2000;
 
-const IMAGE_MIME: Record<string, string> = {
-	".png": "image/png",
-	".jpg": "image/jpeg",
-	".jpeg": "image/jpeg",
-	".gif": "image/gif",
-	".webp": "image/webp",
-	".bmp": "image/bmp",
-	".avif": "image/avif",
-	".ico": "image/x-icon",
-	// SVG renders in an <img>, where scripts inside it do not run
-	".svg": "image/svg+xml",
-};
+const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif", ".ico", ".svg"]);
+
+/**
+ * Never a content type a browser will render *itself*.
+ *
+ * The popup fetches bytes and builds its own blob, so it does not need one — while a
+ * navigation to this endpoint would: `/api/file?path=evil.svg` served as `image/svg+xml`
+ * is a same-origin scripted document (SameSite=Lax still sends the cookie on a top-level
+ * link), and that script can read every other file through this very endpoint. A cloned
+ * repo full of SVGs is a completely ordinary thing to have on this machine.
+ */
+const OPAQUE = "application/octet-stream";
 
 export type PeekKind = "dir" | "image" | "text";
 
@@ -43,14 +43,29 @@ export interface DirEntry {
 }
 
 function listDir(path: string): PeekResult {
-	let dirents;
+	const dirents = [];
+	let truncated = false;
 	try {
-		dirents = readdirSync(path, { withFileTypes: true });
+		// streamed, not readdirSync: a directory with a million entries must not be
+		// materialised in full just to show the first screenful of it on a phone
+		const handle = opendirSync(path);
+		try {
+			for (;;) {
+				const d = handle.readSync();
+				if (!d) break;
+				if (dirents.length >= MAX_DIR_ENTRIES) {
+					truncated = true;
+					break;
+				}
+				dirents.push(d);
+			}
+		} finally {
+			handle.closeSync();
+		}
 	} catch (err) {
 		return { ok: false, status: 403, error: String((err as NodeJS.ErrnoException).code ?? "unreadable") };
 	}
-	const truncated = dirents.length > MAX_DIR_ENTRIES;
-	const entries: DirEntry[] = dirents.slice(0, MAX_DIR_ENTRIES).map((d) => {
+	const entries: DirEntry[] = dirents.map((d) => {
 		// a symlink's own stat says nothing useful; what matters is where it lands
 		let st;
 		try {
@@ -67,7 +82,7 @@ function listDir(path: string): PeekResult {
 	});
 	entries.sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name));
 	const body = Buffer.from(JSON.stringify({ path, entries }), "utf8");
-	return { ok: true, kind: "dir", path, type: "application/json; charset=utf-8", body, bytes: dirents.length, truncated };
+	return { ok: true, kind: "dir", path, type: OPAQUE, body, bytes: entries.length, truncated };
 }
 
 /** Resolve what the terminal printed: `~/x`, `./x`, `x` (against the pane's cwd), `/x`. */
@@ -89,24 +104,45 @@ export function readPeek(raw: string, cwd?: string): PeekResult {
 	if (st.isDirectory()) return listDir(path);
 	if (!st.isFile()) return { ok: false, status: 415, error: "not a regular file" };
 
-	const image = IMAGE_MIME[extname(path).toLowerCase()];
+	const image = IMAGE_EXT.has(extname(path).toLowerCase());
 	if (image && st.size > MAX_IMAGE_BYTES) return { ok: false, status: 413, error: `too big: ${st.size} bytes` };
 
-	// /proc and friends report size 0 yet read fine, so never trust size as the read length
-	const cap = image ? MAX_IMAGE_BYTES : MAX_TEXT_BYTES;
-	const want = st.size > 0 ? Math.min(st.size, cap) : cap;
-	const buf = Buffer.alloc(want);
-	let read = 0;
-	const fd = openSync(path, "r");
+	// O_NONBLOCK: a fifo that nobody writes to would otherwise hang `open` itself, and this
+	// server is one event loop — that stalls the terminal, the chat and every other client.
+	let fd;
 	try {
-		read = readSync(fd, buf, 0, want, 0);
+		fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+	} catch (err) {
+		return { ok: false, status: 403, error: String((err as NodeJS.ErrnoException).code ?? "unreadable") };
+	}
+	let read = 0;
+	let size = 0;
+	const cap = image ? MAX_IMAGE_BYTES : MAX_TEXT_BYTES;
+	let buf = Buffer.alloc(0);
+	try {
+		// re-check on the descriptor we actually hold: between the stat above and this open,
+		// the name could have been swapped for a fifo or a device
+		const fst = fstatSync(fd);
+		if (!fst.isFile()) return { ok: false, status: 415, error: "not a regular file" };
+		size = fst.size;
+		// /proc and friends report size 0 and hand back one page per read, so read until the
+		// cap or EOF rather than trusting either number
+		const want = size > 0 ? Math.min(size, cap) : cap;
+		buf = Buffer.alloc(want);
+		while (read < want) {
+			const n = readSync(fd, buf, read, want - read, read);
+			if (n <= 0) break;
+			read += n;
+		}
+	} catch (err) {
+		return { ok: false, status: 403, error: String((err as NodeJS.ErrnoException).code ?? "unreadable") };
 	} finally {
 		closeSync(fd);
 	}
 	const body = buf.subarray(0, read);
-	const bytes = st.size > 0 ? st.size : read;
-	if (image) return { ok: true, kind: "image", path, type: image, body, bytes, truncated: false };
+	const bytes = size > 0 ? size : read;
+	if (image) return { ok: true, kind: "image", path, type: OPAQUE, body, bytes, truncated: bytes > read };
 	// A NUL in the head means this is not something a <pre> should be asked to render.
 	if (body.subarray(0, 4096).includes(0)) return { ok: false, status: 415, error: "binary file" };
-	return { ok: true, kind: "text", path, type: "text/plain; charset=utf-8", body, bytes, truncated: bytes > read };
+	return { ok: true, kind: "text", path, type: OPAQUE, body, bytes, truncated: bytes > read };
 }

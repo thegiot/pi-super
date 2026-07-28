@@ -376,7 +376,7 @@ test("readPeek resolves against the pane cwd and classifies what it finds", asyn
 	assert.equal(rel.type, "application/octet-stream", "never a type a browser renders on its own");
 	assert.equal(rel.truncated, false);
 
-	assert.equal(readPeek(join(dir, "shot.png")).type, "image/png");
+	assert.equal(readPeek(join(dir, "shot.png")).kind, "image");
 	assert.equal(readPeek("core.bin", dir).error, "binary file", "no point rendering ELF in a <pre>");
 	assert.equal(readPeek("nope.txt", dir).status, 404);
 

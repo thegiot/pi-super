@@ -6,9 +6,9 @@
  * the token under the finger against the pane's cwd and pops the file up — images as
  * images, anything text-ish as text.
  *
- * The hit test is caret-based (`caretRangeFromPoint`), which is why this only serves the
- * views that are real DOM text: the reader capture and the chat. The raw xterm canvas
- * would need its own link provider; not yet.
+ * Two hit tests, because there are two kinds of view: the reader capture and the chat are
+ * real DOM text (`caretRangeFromPoint`, below), while the raw terminal is a grid with no
+ * node under the finger and is mapped cell-wise by its own handler in main.ts.
  */
 
 export interface PeekTarget {
@@ -141,6 +141,27 @@ interface DirEntry {
 	size: number;
 }
 
+/**
+ * The server hands everything over as `application/octet-stream`, so that a *navigation*
+ * to the endpoint can never render: `/api/file?path=evil.svg` as `image/svg+xml` would be
+ * a same-origin scripted document able to read every other file through the same endpoint.
+ * The type an image needs is put back on here, on a blob, where SVG scripts do not run.
+ */
+const IMAGE_MIME: Record<string, string> = {
+	png: "image/png",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+	gif: "image/gif",
+	webp: "image/webp",
+	bmp: "image/bmp",
+	avif: "image/avif",
+	ico: "image/x-icon",
+	svg: "image/svg+xml",
+};
+
+/** Enough of a big file to be useful; it is a <div> per line, so this is a DOM budget. */
+const MAX_RENDER_LINES = 4000;
+
 const note = (text: string): HTMLElement =>
 	Object.assign(document.createElement("div"), { className: "peek-note", textContent: text });
 
@@ -211,6 +232,7 @@ export function initPeek(opts: PeekOptions): Peek {
 	const root = document.getElementById("peek") as HTMLElement;
 	const title = document.getElementById("peek-path") as HTMLElement;
 	const body = document.getElementById("peek-body") as HTMLElement;
+	const closeBtn = document.getElementById("peek-close") as HTMLElement;
 	// The title is `direction: rtl` so a long path keeps its *end* on screen. That flips a
 	// leading "/" to the far side unless the whole path is isolated as one LTR run.
 	const setTitle = (s: string): void => {
@@ -233,6 +255,9 @@ export function initPeek(opts: PeekOptions): Peek {
 		const mine = ++epoch;
 		shown = target.path;
 		root.hidden = false;
+		// The raw view leaves xterm's textarea focused, and xterm eats Escape (it is a key the
+		// pty wants). Taking focus is what makes this a modal rather than a picture of one.
+		closeBtn.focus({ preventScroll: true });
 		setTitle(target.path);
 		body.replaceChildren(note("…"));
 		const q = new URLSearchParams({ path: target.path, cwd: opts.cwd() });
@@ -254,10 +279,10 @@ export function initPeek(opts: PeekOptions): Peek {
 			return;
 		}
 		const resolved = decodeURIComponent(res.headers.get("x-peek-path") ?? target.path);
-		const type = res.headers.get("content-type") ?? "";
+		const kind = res.headers.get("x-peek-kind") ?? "text";
 		const truncated = res.headers.get("x-peek-truncated") === "1";
 		setTitle(resolved + (target.line ? `:${target.line}` : ""));
-		if (res.headers.get("x-peek-kind") === "dir") {
+		if (kind === "dir") {
 			const listing = (await res.json()) as { entries: DirEntry[] };
 			if (mine !== epoch) return;
 			body.replaceChildren(renderDir(resolved, listing.entries, (p) => void open({ path: p })));
@@ -265,10 +290,11 @@ export function initPeek(opts: PeekOptions): Peek {
 			body.scrollTop = 0;
 			return;
 		}
-		if (type.startsWith("image/")) {
-			const blob = await res.blob();
+		if (kind === "image") {
+			const bytes = await res.arrayBuffer();
 			if (mine !== epoch) return;
-			objectUrl = URL.createObjectURL(blob);
+			const ext = (resolved.split(".").pop() ?? "").toLowerCase();
+			objectUrl = URL.createObjectURL(new Blob([bytes], { type: IMAGE_MIME[ext] ?? "image/png" }));
 			const img = document.createElement("img");
 			img.src = objectUrl;
 			img.alt = resolved;
@@ -284,7 +310,10 @@ export function initPeek(opts: PeekOptions): Peek {
 		const re = rulesFor(resolved);
 		const st = { block: false };
 		let hit: HTMLElement | undefined;
-		for (const [i, l] of text.replace(/\n$/, "").split("\n").entries()) {
+		const all = text.replace(/\n$/, "").split("\n");
+		// 256 KB of newlines is a quarter of a million nodes: enough to wedge the phone
+		const lines = all.length > MAX_RENDER_LINES ? all.slice(0, MAX_RENDER_LINES) : all;
+		for (const [i, l] of lines.entries()) {
 			const div = document.createElement("div");
 			highlightLine(div, l, re, st);
 			if (target.line === i + 1) {
@@ -294,7 +323,8 @@ export function initPeek(opts: PeekOptions): Peek {
 			pre.append(div);
 		}
 		body.replaceChildren(pre);
-		if (truncated) body.append(note("… truncated"));
+		if (lines.length < all.length) body.append(note(`… first ${MAX_RENDER_LINES} lines only`));
+		else if (truncated) body.append(note("… truncated"));
 		hit?.scrollIntoView({ block: "center" });
 	}
 
@@ -309,13 +339,19 @@ export function initPeek(opts: PeekOptions): Peek {
 	root.addEventListener("click", (e) => {
 		if (e.target === root) close(); // backdrop
 	});
-	(document.getElementById("peek-close") as HTMLElement).onclick = close;
-	document.addEventListener("keydown", (e) => {
-		if (e.key === "Escape" && !root.hidden) {
-			close();
-			e.stopPropagation();
-		}
-	});
+	closeBtn.onclick = close;
+	// capture phase: xterm would otherwise swallow Escape on its way down to its textarea
+	document.addEventListener(
+		"keydown",
+		(e) => {
+			if (e.key === "Escape" && !root.hidden) {
+				close();
+				e.preventDefault();
+				e.stopPropagation();
+			}
+		},
+		true,
+	);
 
 	return {
 		fromPoint,
