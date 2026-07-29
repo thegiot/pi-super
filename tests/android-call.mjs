@@ -97,23 +97,32 @@ const server = createServer((req, res) => {
 	if (req.url?.startsWith("/?handoff=")) {
 		handoff.challenge = new URL(req.url, HOST).searchParams.get("handoff");
 		res.writeHead(200, { "content-type": "text/html" });
+		// pi-super's own page asks for a passkey here before it mints anything; the emulator
+		// has no authenticator, so this stands in for the approved half of that.
 		res.end(`<!doctype html><meta charset=utf-8><body>signing in<script>
 location.href = "pi-super://handoff?code=${HANDOFF_CODE}";
 </script>`);
 		return;
 	}
 	if (req.url?.startsWith("/api/auth/handoff/redeem")) {
-		const q = new URL(req.url, HOST).searchParams;
-		const verifier = q.get("verifier") ?? "";
-		handoff.redeem = {
-			code: q.get("code"),
-			// the verifier must be the pre-image of the challenge the browser was given
-			pkceOk: !!handoff.challenge && createHash("sha256").update(verifier).digest("base64url") === handoff.challenge,
-		};
-		log("handoff: redeem", JSON.stringify(handoff.redeem));
-		// what pi-super does: mint the app its own session and send it to the app
-		res.writeHead(302, { location: "/", "set-cookie": "pi_super_sid=app-session; HttpOnly; Path=/" });
-		res.end();
+		let raw = "";
+		req.on("data", (c) => (raw += c));
+		req.on("end", () => {
+			// A POST, so that neither half of the credential is ever in a URL
+			const q = new URLSearchParams(raw);
+			const verifier = q.get("verifier") ?? "";
+			handoff.redeem = {
+				method: req.method,
+				inUrl: req.url.includes("code=") || req.url.includes("verifier="),
+				code: q.get("code"),
+				// the verifier must be the pre-image of the challenge the browser was given
+				pkceOk: !!handoff.challenge && createHash("sha256").update(verifier).digest("base64url") === handoff.challenge,
+			};
+			log("handoff: redeem", JSON.stringify(handoff.redeem));
+			// what pi-super does: mint the app its own session and send it to the app
+			res.writeHead(303, { location: "/", "set-cookie": "pi_super_sid=app-session; HttpOnly; Path=/" });
+			res.end();
+		});
 		return;
 	}
 	if (req.url === "/report") {
@@ -335,6 +344,10 @@ async function main() {
 	}
 	check(handoff.redeem?.code === HANDOFF_CODE, "the app redeems the code it was handed");
 	check(handoff.redeem?.pkceOk === true, "…with the verifier that matches the challenge it sent");
+	check(
+		handoff.redeem?.method === "POST" && handoff.redeem?.inUrl === false,
+		"…and neither half of it goes in the URL",
+	);
 	await until(() => handoff.cookieCameBack, "the session cookie to reach the WebView", 20_000);
 	check(true, "the session lands in the WebView's own cookie jar");
 

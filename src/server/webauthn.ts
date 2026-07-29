@@ -19,6 +19,12 @@ const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const MAX_CHALLENGES = 64;
 /** a handoff code is redeemed by an app that is already waiting for it */
 const HANDOFF_TTL_MS = 2 * 60 * 1000;
+/**
+ * How recently the browser must have verified the user before it may export a session.
+ * The app's sign-in asks for a fresh assertion; this is the server insisting on it, so a
+ * silent mint off an old cookie is not a thing that can happen.
+ */
+const HANDOFF_FRESHNESS_MS = 3 * 60 * 1000;
 const RP_NAME = "pi-super";
 
 export interface StoredCredential {
@@ -62,7 +68,10 @@ export class PasskeyStore {
 	private loadedSig = "";
 	private readonly challenges = new Map<string, { challenge: string; expires: number }>();
 	/** one-time codes that move a session from the browser into the Android app */
-	private readonly handoffs = new Map<string, { credentialId: string; label: string; challenge: string; expires: number }>();
+	private readonly handoffs = new Map<
+		string,
+		{ sessionId: string; credentialId: string; label: string; challenge: string; expires: number }
+	>();
 
 	constructor(stateDir: string) {
 		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -191,10 +200,18 @@ export class PasskeyStore {
 	mintHandoff(session: Session, challenge: string): string | undefined {
 		if (!/^[A-Za-z0-9_-]{22,128}$/.test(challenge)) return undefined;
 		const now = Date.now();
-		for (const [k, v] of this.handoffs) if (v.expires < now) this.handoffs.delete(k);
+		// The session must be the product of an assertion the user has just performed — not
+		// simply a browser that logged in this morning and has been sitting there since.
+		if (now - session.createdAt > HANDOFF_FRESHNESS_MS) return undefined;
+		for (const [k, v] of this.handoffs) {
+			// One live code per challenge: a reloaded page must not leave a sibling code behind
+			// that is still good after the real one has been redeemed.
+			if (v.expires < now || v.challenge === challenge) this.handoffs.delete(k);
+		}
 		if (this.handoffs.size >= MAX_CHALLENGES) return undefined;
 		const code = randomBytes(32).toString("base64url");
 		this.handoffs.set(code, {
+			sessionId: session.id,
 			credentialId: session.credentialId,
 			label: session.label,
 			challenge,
@@ -215,6 +232,9 @@ export class PasskeyStore {
 		this.syncFromDisk();
 		// the passkey may have been revoked between the browser's login and this redemption
 		if (!this.data.credentials.some((c) => c.id === entry.credentialId)) return undefined;
+		// ...and so may the session it was minted from. `--logout` has to mean this too, or
+		// revoking everything leaves a code in flight that hands out a fresh session after.
+		if (!this.sessionAlive(entry.sessionId)) return undefined;
 		// A session of its own, not a copy: logging the app out must not log the browser out.
 		const sid = this.newSession(entry.credentialId, entry.label);
 		return { cookie: this.sessionCookie(sid, secure), label: entry.label };

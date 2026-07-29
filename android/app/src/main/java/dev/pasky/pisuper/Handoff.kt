@@ -27,22 +27,32 @@ object Handoff {
 	// On disk, not in a field: this flow puts a whole browser in front of us, and coming
 	// back to a process Android killed in the meantime is the normal case, not the odd one.
 	private const val KEY = "handoff-verifier"
+	/** a sign-in the user walked away from must not still be redeemable tomorrow */
+	private const val TTL_MS = 10 * 60 * 1000L
 
 	private fun b64(bytes: ByteArray) = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
 
 	/** The browser URL that starts a sign-in, remembering the verifier that finishes it. */
 	fun startUrl(ctx: Context, origin: String): String {
 		val v = b64(ByteArray(32).also { SecureRandom().nextBytes(it) })
-		Prefs.setHandoffVerifier(ctx, KEY, v)
+		Prefs.setHandoffVerifier(ctx, KEY, "${System.currentTimeMillis()}:$v")
 		val challenge = b64(MessageDigest.getInstance("SHA-256").digest(v.toByteArray()))
 		return "$origin/?handoff=$challenge"
 	}
 
-	/** The redeem URL for a `pi-super://handoff?code=…` callback, or null if it is not ours. */
-	fun redeemUrl(ctx: Context, origin: String, callback: Uri): String? {
+	/**
+	 * The redeem request for a `pi-super://handoff?code=…` callback, or null if it is not
+	 * ours. A POST, so neither half of the credential ends up in a URL — and therefore not
+	 * in the WebView's history, a proxy's log, or a Referer.
+	 */
+	fun redeem(ctx: Context, origin: String, callback: Uri): Pair<String, ByteArray>? {
 		val code = callback.getQueryParameter("code") ?: return null
 		// One shot: a verifier that is reused is a verifier that can be replayed.
-		val v = Prefs.takeHandoffVerifier(ctx, KEY) ?: return null
-		return "$origin/api/auth/handoff/redeem?code=${Uri.encode(code)}&verifier=${Uri.encode(v)}"
+		val stored = Prefs.takeHandoffVerifier(ctx, KEY) ?: return null
+		val at = stored.substringBefore(':').toLongOrNull() ?: return null
+		val v = stored.substringAfter(':')
+		if (v.isEmpty() || System.currentTimeMillis() - at > TTL_MS) return null
+		val body = "code=${Uri.encode(code)}&verifier=${Uri.encode(v)}"
+		return "$origin/api/auth/handoff/redeem" to body.toByteArray()
 	}
 }

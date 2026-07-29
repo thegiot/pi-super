@@ -68,21 +68,57 @@ export const logout = (): Promise<unknown> => api("/api/auth/logout", {});
  *
  * The Android wrapper cannot run the passkey ceremony itself — Credential Manager only
  * lets an app claim an RP ID that Google can crawl, and a tailnet box cannot be crawled —
- * so it opens this page in a real browser with `?handoff=<pkce challenge>`. Once a passkey
- * session exists here, we mint a one-time code and bounce it back over the app's scheme.
- * The code is worthless without the verifier, which never left the app.
+ * so it opens this page in a real browser with `?handoff=<pkce challenge>`. We mint a
+ * one-time code and bounce it back over the app's scheme, where the app redeems it with
+ * the verifier only it knows.
+ *
+ * **This asks, every time, and asks with the passkey.** The challenge in the URL is
+ * whatever opened this page, and on Android that is whichever app claimed the `pi-super:`
+ * scheme — not necessarily ours. PKCE stops an eavesdropper from stealing an honest app's
+ * code; it says nothing about who wrote the challenge. So the only thing standing between
+ * a hostile app and a shell is that exporting a session costs a deliberate, named,
+ * user-verified approval. Never make this silent.
  */
 async function completeHandoff(): Promise<boolean> {
 	const challenge = new URLSearchParams(location.search).get("handoff");
 	if (!challenge) return false;
-	try {
-		const { code } = await api<{ code: string }>("/api/auth/handoff", { challenge });
-		location.href = `pi-super://handoff?code=${encodeURIComponent(code)}`;
-		return true;
-	} catch (e) {
-		document.body.textContent = `pi-super: could not sign the app in — ${(e as Error).message}`;
-		return true;
-	}
+
+	const overlay = document.createElement("div");
+	overlay.id = "lock";
+	const card = document.createElement("div");
+	card.className = "lock-card";
+	const title = document.createElement("h1");
+	title.textContent = "Sign in the app?";
+	const msg = document.createElement("p");
+	msg.textContent =
+		"An app on this phone is asking for a pi-super session — a session is a shell. Approve only if you just tapped “Unlock in browser” in the pi-super app.";
+	const button = document.createElement("button");
+	button.className = "primary";
+	button.textContent = "Approve with passkey";
+	const err = document.createElement("p");
+	err.className = "err";
+	button.onclick = () => {
+		void (async () => {
+			button.disabled = true;
+			err.textContent = "";
+			try {
+				// A fresh assertion, even if this browser is already unlocked: the server only
+				// mints a handoff for a session minutes old, so approval means a biometric now.
+				await loginWithPasskey();
+				const { code } = await api<{ code: string }>("/api/auth/handoff", { challenge });
+				location.href = `pi-super://handoff?code=${encodeURIComponent(code)}`;
+				msg.textContent = "Sent. You can close this tab.";
+				button.remove();
+			} catch (e) {
+				err.textContent = String((e as Error).message);
+				button.disabled = false;
+			}
+		})();
+	};
+	card.append(title, msg, button, err);
+	overlay.append(card);
+	document.body.append(overlay);
+	return true;
 }
 
 /**
@@ -99,9 +135,9 @@ export function gate(): Promise<void> {
 				resolve(); // server too old / unreachable: let the normal error paths show
 				return;
 			}
+			// The app's errand, and nothing else: this tab does not become a live pi-super.
+			if (state.supported && (await completeHandoff())) return;
 			if (state.authenticated || !state.required) {
-				// only the app's errand, and then this tab is done
-				if (await completeHandoff()) return;
 				resolve();
 				return;
 			}
@@ -128,7 +164,6 @@ export function gate(): Promise<void> {
 				err.textContent = "";
 				try {
 					await loginWithPasskey();
-					if (await completeHandoff()) return;
 					overlay.remove();
 					resolve();
 				} catch (e) {

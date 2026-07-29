@@ -106,18 +106,27 @@ Instead, the sign-in is borrowed from a browser, where an origin is just an orig
    the bridge.
 2. The app opens `https://…/?handoff=<PKCE challenge>` in the real browser and remembers
    the verifier **on disk** — Android routinely kills the app while a browser is in front
-   of it (the emulator test caught exactly that).
-3. In the browser you unlock with your passkey as usual. `auth.ts` sees the `handoff`
-   parameter, asks the server for a one-time code, and navigates to
+   of it (the emulator test caught exactly that), and the stored verifier expires in ten
+   minutes.
+3. The browser shows an explicit **“Sign in the app?”** approval, which costs a passkey
+   assertion *there and then*, and only then mints a one-time code and navigates to
    `pi-super://handoff?code=…`.
-4. The app redeems it at `/api/auth/handoff/redeem?code=…&verifier=…` **as a navigation
-   inside the WebView**, which is the only way a `Set-Cookie` can land in the WebView's own
-   cookie jar (it shares nothing with Chrome).
+4. The app POSTs it to `/api/auth/handoff/redeem` **as a navigation inside the WebView**,
+   which is the only way a `Set-Cookie` can land in the WebView's own cookie jar (it shares
+   nothing with Chrome). A POST, so neither half of the credential is ever in a URL, a
+   history entry or a proxy log.
 
-The code is one-time, expires in two minutes, is refused if the passkey was revoked in the
-meantime, and is worth nothing without the verifier — which matters, because any app on the
-phone may register the `pi-super` scheme and race for that callback. The app gets a session
-of its own, so logging it out does not log the browser out.
+Step 3 is the load-bearing one, and it must never become silent. PKCE stops an eavesdropper
+from stealing an honest app's code — it says nothing about *who wrote the challenge*, and on
+Android that is whichever app claimed the `pi-super:` scheme. A hostile app can pick its own
+verifier and open that URL; the only thing between it and a shell is that exporting a
+session costs a deliberate, named, user-verified approval. The server enforces the same
+thing from its side: it will not mint a handoff for a session older than three minutes.
+
+The code is single-use, expires in two minutes, only one lives per challenge (a reloaded
+page does not leave a usable sibling behind), and it is refused if the passkey *or the
+browser session it came from* was revoked in the meantime. The app gets a session of its
+own, so logging it out does not log the browser out.
 
 Enrolling a *new* passkey still has to be done in a browser; the app only borrows sessions.
 
@@ -128,10 +137,11 @@ the terminal and chat work fine and voice mode cannot start. Put a TLS proxy or
 `tailscale serve` in front, as the README suggests.
 
 Private CAs are honoured (system + user trust anchors), and if the certificate still does
-not validate the app shows its SHA-256 once and pins that exact certificate if you accept
-it — rather than the usual `handler.proceed()`, which accepts anything forever. Below
-Android 10 there is no way to get the certificate's own bytes out of `SslCertificate`, so
-nothing can be pinned there and the question is asked every time.
+not validate the app shows its SHA-256 once and remembers that exact certificate — rather
+than the usual `handler.proceed()`, which accepts anything forever. Below Android 10 there
+is no way to get the certificate's own bytes out of `SslCertificate`, so nothing can be
+remembered there and the question is asked every time. Note that this is an *exception*
+list, not pinning: a certificate that validates normally is never checked against it.
 
 Plain http is allowed but the setup screen argues with you first: that URL carries the
 token to a page with shell access, so on http anyone on the network can read it and

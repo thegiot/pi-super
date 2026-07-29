@@ -114,8 +114,8 @@ object CallHub {
 		val app = ctx.applicationContext
 		appContext = app
 		if (active) {
-			// a redial without a hang-up (voice.ts reconnects in place); keep the call we have
-			callId = id
+			// A redial without a hang-up (voice.ts reconnects in place): keep the call we have,
+			// under the id it already has — renaming it would let a stale document take it over.
 			emitReady()
 			return
 		}
@@ -202,7 +202,8 @@ object CallHub {
 
 	/** speaker | earpiece | bluetooth | wired — best effort, Telecom mode only. */
 	@Suppress("DEPRECATION") // setAudioRoute: see PiConnection.onCallAudioStateChanged
-	fun setRoute(route: String) {
+	fun setRoute(id: String, route: String) {
+		if (callId != id) return
 		val conn = connection ?: return
 		val target = when (route) {
 			"speaker" -> CallAudioState.ROUTE_SPEAKER
@@ -241,6 +242,9 @@ object CallHub {
 		clearTimeout()
 		pendingId = null
 		if (connection != null) return
+		// A late failure for an attempt that has already fallen back must not fall back twice:
+		// the second focus request would orphan the first and lose the saved audio mode.
+		if (mode != Mode.NONE) return
 		appContext?.let { startAudioFocus(it, reason) }
 	}
 
@@ -251,6 +255,12 @@ object CallHub {
 	 * outlives its own UI.
 	 */
 	fun onRemoteHangup(from: PiConnection? = null) {
+		// A callback from a connection we have already let go of is the ghost of an old call;
+		// acting on it would hang up the one that replaced it.
+		if (from != null && from !== connection) {
+			Log.i(TAG, "ignoring a hang-up from a stale connection")
+			return
+		}
 		if (!active && callId == null) return
 		val hadConnection = connection
 		val id = callId
@@ -296,6 +306,8 @@ object CallHub {
 
 	private fun startAudioFocus(ctx: Context, why: String) {
 		if (callId == null) return // hung up while we were negotiating
+		if (mode != Mode.NONE) return // already in one mode or the other; never both
+		val mine = attempt
 		val am = ctx.getSystemService(AudioManager::class.java)
 		if (am == null) {
 			emitReady(fallbackReason = why)
@@ -311,8 +323,9 @@ object CallHub {
 			.setOnAudioFocusChangeListener { change ->
 				// Losing focus for good means something took the audio away from us (a real
 				// phone call, another VoIP app). Report it as a hang-up rather than sit on a
-				// call the user can no longer hear.
-				if (change == AudioManager.AUDIOFOCUS_LOSS) onRemoteHangup()
+				// call the user can no longer hear — but only for the call that requested it:
+				// a loss queued for an abandoned attempt must not stop its successor.
+				if (change == AudioManager.AUDIOFOCUS_LOSS && mine == attempt) onRemoteHangup()
 			}
 			.build()
 		focusRequest = req

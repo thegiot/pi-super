@@ -110,7 +110,20 @@ class CallService : Service() {
 				return
 			}
 			val i = Intent(ctx, CallService::class.java).putExtra(EXTRA_PHONE_CALL, phoneCall)
-			ctx.startForegroundService(i)
+			startQuietly(ctx, i)
+		}
+
+		/**
+		 * A refused start (ForegroundServiceStartNotAllowedException when the app has since
+		 * gone to the background, or an OEM's own restriction) is a worse notification, not a
+		 * worse call. It must never be the thing that crashes us.
+		 */
+		private fun startQuietly(ctx: Context, i: Intent) {
+			try {
+				ctx.startForegroundService(i)
+			} catch (e: Exception) {
+				Log.w("PiSuperCall", "could not start the call service", e)
+			}
 		}
 
 		private fun canPromote(ctx: Context, phoneCall: Boolean): Boolean {
@@ -124,7 +137,7 @@ class CallService : Service() {
 			val i = Intent(ctx, CallService::class.java)
 				.putExtra(EXTRA_PHONE_CALL, CallHub.telecomMode)
 				.putExtra(EXTRA_MUTED, muted)
-			ctx.startForegroundService(i)
+			startQuietly(ctx, i)
 		}
 
 		fun stop(ctx: Context) {

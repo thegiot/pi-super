@@ -382,28 +382,34 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				const { challenge } = (await body()) as { challenge?: string };
 				const code = challenge ? passkeys.mintHandoff(session, challenge) : undefined;
 				if (!code) {
-					sendJson(res, 400, { error: "bad handoff challenge" });
+					// Most likely the session is not fresh: signing the app in is a deliberate act
+					// that must cost a passkey prompt, precisely because the app that asked for it
+					// is whichever app claimed the pi-super: scheme.
+					sendJson(res, 400, { error: "sign in again to approve this" });
 					return;
 				}
 				log(`auth: handoff code minted for the app from ${clientIp(req)}`);
 				sendJson(res, 200, { code });
 				return;
 			}
-			case "GET /api/auth/handoff/redeem": {
-				// Redeemed by a plain navigation inside the app's WebView, which is the only way
-				// the cookie can land in *its* cookie jar (it shares nothing with Chrome).
-				const result = passkeys.redeemHandoff(
-					url.searchParams.get("code") ?? "",
-					url.searchParams.get("verifier") ?? "",
-					secure,
-				);
+			case "POST /api/auth/handoff/redeem": {
+				// Redeemed by a navigation inside the app's WebView, which is the only way the
+				// cookie can land in *its* cookie jar (it shares nothing with Chrome). A POST
+				// navigation, so the code and verifier stay out of URLs, proxy logs and history.
+				const form = new URLSearchParams((await readBody(req, 4096)).toString("utf8"));
+				const result = passkeys.redeemHandoff(form.get("code") ?? "", form.get("verifier") ?? "", secure);
 				if (!result) {
 					log(`auth: handoff redemption failed from ${clientIp(req)}`);
-					sendJson(res, 400, { error: "this sign-in link is used up or expired" });
+					sendJson(res, 400, { error: "this sign-in is used up or expired" });
 					return;
 				}
 				log(`auth: app signed in as "${result.label}" from ${clientIp(req)}`);
-				res.writeHead(302, { location: "/", "set-cookie": result.cookie });
+				res.writeHead(303, {
+					location: "/",
+					"set-cookie": result.cookie,
+					"cache-control": "no-store",
+					"referrer-policy": "no-referrer",
+				});
 				res.end();
 				return;
 			}

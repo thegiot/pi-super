@@ -131,6 +131,8 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	let graceTimer: ReturnType<typeof setTimeout> | undefined;
 	let hushedAt = 0;
+	/** the mute state the OS last told us about, applied as soon as there is a mic to apply it to */
+	let systemMuted: boolean | undefined;
 
 	const api: VoiceApi = {
 		config: undefined,
@@ -279,6 +281,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 			await keepAwake();
 			nativeCall.active();
 			setState("live");
+			applySystemMute();
 		} catch (err) {
 			if (stale()) return;
 			// Mid-reconnect we keep trying: the mic may simply be held by a real phone call,
@@ -421,6 +424,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		void keepAwake();
 		nativeCall.active();
 		setState("live");
+		applySystemMute();
 	}
 
 	function speakLocal(text: string): void {
@@ -455,6 +459,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		listening = false;
 		// the mic itself is going away, so nothing is muted any more
 		muted = false;
+		systemMuted = undefined;
 		if (recognition) {
 			recognition.onend = null;
 			try {
@@ -509,6 +514,11 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		const next = applyMute(!isMuted());
 		nativeCall.setMuted(next);
 		return next;
+	}
+
+	function applySystemMute(): void {
+		if (systemMuted === undefined || state !== "live" || systemMuted === isMuted()) return;
+		api.onMute?.(applyMute(systemMuted));
 	}
 
 	function isMuted(): boolean {
@@ -691,10 +701,12 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	};
 	nativeCall.onNotice = (text) => api.onNotice?.(text);
 	// The mute a car kit or a watch applies is the system's; only we can act on it, since
-	// nothing outside this page can silence a WebRTC track.
-	nativeCall.onRoute = (_route, _routes, systemMuted) => {
-		if (state !== "live" || systemMuted === isMuted()) return;
-		api.onMute?.(applyMute(systemMuted));
+	// nothing outside this page can silence a WebRTC track. The first route event usually
+	// arrives while we are still dialling, when there is no track to mute yet — so remember
+	// it and apply it the moment there is one, or a call that started muted goes out live.
+	nativeCall.onRoute = (_route, _routes, muted) => {
+		systemMuted = muted;
+		applySystemMute();
 	};
 
 	return api;

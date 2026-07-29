@@ -55,7 +55,7 @@ class MainActivity : AppCompatActivity() {
 		CallHub.registerAccount(this)
 		askPermissions()
 		if (savedInstanceState == null) web.loadUrl(url)
-		consumeHandoff(intent)
+		// a handoff callback that created us is consumed in onResume; see there
 	}
 
 	private fun askPermissions() {
@@ -198,7 +198,7 @@ class MainActivity : AppCompatActivity() {
 			"markActive" -> CallHub.markActive(id)
 			"endCall" -> CallHub.endCall(id.ifBlank { null })
 			"setMuted" -> CallHub.setMuted(id, msg.optBoolean("muted"))
-			"setRoute" -> CallHub.setRoute(msg.optString("route"))
+			"setRoute" -> CallHub.setRoute(id, msg.optString("route"))
 			"login" -> signInViaBrowser()
 		}
 	}
@@ -219,21 +219,30 @@ class MainActivity : AppCompatActivity() {
 	override fun onNewIntent(intent: Intent) {
 		super.onNewIntent(intent)
 		setIntent(intent)
-		consumeHandoff(intent)
 	}
 
-	private fun consumeHandoff(intent: Intent?) {
+	override fun onResume() {
+		super.onResume()
+		// Not in onCreate: with saved state, onRestoreInstanceState runs *after* it and would
+		// put the old page back over the redemption — having already spent the verifier.
+		if (::web.isInitialized) consumeHandoff()
+	}
+
+	private fun consumeHandoff() {
 		val data = intent?.data ?: return
 		if (data.scheme != "pi-super" || data.host != "handoff") return
-		val url = Handoff.redeemUrl(this, origin, data)
-		if (url == null) {
+		// Whatever happens next, this intent is spent: it must not be replayed by the next
+		// onResume (a rotation, or coming back from the recents list).
+		intent.data = null
+		val redeem = Handoff.redeem(this, origin, data)
+		if (redeem == null) {
 			Log.i("PiSuperCall", "handoff callback with no verifier of ours")
 			toast("that sign-in did not start here")
 			return
 		}
 		Log.i("PiSuperCall", "handoff: redeeming")
 		// A navigation, not a fetch: the Set-Cookie has to land in the WebView's own jar.
-		web.loadUrl(url)
+		web.postUrl(redeem.first, redeem.second)
 	}
 
 	private fun post(ev: JSONObject) {
