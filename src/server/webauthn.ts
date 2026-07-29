@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
@@ -17,6 +17,8 @@ const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 /** login options are mintable by anyone who can reach us; bound the memory they cost */
 const MAX_CHALLENGES = 64;
+/** a handoff code is redeemed by an app that is already waiting for it */
+const HANDOFF_TTL_MS = 2 * 60 * 1000;
 const RP_NAME = "pi-super";
 
 export interface StoredCredential {
@@ -29,7 +31,7 @@ export interface StoredCredential {
 	lastUsedAt?: string;
 }
 
-interface Session {
+export interface Session {
 	id: string;
 	credentialId: string;
 	createdAt: number;
@@ -59,6 +61,8 @@ export class PasskeyStore {
 	/** fingerprint of the file `data` came from; anything else on disk wins (syncFromDisk) */
 	private loadedSig = "";
 	private readonly challenges = new Map<string, { challenge: string; expires: number }>();
+	/** one-time codes that move a session from the browser into the Android app */
+	private readonly handoffs = new Map<string, { credentialId: string; label: string; challenge: string; expires: number }>();
 
 	constructor(stateDir: string) {
 		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -167,6 +171,53 @@ export class PasskeyStore {
 		});
 		this.save();
 		return id;
+	}
+
+	// ------------------------------------------------------------------ handoff
+
+	/**
+	 * Mint a one-time code that turns a browser session into an app session.
+	 *
+	 * Android's WebView cannot do the passkey ceremony against a private host: Credential
+	 * Manager asks *Google* to crawl `https://<rpID>/.well-known/assetlinks.json` before it
+	 * will let an app claim an RP ID, and a tailnet-only box is not crawlable. So the
+	 * wrapper sends the user to a real browser, where WebAuthn is plain WebAuthn, and the
+	 * session earned there is carried back through this code.
+	 *
+	 * PKCE, because the code arrives over a custom scheme (`pi-super://handoff`) and any app
+	 * on the phone may register the same scheme: the code alone is useless without the
+	 * verifier, which never leaves the app that started the flow.
+	 */
+	mintHandoff(session: Session, challenge: string): string | undefined {
+		if (!/^[A-Za-z0-9_-]{22,128}$/.test(challenge)) return undefined;
+		const now = Date.now();
+		for (const [k, v] of this.handoffs) if (v.expires < now) this.handoffs.delete(k);
+		if (this.handoffs.size >= MAX_CHALLENGES) return undefined;
+		const code = randomBytes(32).toString("base64url");
+		this.handoffs.set(code, {
+			credentialId: session.credentialId,
+			label: session.label,
+			challenge,
+			expires: now + HANDOFF_TTL_MS,
+		});
+		return code;
+	}
+
+	/** Redeem a handoff code for a session of the app's own — single use, whatever happens. */
+	redeemHandoff(code: string, verifier: string, secure: boolean): { cookie: string; label: string } | undefined {
+		const entry = this.handoffs.get(code);
+		this.handoffs.delete(code);
+		if (!entry || entry.expires < Date.now()) return undefined;
+		const got = createHash("sha256").update(verifier).digest("base64url");
+		const want = Buffer.from(entry.challenge);
+		const have = Buffer.from(got);
+		if (want.length !== have.length || !timingSafeEqual(want, have)) return undefined;
+		this.syncFromDisk();
+		// the passkey may have been revoked between the browser's login and this redemption
+		if (!this.data.credentials.some((c) => c.id === entry.credentialId)) return undefined;
+		// A session of its own, not a copy: logging the app out must not log the browser out.
+		const sid = this.newSession(entry.credentialId, entry.label);
+		return { cookie: this.sessionCookie(sid, secure), label: entry.label };
 	}
 
 	sessionFor(req: IncomingMessage): Session | undefined {

@@ -137,6 +137,11 @@ already handed out — `--remove-passkey` / `--logout` take effect within second
 --list-passkeys / --remove-passkey <label> / --logout
 ```
 
+In the Android wrapper, unlocking happens in a browser and the session is handed back to
+the app over a one-time PKCE code: Android only lets an *app* use a passkey for a site
+Google's crawler can reach, which a tailnet box is not. See
+[docs/android.md](docs/android.md).
+
 Passkeys are bound to the hostname you enrol on (WebAuthn RP ID) and need HTTPS or
 localhost, so enrol over the name you will actually use — e.g. your MagicDNS
 `machine.tailXXXX.ts.net`, not `localhost`. Sessions live in `~/.pi/super/passkeys.json`

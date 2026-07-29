@@ -20,4 +20,15 @@ object Prefs {
 	fun setPinnedCert(ctx: Context, fingerprint: String) {
 		of(ctx).edit().putString("cert", fingerprint).apply()
 	}
+
+	/** commit(), not apply(): the very next thing that happens is a browser taking over */
+	fun setHandoffVerifier(ctx: Context, key: String, verifier: String) {
+		of(ctx).edit().putString(key, verifier).commit()
+	}
+
+	fun takeHandoffVerifier(ctx: Context, key: String): String? {
+		val v = of(ctx).getString(key, null)
+		of(ctx).edit().remove(key).commit()
+		return v
+	}
 }

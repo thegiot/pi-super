@@ -6,6 +6,7 @@
  * (phone biometrics) and the bearer token alone no longer opens it.
  */
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import { nativeApp } from "./native-call.js";
 
 export interface AuthState {
 	enrolled: boolean;
@@ -63,6 +64,28 @@ export async function loginWithPasskey(): Promise<string> {
 export const logout = (): Promise<unknown> => api("/api/auth/logout", {});
 
 /**
+ * Finish an app sign-in that is being done in this browser on the app's behalf.
+ *
+ * The Android wrapper cannot run the passkey ceremony itself — Credential Manager only
+ * lets an app claim an RP ID that Google can crawl, and a tailnet box cannot be crawled —
+ * so it opens this page in a real browser with `?handoff=<pkce challenge>`. Once a passkey
+ * session exists here, we mint a one-time code and bounce it back over the app's scheme.
+ * The code is worthless without the verifier, which never left the app.
+ */
+async function completeHandoff(): Promise<boolean> {
+	const challenge = new URLSearchParams(location.search).get("handoff");
+	if (!challenge) return false;
+	try {
+		const { code } = await api<{ code: string }>("/api/auth/handoff", { challenge });
+		location.href = `pi-super://handoff?code=${encodeURIComponent(code)}`;
+		return true;
+	} catch (e) {
+		document.body.textContent = `pi-super: could not sign the app in — ${(e as Error).message}`;
+		return true;
+	}
+}
+
+/**
  * Blocks the app with a lock screen until a passkey assertion succeeds.
  * Resolves immediately when no passkey is required.
  */
@@ -77,6 +100,8 @@ export function gate(): Promise<void> {
 				return;
 			}
 			if (state.authenticated || !state.required) {
+				// only the app's errand, and then this tab is done
+				if (await completeHandoff()) return;
 				resolve();
 				return;
 			}
@@ -103,6 +128,7 @@ export function gate(): Promise<void> {
 				err.textContent = "";
 				try {
 					await loginWithPasskey();
+					if (await completeHandoff()) return;
 					overlay.remove();
 					resolve();
 				} catch (e) {
@@ -112,6 +138,19 @@ export function gate(): Promise<void> {
 			};
 			button.onclick = () => void attempt();
 			card.append(title, msg, button, err);
+
+			// Inside the Android wrapper the button above cannot work: WebView will not run a
+			// passkey ceremony for an RP it cannot prove it owns. Send the user to a browser,
+			// which has no such trouble, and take the session back afterwards.
+			if (nativeApp.available) {
+				msg.textContent = "Signing in needs your browser: Android only lets an app use a passkey for a site Google can reach, and this one is private.";
+				button.textContent = "Unlock in browser";
+				button.disabled = false;
+				button.onclick = () => {
+					nativeApp.send({ type: "login" });
+					err.textContent = "Finish signing in in the browser; this comes back on its own.";
+				};
+			}
 			overlay.append(card);
 			document.body.append(overlay);
 			// Conditional/one-tap flows are unreliable across Android versions, so we make

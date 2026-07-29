@@ -367,6 +367,46 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				res.end(JSON.stringify({ ok: true, label: result.label }));
 				return;
 			}
+			// --- moving a session from a real browser into the Android app -----------------
+			case "POST /api/auth/handoff": {
+				if (!originAllowed(req, cfg.allowedOrigins)) {
+					sendJson(res, 403, { error: "bad origin" });
+					return;
+				}
+				// A passkey session only: the token can already be pasted into the app, and a
+				// leaked one must not be upgradable into a passkey-grade session.
+				if (!session) {
+					sendJson(res, 401, { error: "unlock with your passkey first" });
+					return;
+				}
+				const { challenge } = (await body()) as { challenge?: string };
+				const code = challenge ? passkeys.mintHandoff(session, challenge) : undefined;
+				if (!code) {
+					sendJson(res, 400, { error: "bad handoff challenge" });
+					return;
+				}
+				log(`auth: handoff code minted for the app from ${clientIp(req)}`);
+				sendJson(res, 200, { code });
+				return;
+			}
+			case "GET /api/auth/handoff/redeem": {
+				// Redeemed by a plain navigation inside the app's WebView, which is the only way
+				// the cookie can land in *its* cookie jar (it shares nothing with Chrome).
+				const result = passkeys.redeemHandoff(
+					url.searchParams.get("code") ?? "",
+					url.searchParams.get("verifier") ?? "",
+					secure,
+				);
+				if (!result) {
+					log(`auth: handoff redemption failed from ${clientIp(req)}`);
+					sendJson(res, 400, { error: "this sign-in link is used up or expired" });
+					return;
+				}
+				log(`auth: app signed in as "${result.label}" from ${clientIp(req)}`);
+				res.writeHead(302, { location: "/", "set-cookie": result.cookie });
+				res.end();
+				return;
+			}
 			case "POST /api/auth/logout": {
 				// Unauthenticated, this was a denial-of-service button: any reachable peer could
 				// POST it (even cross-origin, no-cors) and log the owner's phone out for good.

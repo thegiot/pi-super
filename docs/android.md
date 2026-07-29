@@ -87,15 +87,39 @@ person, not a Play listing.
 On first launch, paste the URL pi-super printed, token and all. The app remembers it; the
 launcher shortcut ("Change server") gets back to that screen.
 
-### Passkeys
+### Passkeys: the ceremony happens in a browser
 
-WebView has its own cookie jar and does *not* do WebAuthn unless the host app turns it on
-— and even then the passkey is bound to the app through a Digital Asset Link, which means
-the server would have to serve a `/.well-known/assetlinks.json` naming this app's signing
-certificate. The app enables `WEB_AUTHENTICATION_SUPPORT_FOR_APP` when the WebView is new
-enough, but nothing else is set up: **run pi-super with `--auth token` if you use the
-wrapper**, or expect the wrapper to be locked out once a passkey is enrolled. The token in
-the URL you paste is what logs it in.
+A WebView cannot run pi-super's passkey ceremony, and no amount of configuration fixes it.
+In WebView's app mode the passkey belongs to *the app*, so Android first checks that the
+app may claim the RP ID — and that check is a **Digital Asset Links lookup performed by
+Google's servers**, which fetch `https://<rpID>/.well-known/assetlinks.json` themselves.
+A tailnet-only box is not crawlable by Google, so the check can never pass. (Browser mode
+would avoid it, but it needs `CREDENTIAL_MANAGER_SET_ORIGIN` and Google's allowlisting of
+privileged browsers. Doing the ceremony natively with Credential Manager has exactly the
+same problem: same app identity, same asset-link requirement.) So the app does not enable
+WebView WebAuthn at all — it would fail every time, with an error that reads like a broken
+passkey.
+
+Instead, the sign-in is borrowed from a browser, where an origin is just an origin:
+
+1. The lock screen inside the app offers **Unlock in browser**, which posts `login` over
+   the bridge.
+2. The app opens `https://…/?handoff=<PKCE challenge>` in the real browser and remembers
+   the verifier **on disk** — Android routinely kills the app while a browser is in front
+   of it (the emulator test caught exactly that).
+3. In the browser you unlock with your passkey as usual. `auth.ts` sees the `handoff`
+   parameter, asks the server for a one-time code, and navigates to
+   `pi-super://handoff?code=…`.
+4. The app redeems it at `/api/auth/handoff/redeem?code=…&verifier=…` **as a navigation
+   inside the WebView**, which is the only way a `Set-Cookie` can land in the WebView's own
+   cookie jar (it shares nothing with Chrome).
+
+The code is one-time, expires in two minutes, is refused if the passkey was revoked in the
+meantime, and is worth nothing without the verifier — which matters, because any app on the
+phone may register the `pi-super` scheme and race for that callback. The app gets a session
+of its own, so logging it out does not log the browser out.
+
+Enrolling a *new* passkey still has to be done in a browser; the app only borrows sessions.
 
 ### https, and why voice needs it
 

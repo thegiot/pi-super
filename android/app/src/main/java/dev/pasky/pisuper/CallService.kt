@@ -45,18 +45,16 @@ class CallService : Service() {
 			if (phoneCall && granted(Manifest.permission.MANAGE_OWN_CALLS)) {
 				type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
 			}
-			if (type == 0) {
-				// Nothing to justify a foreground service. The call still works; it is just as
-				// killable as a browser tab, which is what the user chose by denying the mic.
-				stopSelf()
-				return START_NOT_STICKY
-			}
 		}
+		// startForegroundService() obliges us to promote within seconds or be killed with
+		// ForegroundServiceDidNotStartInTimeException, so we always try, even with no type to
+		// declare (which is itself fatal on API 34+ — hence the catch, and the guard in start()
+		// that keeps us from getting here in the first place).
 		try {
 			ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(muted), type)
 		} catch (e: Exception) {
 			// An OEM or a background-start restriction refusing the promotion must not take
-			// the call down with it.
+			// the call down with it: the call keeps working, as killable as a browser tab.
 			Log.w("PiSuperCall", "startForeground failed", e)
 			stopSelf()
 		}
@@ -104,12 +102,25 @@ class CallService : Service() {
 		private const val EXTRA_MUTED = "muted"
 
 		fun start(ctx: Context, phoneCall: Boolean) {
+			// Do not start what cannot be promoted. On API 34+ a service whose declared types
+			// are all unbacked by permissions cannot go foreground at all, and one started with
+			// startForegroundService() that fails to is killed with an exception.
+			if (!canPromote(ctx, phoneCall)) {
+				Log.i("PiSuperCall", "no permission for a foreground service; the call is unprotected")
+				return
+			}
 			val i = Intent(ctx, CallService::class.java).putExtra(EXTRA_PHONE_CALL, phoneCall)
 			ctx.startForegroundService(i)
 		}
 
+		private fun canPromote(ctx: Context, phoneCall: Boolean): Boolean {
+			if (Build.VERSION.SDK_INT < 30) return true
+			val has = { p: String -> ctx.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED }
+			return has(Manifest.permission.RECORD_AUDIO) || (phoneCall && has(Manifest.permission.MANAGE_OWN_CALLS))
+		}
+
 		fun refresh(ctx: Context, muted: Boolean) {
-			if (!CallHub.active) return
+			if (!CallHub.active || !canPromote(ctx, CallHub.telecomMode)) return
 			val i = Intent(ctx, CallService::class.java)
 				.putExtra(EXTRA_PHONE_CALL, CallHub.telecomMode)
 				.putExtra(EXTRA_MUTED, muted)

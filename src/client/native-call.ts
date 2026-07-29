@@ -26,6 +26,17 @@ const READY_TIMEOUT_MS = 6000;
 
 const bridge = (window as unknown as { PiNative?: NativeBridge }).PiNative;
 
+/**
+ * The wrapper itself, for the parts of it that are not the call: right now only the
+ * passkey handoff (see auth.ts), which has to leave the WebView entirely.
+ */
+export const nativeApp = {
+	available: typeof bridge?.postMessage === "function",
+	send(msg: Record<string, unknown>): void {
+		bridge?.postMessage(JSON.stringify(msg));
+	},
+};
+
 let callId: string | undefined;
 let waiting: (() => void) | undefined;
 let mode: "telecom" | "audiofocus" | undefined;

@@ -15,6 +15,7 @@
  * WebRTC audio actually follows the Telecom route onto a Bluetooth headset.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -29,12 +30,15 @@ const PKG = "dev.pasky.pisuper";
 const AVD = "pi-super-test";
 const IMAGE = process.env.ANDROID_IMAGE ?? "system-images;android-34;google_apis;x86_64";
 const PORT = 8891;
+const HANDOFF_CODE = "test-handoff-code";
 /** the host, as seen from inside the emulator */
 const HOST = `http://10.0.2.2:${PORT}`;
 
 const log = (...a) => console.log("·", ...a);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const adb = (...args) => spawnSync(ADB, args, { encoding: "utf8" });
+// Always through `timeout`: adb blocks forever on "- waiting for device -" the moment the
+// emulator dies, which turns any failure into a hang instead of a failure.
+const adb = (...args) => spawnSync(ADB, args, { encoding: "utf8", timeout: 60_000 });
 const cleanups = [];
 const cleanup = async () => {
 	for (const fn of cleanups.reverse()) {
@@ -84,7 +88,34 @@ setInterval(async () => {
 }, 300);
 </script>`;
 
+/** what the sign-in handoff did, as seen from the server's side of it */
+const handoff = { challenge: undefined, redeem: undefined, cookieCameBack: false };
+
 const server = createServer((req, res) => {
+	// The browser leg: this is pi-super's own page, which mints a one-time code and bounces
+	// it back over the app's scheme. Here it is simulated, so the emulator needs no login.
+	if (req.url?.startsWith("/?handoff=")) {
+		handoff.challenge = new URL(req.url, HOST).searchParams.get("handoff");
+		res.writeHead(200, { "content-type": "text/html" });
+		res.end(`<!doctype html><meta charset=utf-8><body>signing in<script>
+location.href = "pi-super://handoff?code=${HANDOFF_CODE}";
+</script>`);
+		return;
+	}
+	if (req.url?.startsWith("/api/auth/handoff/redeem")) {
+		const q = new URL(req.url, HOST).searchParams;
+		const verifier = q.get("verifier") ?? "";
+		handoff.redeem = {
+			code: q.get("code"),
+			// the verifier must be the pre-image of the challenge the browser was given
+			pkceOk: !!handoff.challenge && createHash("sha256").update(verifier).digest("base64url") === handoff.challenge,
+		};
+		log("handoff: redeem", JSON.stringify(handoff.redeem));
+		// what pi-super does: mint the app its own session and send it to the app
+		res.writeHead(302, { location: "/", "set-cookie": "pi_super_sid=app-session; HttpOnly; Path=/" });
+		res.end();
+		return;
+	}
 	if (req.url === "/report") {
 		let body = "";
 		req.on("data", (c) => (body += c));
@@ -107,6 +138,7 @@ const server = createServer((req, res) => {
 		res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(commands.shift() ?? null));
 		return;
 	}
+	if (req.headers.cookie?.includes("pi_super_sid=app-session")) handoff.cookieCameBack = true;
 	res.writeHead(200, { "content-type": "text/html" }).end(PAGE);
 });
 
@@ -174,6 +206,16 @@ async function boot() {
 	throw new Error("emulator did not boot in five minutes");
 }
 
+/** wait for a condition on the side-channel state, or throw */
+async function until(fn, what, timeoutMs = 15000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (fn()) return;
+		await wait(200);
+	}
+	throw new Error(`timed out waiting for ${what}`);
+}
+
 /**
  * Just the live calls out of a telecom dump. The rest of it names our phone *account*
  * (registered for good) and keeps a history full of the word ACTIVE, so a naive grep
@@ -190,6 +232,13 @@ async function main() {
 	cleanups.push(() => new Promise((r) => server.close(r)));
 	ensureAvd();
 	await boot();
+
+	// The emulator's Chrome otherwise stops at its first-run screen and never loads the
+	// login page, which would make the sign-in leg untestable rather than failing. The
+	// command-line file is enough on a userdebug image; do NOT reach for `am set-debug-app`
+	// to force it, because Chrome is also the WebView provider and that setting leaves
+	// every WebView in the system waiting for a debugger that never comes.
+	adb("shell", "echo \"chrome --disable-fre --no-first-run --no-default-browser-check\" > /data/local/tmp/chrome-command-line");
 
 	log("installing apk");
 	const install = adb("install", "-r", "-g", APK);
@@ -269,19 +318,53 @@ async function main() {
 	const servicesReload = adb("shell", "dumpsys", "activity", "services", PKG).stdout ?? "";
 	check(!/CallService/.test(servicesReload), "…nor a foreground service");
 
-	// --- with the microphone denied, the call must degrade rather than crash ----------
-	// Revoking a runtime permission kills the app, so the page has to come back first.
-	adb("shell", "pm", "revoke", PKG, "android.permission.RECORD_AUDIO");
-	await wait(2000);
-	reports.length = 0;
-	adb("shell", "am", "start", "-n", `${PKG}/.MainActivity`);
-	await expect((e) => e.type === "loaded", "the page after the app was killed", 60_000);
-	await wait(1500);
-	commands.push({ type: "startCall", callId: "test4" });
-	await expect((e) => e.detail?.type === "callReady" && e.detail.callId === "test4", "a call without a mic");
-	check(true, "a call with RECORD_AUDIO denied still comes up");
-	commands.push({ type: "endCall", callId: "test4" });
-	await wait(2000);
+	// --- signing in through a browser, because WebView cannot do passkeys here ---------
+	commands.push({ type: "login" });
+	try {
+		await until(() => handoff.challenge, "the browser to be sent to the login page", 20_000);
+		check(true, "a sign-in opens the login page in a browser, with a PKCE challenge");
+	} catch {
+		check(false, "a sign-in opens the login page in a browser (is one installed?)");
+	}
+	// The browser may or may not follow a scripted jump to a custom scheme, and that is the
+	// browser's business; fire the callback ourselves so the app's half is what is tested.
+	if (!handoff.redeem) {
+		await wait(3000);
+		adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", `pi-super://handoff?code=${HANDOFF_CODE}`);
+		await until(() => handoff.redeem, "the app to redeem the code", 20_000);
+	}
+	check(handoff.redeem?.code === HANDOFF_CODE, "the app redeems the code it was handed");
+	check(handoff.redeem?.pkceOk === true, "…with the verifier that matches the challenge it sent");
+	await until(() => handoff.cookieCameBack, "the session cookie to reach the WebView", 20_000);
+	check(true, "the session lands in the WebView's own cookie jar");
+
+	// a replayed callback has no verifier left to redeem with
+	handoff.redeem = undefined;
+	adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", `pi-super://handoff?code=${HANDOFF_CODE}`);
+	await wait(4000);
+	check(handoff.redeem === undefined, "a replayed sign-in link is not redeemed twice");
+
+	try {
+		// --- with the microphone denied, the call must degrade rather than crash ----------
+		// Revoking a runtime permission kills the app, so the page has to come back first.
+		adb("shell", "pm", "revoke", PKG, "android.permission.RECORD_AUDIO");
+		await wait(2000);
+		reports.length = 0;
+		// The kill and the relaunch race; keep knocking until the page reports in.
+		for (let i = 0; i < 12 && !reports.some((e) => e.type === "loaded"); i++) {
+			adb("shell", "am", "start", "-n", `${PKG}/.MainActivity`);
+			await wait(5000);
+		}
+		await expect((e) => e.type === "loaded", "the page after the app was killed", 30_000);
+		await wait(1500);
+		commands.push({ type: "startCall", callId: "test4" });
+		await expect((e) => e.detail?.type === "callReady" && e.detail.callId === "test4", "a call without a mic");
+		check(true, "a call with RECORD_AUDIO denied still comes up");
+		commands.push({ type: "endCall", callId: "test4" });
+		await wait(2000);
+	} catch (err) {
+		check(false, `the mic-denied path could not be driven: ${err.message}`);
+	}
 
 	const crash = adb("logcat", "-d", "-s", "AndroidRuntime:E").stdout ?? "";
 	check(!crash.includes(PKG), "nothing crashed");

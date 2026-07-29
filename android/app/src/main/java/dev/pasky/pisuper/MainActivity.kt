@@ -7,6 +7,7 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.ViewGroup
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
@@ -18,7 +19,6 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
@@ -55,6 +55,7 @@ class MainActivity : AppCompatActivity() {
 		CallHub.registerAccount(this)
 		askPermissions()
 		if (savedInstanceState == null) web.loadUrl(url)
+		consumeHandoff(intent)
 	}
 
 	private fun askPermissions() {
@@ -77,14 +78,12 @@ class MainActivity : AppCompatActivity() {
 			mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
 			userAgentString = "$userAgentString pi-super-android/${BuildConfig.VERSION_NAME}"
 		}
-		// WebView does not do WebAuthn unless asked, and even then the passkey is bound to
-		// the app's signature via the server's /.well-known/assetlinks.json — see docs/android.md.
-		if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
-			WebSettingsCompat.setWebAuthenticationSupport(
-				web.settings,
-				WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP,
-			)
-		}
+		// Deliberately *not* enabling WebView's WebAuthn: in app mode the passkey belongs to
+		// this app, and Android will only allow that for an RP ID Google can crawl
+		// (/.well-known/assetlinks.json is fetched by Google's Digital Asset Links service, not
+		// by the phone). A tailnet box cannot be crawled, so it would fail every time, with an
+		// error that reads like a broken passkey. Sign-in goes through a browser instead — see
+		// Handoff.kt.
 		if (Build.VERSION.SDK_INT >= 29) web.isForceDarkAllowed = false
 		WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
@@ -200,7 +199,41 @@ class MainActivity : AppCompatActivity() {
 			"endCall" -> CallHub.endCall(id.ifBlank { null })
 			"setMuted" -> CallHub.setMuted(id, msg.optBoolean("muted"))
 			"setRoute" -> CallHub.setRoute(msg.optString("route"))
+			"login" -> signInViaBrowser()
 		}
+	}
+
+	/** Hand the passkey ceremony to a real browser; we get the session back by deep link. */
+	private fun signInViaBrowser() {
+		val intent = Intent(Intent.ACTION_VIEW, Uri.parse(Handoff.startUrl(this, origin)))
+			// CATEGORY_BROWSABLE keeps this out of our own deep-link filter
+			.addCategory(Intent.CATEGORY_BROWSABLE)
+		try {
+			startActivity(intent)
+			Log.i("PiSuperCall", "handoff: sent the browser to the login page")
+		} catch (_: Exception) {
+			toast("no browser to sign in with")
+		}
+	}
+
+	override fun onNewIntent(intent: Intent) {
+		super.onNewIntent(intent)
+		setIntent(intent)
+		consumeHandoff(intent)
+	}
+
+	private fun consumeHandoff(intent: Intent?) {
+		val data = intent?.data ?: return
+		if (data.scheme != "pi-super" || data.host != "handoff") return
+		val url = Handoff.redeemUrl(this, origin, data)
+		if (url == null) {
+			Log.i("PiSuperCall", "handoff callback with no verifier of ours")
+			toast("that sign-in did not start here")
+			return
+		}
+		Log.i("PiSuperCall", "handoff: redeeming")
+		// A navigation, not a fetch: the Set-Cookie has to land in the WebView's own jar.
+		web.loadUrl(url)
 	}
 
 	private fun post(ev: JSONObject) {
