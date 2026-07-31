@@ -49,7 +49,13 @@ class MainActivity : AppCompatActivity() {
 		origin = originOf(url)
 
 		web = WebView(this)
+		web.setBackgroundColor(getColor(R.color.bg))
 		setContentView(web, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+		// The page's own env(safe-area-inset-*) does not see the status bar from inside a
+		// WebView, and since targetSdk 35 the window is edge-to-edge regardless. The keyboard
+		// is left out: the composer is resized by adjustResize, and padding it twice would
+		// leave a gap the height of Gboard.
+		Insets.pad(web, keyboard = false)
 		configure(web)
 		bridge(web)
 		CallHub.registerAccount(this)

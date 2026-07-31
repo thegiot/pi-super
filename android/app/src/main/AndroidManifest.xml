@@ -48,7 +48,14 @@
 		<activity
 			android:name=".SetupActivity"
 			android:exported="true"
-			android:label="@string/setup_title" />
+			android:label="@string/setup_title">
+			<!-- Chrome's Share → super, so the URL never has to be typed -->
+			<intent-filter>
+				<action android:name="android.intent.action.SEND" />
+				<category android:name="android.intent.category.DEFAULT" />
+				<data android:mimeType="text/plain" />
+			</intent-filter>
+		</activity>
 
 		<service
 			android:name=".PiConnectionService"

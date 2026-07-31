@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+	<!-- pi-super's own palette, so the wrapper does not flash a different app -->
+	<color name="bg">#0b0d10</color>
+	<color name="fg">#e6edf3</color>
+	<color name="fg_dim">#9aa4ad</color>
+	<color name="fg_hint">#6b7681</color>
+	<color name="accent">#7ee787</color>
+</resources>

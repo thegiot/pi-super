@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+	android:id="@+id/root"
 	android:layout_width="match_parent"
 	android:layout_height="match_parent"
+	android:background="@color/bg"
 	android:orientation="vertical"
 	android:padding="24dp">
 
@@ -9,7 +11,8 @@
 		android:layout_width="match_parent"
 		android:layout_height="wrap_content"
 		android:paddingBottom="16dp"
-		android:text="@string/setup_explain" />
+		android:text="@string/setup_explain"
+		android:textColor="@color/fg_dim" />
 
 	<EditText
 		android:id="@+id/url"
@@ -17,7 +20,9 @@
 		android:layout_height="wrap_content"
 		android:autofillHints="url"
 		android:hint="@string/setup_hint"
-		android:inputType="textUri" />
+		android:inputType="textUri"
+		android:textColor="@color/fg"
+		android:textColorHint="@color/fg_hint" />
 
 	<Button
 		android:id="@+id/save"

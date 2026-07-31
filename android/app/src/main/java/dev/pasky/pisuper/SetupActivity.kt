@@ -1,5 +1,7 @@
 package dev.pasky.pisuper
 
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
@@ -13,8 +15,14 @@ class SetupActivity : AppCompatActivity() {
 	override fun onCreate(savedInstanceState: Bundle?) {
 		super.onCreate(savedInstanceState)
 		setContentView(R.layout.activity_setup)
+		// targetSdk 35 draws edge to edge, so without this the first line of text sits under
+		// the status bar and the button under the gesture pill.
+		Insets.pad(findViewById(R.id.root))
 		val field = findViewById<EditText>(R.id.url)
-		field.setText(Prefs.url(this) ?: "")
+		// Nobody is going to type a tailnet hostname and a token by hand on a phone. Take it
+		// from a share (Chrome's Share → super) or from the clipboard, whichever we can find.
+		field.setText(Prefs.url(this) ?: shared() ?: clipboardUrl() ?: "")
+		field.setSelection(field.text.length)
 		findViewById<Button>(R.id.save).setOnClickListener {
 			val url = field.text.toString().trim()
 			if (!url.startsWith("http://") && !url.startsWith("https://")) {
@@ -39,6 +47,21 @@ class SetupActivity : AppCompatActivity() {
 			save(url)
 		}
 	}
+
+	private fun shared(): String? {
+		val text = intent?.getStringExtra(Intent.EXTRA_TEXT) ?: intent?.dataString
+		return text?.let(::firstUrl)
+	}
+
+	private fun clipboardUrl(): String? {
+		val clip = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return null
+		val item = clip.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0) ?: return null
+		return firstUrl(item.coerceToText(this).toString())
+	}
+
+	/** A shared link often arrives with a title and a newline wrapped around it. */
+	private fun firstUrl(text: String): String? =
+		text.split(Regex("\\s+")).firstOrNull { it.startsWith("http://") || it.startsWith("https://") }
 
 	private fun save(url: String) {
 		Prefs.setUrl(this, url)
