@@ -9,6 +9,8 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.ViewGroup
+import android.webkit.ValueCallback
+import android.widget.FrameLayout
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
@@ -38,6 +40,17 @@ class MainActivity : AppCompatActivity() {
 		androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
 	) { }
 
+	/** the page's pending `<input type=file>`, which must be answered exactly once */
+	private var pendingFiles: ValueCallback<Array<Uri>>? = null
+	private val filePicker = registerForActivityResult(
+		androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(),
+	) { result ->
+		val cb = pendingFiles
+		pendingFiles = null
+		// null on cancel, and the page waits forever if we skip this
+		cb?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
+	}
+
 	override fun onCreate(savedInstanceState: Bundle?) {
 		super.onCreate(savedInstanceState)
 		val url = Prefs.url(this)
@@ -48,14 +61,19 @@ class MainActivity : AppCompatActivity() {
 		}
 		origin = originOf(url)
 
+		Insets.edgeToEdge(this)
 		web = WebView(this)
 		web.setBackgroundColor(getColor(R.color.bg))
-		setContentView(web, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-		// The page's own env(safe-area-inset-*) does not see the status bar from inside a
-		// WebView, and since targetSdk 35 the window is edge-to-edge regardless. The keyboard
-		// is left out: the composer is resized by adjustResize, and padding it twice would
-		// leave a gap the height of Gboard.
-		Insets.pad(web, keyboard = false)
+		// The insets go on a container, not on the WebView: Chromium installs its own
+		// OnApplyWindowInsetsListener when the WebView is attached, quietly replacing ours,
+		// so padding the WebView directly does nothing at all on a real phone.
+		val frame = FrameLayout(this)
+		frame.setBackgroundColor(getColor(R.color.bg))
+		frame.addView(web, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+		setContentView(frame, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+		// Including the keyboard: an edge-to-edge window is not resized by adjustResize any
+		// more, so without this Gboard covers the composer it was opened to type into.
+		Insets.pad(frame)
 		configure(web)
 		bridge(web)
 		CallHub.registerAccount(this)
@@ -94,6 +112,31 @@ class MainActivity : AppCompatActivity() {
 		WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
 		web.webChromeClient = object : WebChromeClient() {
+			/**
+			 * `<input type=file>` — the image button in the composer. A WebView does nothing at
+			 * all here unless the app opens the picker for it, which is why that button looked
+			 * dead: the page was asking and nobody was listening.
+			 */
+			override fun onShowFileChooser(
+				view: WebView?,
+				callback: ValueCallback<Array<Uri>>?,
+				params: FileChooserParams?,
+			): Boolean {
+				// a picker already open: the old request will never be answered otherwise
+				pendingFiles?.onReceiveValue(null)
+				pendingFiles = callback
+				return try {
+					// createIntent() carries the page's own accept= and multiple attributes
+					filePicker.launch(params?.createIntent() ?: throw IllegalStateException("no intent"))
+					true
+				} catch (e: Exception) {
+					Log.w("PiSuperCall", "no file picker", e)
+					pendingFiles = null
+					callback?.onReceiveValue(null)
+					false
+				}
+			}
+
 			override fun onPermissionRequest(request: PermissionRequest) {
 				val wantsMic = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
 				val trusted = originOf(request.origin.toString()) == origin
@@ -279,6 +322,8 @@ class MainActivity : AppCompatActivity() {
 	}
 
 	override fun onDestroy() {
+		pendingFiles?.onReceiveValue(null)
+		pendingFiles = null
 		// The page is going away, so the WebRTC session is too; leaving a Telecom call
 		// registered would show a phantom call in the car forever.
 		if (!isChangingConfigurations) {

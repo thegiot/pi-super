@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 class SetupActivity : AppCompatActivity() {
 	override fun onCreate(savedInstanceState: Bundle?) {
 		super.onCreate(savedInstanceState)
+		Insets.edgeToEdge(this)
 		setContentView(R.layout.activity_setup)
 		// targetSdk 35 draws edge to edge, so without this the first line of text sits under
 		// the status bar and the button under the gesture pill.
