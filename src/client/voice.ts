@@ -54,6 +54,13 @@ export interface VoiceApi {
 	onNotice?: (text: string) => void;
 	/** the microphone was muted or unmuted from outside the page (a car kit, a watch) */
 	onMute?: (muted: boolean) => void;
+	/**
+	 * Where the call's audio is going, and where it could go. Only the Android wrapper can
+	 * answer this — a browser has no say over the route — so in Chrome it never fires.
+	 */
+	onRoute?: (route: string, routes: string[]) => void;
+	/** ask for a route: speaker | earpiece | bluetooth | wired */
+	setRoute(route: string): void;
 	/** every realtime event, in and out — used by the e2e harness and by ?debug=1 */
 	onEvent?: (direction: "in" | "out", ev: Record<string, unknown>) => void;
 	/** the remote audio element, once the call is up (lets a test tap the stream) */
@@ -147,6 +154,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		toggleMute,
 		hush,
 		pushUpdate,
+		setRoute: (route: string) => nativeCall.setRoute(route),
 	};
 
 	function setState(next: VoiceState, detail?: string): void {
@@ -704,9 +712,10 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	// nothing outside this page can silence a WebRTC track. The first route event usually
 	// arrives while we are still dialling, when there is no track to mute yet — so remember
 	// it and apply it the moment there is one, or a call that started muted goes out live.
-	nativeCall.onRoute = (_route, _routes, muted) => {
+	nativeCall.onRoute = (route, routes, muted) => {
 		systemMuted = muted;
 		applySystemMute();
+		api.onRoute?.(route, routes);
 	};
 
 	return api;

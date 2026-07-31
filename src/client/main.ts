@@ -885,6 +885,23 @@ $("btn-mute").onclick = () => showMuted(voice.toggleMute());
 // the Android wrapper's call can also be muted from a car kit or a watch
 voice.onMute = showMuted;
 
+// Where the call comes out. A phone call starts on the earpiece, which is right for a
+// phone at your ear and wrong for an assistant across the room, so the app defaults to the
+// speaker — but a headset, or an ear, is a good enough reason to move it back.
+let callRoute = "speaker";
+voice.onRoute = (route, routes) => {
+	callRoute = route;
+	const btn = $("btn-speaker");
+	btn.hidden = routes.length < 2;
+	btn.textContent = route === "speaker" ? "🔊" : route === "bluetooth" ? "🎧" : "📞";
+	btn.title = `audio: ${route} (tap to change)`;
+	btn.classList.toggle("armed", route === "speaker");
+};
+$("btn-speaker").onclick = () => {
+	// a plain two-way switch: the loud one, or whatever the phone thinks is next to your ear
+	voice.setRoute(callRoute === "speaker" ? "earpiece" : "speaker");
+};
+
 // Throwing away the conversation is not undoable, and this button sits under the thumb
 // next to hang-up — so it asks, in place, rather than through a modal nobody reads.
 let newSessionTimer: ReturnType<typeof setTimeout> | undefined;

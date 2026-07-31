@@ -378,6 +378,11 @@ footer {
 
 /* ------------------------------------------------------------------ drawer */
 
+/*
+ * The scrim covers the whole screen on purpose, but the sheet inside it must not: a
+ * fixed, inset-0 overlay is not moved by the padding on <body>, so on a phone its first
+ * row lands under the clock. Every fixed overlay below therefore insets its own content.
+ */
 #drawer {
 	position: fixed;
 	inset: 0;
@@ -385,6 +390,8 @@ footer {
 	z-index: 10;
 	display: flex;
 	align-items: flex-start;
+	padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom)
+		env(safe-area-inset-left);
 }
 
 #drawer[hidden] {
@@ -394,7 +401,7 @@ footer {
 .sheet {
 	background: var(--bg2);
 	width: min(420px, 100%);
-	max-height: 100dvh;
+	max-height: 100%;
 	overflow: auto;
 	padding: 10px;
 	border-right: 1px solid #23272f;
@@ -495,7 +502,8 @@ footer {
 	align-items: center;
 	justify-content: center;
 	background: var(--bg);
-	padding: 20px;
+	padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
+		max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 
 .lock-card {
@@ -537,7 +545,8 @@ button.primary {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	padding: 12px;
+	padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+		max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
 }
 
 #peek[hidden] {
