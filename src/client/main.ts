@@ -777,9 +777,17 @@ function degradedVoiceWarning(): string {
  * when the first is over, so in the chat view the bar stays after the hang-up — with the
  * call controls gone, since there is nothing left to mute.
  */
+/**
+ * Where the call's audio is going, and where it could go instead. Only the Android wrapper
+ * reports this; in a browser it stays empty and the switch never appears.
+ */
+let callRoute = "speaker";
+let callRoutes: string[] = [];
+
 function refreshCallBar(detail?: string): void {
 	const s = voice.state;
 	const idle = s === "idle";
+	if (idle) callRoutes = [];
 	el.call.hidden = idle && state.view !== "meta";
 	el.call.classList.toggle("idle", idle);
 	// mute/hush need a call that is actually up; hang up doubles as "dismiss this failed
@@ -787,6 +795,9 @@ function refreshCallBar(detail?: string): void {
 	// half-reset (the speech model keeps its own context, which we cannot clear from here).
 	$("btn-mute").hidden = s !== "live";
 	$("btn-hush").hidden = s !== "live";
+	// The speaker switch is about *this* call's audio, so off a call it says nothing at all
+	// — rather than sitting there showing where the last one came out.
+	$("btn-speaker").hidden = s !== "live" || callRoutes.length < 2;
 	$("btn-hangup").hidden = idle;
 	$("btn-new-session").hidden = !idle;
 	el.callState.textContent = idle
@@ -888,14 +899,14 @@ voice.onMute = showMuted;
 // Where the call comes out. A phone call starts on the earpiece, which is right for a
 // phone at your ear and wrong for an assistant across the room, so the app defaults to the
 // speaker — but a headset, or an ear, is a good enough reason to move it back.
-let callRoute = "speaker";
 voice.onRoute = (route, routes) => {
 	callRoute = route;
+	callRoutes = routes;
 	const btn = $("btn-speaker");
-	btn.hidden = routes.length < 2;
 	btn.textContent = route === "speaker" ? "🔊" : route === "bluetooth" ? "🎧" : "📞";
 	btn.title = `audio: ${route} (tap to change)`;
 	btn.classList.toggle("armed", route === "speaker");
+	refreshCallBar();
 };
 $("btn-speaker").onclick = () => {
 	// a plain two-way switch: the loud one, or whatever the phone thinks is next to your ear
