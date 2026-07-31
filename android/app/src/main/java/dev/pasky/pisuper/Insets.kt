@@ -7,12 +7,18 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 
 /**
- * Keep content out from under the system bars.
+ * Who keeps content out from under the system bars: the page, mostly.
  *
- * From targetSdk 35 every window is edge-to-edge whether it asked or not, so a view that
- * does nothing about insets gets its first line drawn behind the clock and its last behind
- * the gesture pill. The web app knows about `env(safe-area-inset-*)`, but a WebView is not
- * told about the status bar the way a browser tab is, so the padding has to happen here.
+ * The web app already handles `env(safe-area-inset-*)` for the Chrome PWA, and a WebView
+ * *does* report those insets — but only once the app has declared, with
+ * setDecorFitsSystemWindows(false), that it handles them itself. Without that declaration
+ * the page is told nothing and draws under the clock; with it, the page does the right
+ * thing on its own, and any padding we add on top of that is simply doubled (47px of
+ * status bar, twice, which is exactly what it looked like).
+ *
+ * So the split is: the page owns the system bars and the cutout, and we own only the
+ * keyboard — which the page cannot see, and which an edge-to-edge window no longer gets
+ * out of the way of by itself, adjustResize or not.
  */
 object Insets {
 	/**
@@ -27,15 +33,27 @@ object Insets {
 		WindowCompat.setDecorFitsSystemWindows(activity.window, false)
 	}
 
-	fun pad(view: View, keyboard: Boolean = true) {
+	/** Everything, for a view with no page behind it to know better (the setup screen). */
+	fun pad(view: View) {
+		apply(view) {
+			it.getInsets(
+				WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime(),
+			)
+		}
+	}
+
+	/**
+	 * Only the keyboard, for the WebView: the page has the rest covered, and doubling it
+	 * leaves a band of dead space under the status bar.
+	 */
+	fun padKeyboard(view: View) {
+		apply(view) { it.getInsets(WindowInsetsCompat.Type.ime()) }
+	}
+
+	private fun apply(view: View, wanted: (WindowInsetsCompat) -> androidx.core.graphics.Insets) {
 		val base = intArrayOf(view.paddingLeft, view.paddingTop, view.paddingRight, view.paddingBottom)
 		ViewCompat.setOnApplyWindowInsetsListener(view) { v, windowInsets ->
-			val types = if (keyboard) {
-				WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime()
-			} else {
-				WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
-			}
-			val bars = windowInsets.getInsets(types)
+			val bars = wanted(windowInsets)
 			v.setPadding(base[0] + bars.left, base[1] + bars.top, base[2] + bars.right, base[3] + bars.bottom)
 			windowInsets
 		}

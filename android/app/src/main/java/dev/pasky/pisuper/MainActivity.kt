@@ -71,9 +71,11 @@ class MainActivity : AppCompatActivity() {
 		frame.setBackgroundColor(getColor(R.color.bg))
 		frame.addView(web, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 		setContentView(frame, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-		// Including the keyboard: an edge-to-edge window is not resized by adjustResize any
-		// more, so without this Gboard covers the composer it was opened to type into.
-		Insets.pad(frame)
+		// Only the keyboard: the page's own env(safe-area-inset-*) handles the status bar and
+		// the gesture pill (it has to, for the Chrome PWA), and it can see them as soon as we
+		// declare edge-to-edge above. What it cannot see is Gboard, which an edge-to-edge
+		// window no longer gets out of the way of on its own.
+		Insets.padKeyboard(frame)
 		configure(web)
 		bridge(web)
 		CallHub.registerAccount(this)
