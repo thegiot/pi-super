@@ -12,8 +12,10 @@ android {
 		// self-managed Telecom (ConnectionService with CAPABILITY_SELF_MANAGED) lands in O
 		minSdk = 26
 		targetSdk = 35
-		versionCode = 1
-		versionName = "1.0"
+		// Kept in step with the npm package by hand: the app and the server it wraps are one
+		// project, and "which build is on the phone" is otherwise unanswerable.
+		versionCode = 2
+		versionName = "1.2.1"
 	}
 
 	buildFeatures {

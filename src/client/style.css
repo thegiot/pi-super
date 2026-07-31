@@ -528,11 +528,23 @@ footer {
 	font-size: 13px;
 }
 
-button.primary {
+button.primary,
+a.primary {
 	font-size: 16px;
 	padding: 12px 24px;
 	border-color: var(--accent);
 	color: var(--accent);
+}
+
+/* the handoff's "return to the app" is a link, because only a real navigation to a
+   custom scheme is allowed to leave the page; it should still look like the button it
+   replaces */
+a.primary {
+	display: inline-block;
+	background: var(--bg2);
+	border: 1px solid var(--accent);
+	border-radius: 7px;
+	text-decoration: none;
 }
 
 /* -------------------------------------------------------------------- peek */

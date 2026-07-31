@@ -369,12 +369,17 @@ export function createVoice(meta: MetaApi): VoiceApi {
 	}
 
 	async function keepAwake(): Promise<void> {
-		try {
-			wakeLock = await (
-				navigator as unknown as { wakeLock?: { request(t: string): Promise<{ release(): Promise<void> }> } }
-			).wakeLock?.request("screen");
-		} catch {
-			/* not fatal */
+		// In the Android wrapper the call is a real call: a foreground service keeps it alive
+		// with the screen off, so holding the screen on would only be a flat battery. In a
+		// browser the wake lock *is* the mechanism — a backgrounded tab gets suspended.
+		if (!nativeCall.available) {
+			try {
+				wakeLock = await (
+					navigator as unknown as { wakeLock?: { request(t: string): Promise<{ release(): Promise<void> }> } }
+				).wakeLock?.request("screen");
+			} catch {
+				/* not fatal */
+			}
 		}
 		if ("mediaSession" in navigator) {
 			navigator.mediaSession.metadata = new MediaMetadata({ title: "super", artist: "pi-super" });
@@ -467,7 +472,6 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		listening = false;
 		// the mic itself is going away, so nothing is muted any more
 		muted = false;
-		systemMuted = undefined;
 		if (recognition) {
 			recognition.onend = null;
 			try {
@@ -509,6 +513,9 @@ export function createVoice(meta: MetaApi): VoiceApi {
 		reconnectTimer = undefined;
 		reconnectAttempts = 0;
 		teardown();
+		// The car kit's mute belongs to the *call*, which outlives a reconnect — forgetting it
+		// in teardown() would hand the next transport a live microphone the user had muted.
+		systemMuted = undefined;
 		// the native call spans reconnects too — only a real hang-up retires it
 		nativeCall.end();
 		// the wake lock spans reconnects, so it is only released on a real hang-up

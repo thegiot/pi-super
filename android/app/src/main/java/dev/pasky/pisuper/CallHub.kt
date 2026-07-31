@@ -9,6 +9,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -266,9 +267,10 @@ object CallHub {
 	 * Hang-up that did not come from the page: headset button, car, notification, system.
 	 * [from] is the connection that is telling us, if any — Telecom is already tearing that
 	 * one down, but a hang-up from our own notification has to finish it by hand or the call
-	 * outlives its own UI.
+	 * outlives its own UI. [reason] is shown to the user when we can say something useful
+	 * about why their call went away.
 	 */
-	fun onRemoteHangup(from: PiConnection? = null) {
+	fun onRemoteHangup(from: PiConnection? = null, reason: String? = null) {
 		// A callback from a connection we have already let go of is the ghost of an old call;
 		// acting on it would hang up the one that replaced it.
 		if (from != null && from !== connection) {
@@ -288,7 +290,9 @@ object CallHub {
 		mode = Mode.NONE
 		muted = false
 		appContext?.let { CallService.stop(it) }
-		emit(JSONObject().put("type", "disconnect").put("callId", id))
+		val ev = JSONObject().put("type", "disconnect").put("callId", id)
+		if (reason != null) ev.put("reason", reason)
+		emit(ev)
 	}
 
 	fun onAudioStateChanged(from: PiConnection, state: CallAudioState) {
@@ -353,57 +357,116 @@ object CallHub {
 				// phone call, another VoIP app). Report it as a hang-up rather than sit on a
 				// call the user can no longer hear — but only for the call that requested it:
 				// a loss queued for an abandoned attempt must not stop its successor.
-				if (change == AudioManager.AUDIOFOCUS_LOSS && mine == attempt) onRemoteHangup()
+				if (change == AudioManager.AUDIOFOCUS_LOSS && mine == attempt) {
+					onRemoteHangup(reason = "another app took the audio")
+				}
 			}
 			.build()
-		focusRequest = req
-		am.requestAudioFocus(req)
-		savedAudioMode = am.mode
-		am.mode = AudioManager.MODE_IN_COMMUNICATION
-		preferSpeakerWithoutTelecom(am)
+		// Focus can be refused, and the likely reason is the one that made Telecom refuse too:
+		// somebody else's call has the audio. Then MODE_IN_COMMUNICATION and a route of our
+		// choosing would be us reaching into *their* call, so we take neither and say so. The
+		// call still comes up — as plain media audio, which is what a browser gives us anyway.
+		val granted = am.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+		if (granted) {
+			focusRequest = req
+			savedAudioMode = am.mode
+			am.mode = AudioManager.MODE_IN_COMMUNICATION
+			preferSpeakerWithoutTelecom(am)
+		} else {
+			Log.w(TAG, "audio focus refused ($why)")
+		}
 		mode = Mode.AUDIO_FOCUS
 		CallService.start(ctx, phoneCall = false)
-		emitReady(fallbackReason = why)
+		emitReady(fallbackReason = if (granted) why else "$why; audio focus refused, media audio")
 	}
 
 	private fun setRouteWithoutTelecom(route: String) {
 		val am = appContext?.getSystemService(AudioManager::class.java) ?: return
-		val wanted = when (route) {
-			"speaker" -> AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-			"earpiece" -> AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-			"bluetooth" -> AudioDeviceInfo.TYPE_BLUETOOTH_SCO
-			"wired" -> AudioDeviceInfo.TYPE_WIRED_HEADSET
-			else -> return
-		}
 		try {
-			am.availableCommunicationDevices.firstOrNull { it.type == wanted }?.let {
-				am.setCommunicationDevice(it)
-				emitFallbackRoute(am)
+			if (Build.VERSION.SDK_INT >= 31) {
+				val wanted = when (route) {
+					"speaker" -> AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+					"earpiece" -> AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+					"bluetooth" -> AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+					"wired" -> AudioDeviceInfo.TYPE_WIRED_HEADSET
+					else -> return
+				}
+				am.availableCommunicationDevices.firstOrNull { it.type == wanted }?.let { am.setCommunicationDevice(it) }
+			} else {
+				setLegacyRoute(am, route)
 			}
+			emitFallbackRoute(am)
 		} catch (e: Exception) {
 			Log.w(TAG, "could not set the route", e)
 		}
 	}
 
+	/**
+	 * The same thing before API 31, where routing a communication stream meant three
+	 * independent switches rather than one device to pick. A wired headset is not one of
+	 * them: the platform routes to it whenever it is plugged in and nothing louder is
+	 * demanded, so "wired" here just means "stop asking for the others".
+	 */
+	@Suppress("DEPRECATION") // the pre-31 API is the only API there is on those devices
+	private fun setLegacyRoute(am: AudioManager, route: String) {
+		if (route == "bluetooth") {
+			am.isSpeakerphoneOn = false
+			am.startBluetoothSco()
+			am.isBluetoothScoOn = true
+			return
+		}
+		if (am.isBluetoothScoOn || am.isSpeakerphoneOn) {
+			am.isBluetoothScoOn = false
+			am.stopBluetoothSco()
+		}
+		am.isSpeakerphoneOn = route == "speaker"
+	}
+
+	/**
+	 * TYPE_BLE_HEADSET is an API 31 constant, but it is only ever compared against a type an
+	 * older device cannot report, so the inlined value is harmless there.
+	 */
+	@Suppress("InlinedApi")
+	private fun routeName(type: Int): String = when (type) {
+		AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker"
+		AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "earpiece"
+		AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET -> "bluetooth"
+		AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_USB_HEADSET -> "wired"
+		else -> "other"
+	}
+
+	/** The routes this device could send call audio to, named as the page names them. */
+	@Suppress("DEPRECATION")
+	private fun availableRoutes(am: AudioManager): List<String> {
+		val types = if (Build.VERSION.SDK_INT >= 31) {
+			am.availableCommunicationDevices.map { it.type }
+		} else {
+			am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map { it.type }
+		}
+		return types.map { routeName(it) }.filter { it != "other" }.distinct()
+	}
+
+	/** Where the audio is going right now, as best as this API level can tell us. */
+	@Suppress("DEPRECATION")
+	private fun currentRoute(am: AudioManager): String {
+		if (Build.VERSION.SDK_INT >= 31) return am.communicationDevice?.let { routeName(it.type) } ?: "unknown"
+		if (am.isSpeakerphoneOn) return "speaker"
+		if (am.isBluetoothScoOn) return "bluetooth"
+		val routes = availableRoutes(am)
+		// Below 31 nothing reports the active output; a plugged-in headset takes it implicitly.
+		return if (routes.contains("wired")) "wired" else if (routes.contains("earpiece")) "earpiece" else "unknown"
+	}
+
 	/** Fallback mode has no CallAudioState, so the page is told what we can see instead. */
 	private fun emitFallbackRoute(am: AudioManager) {
-		val name = { type: Int ->
-			when (type) {
-				AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker"
-				AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "earpiece"
-				AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET -> "bluetooth"
-				AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_USB_HEADSET -> "wired"
-				else -> "other"
-			}
-		}
 		try {
 			val routes = JSONArray()
-			for (r in am.availableCommunicationDevices.map { name(it.type) }.distinct()) if (r != "other") routes.put(r)
+			for (r in availableRoutes(am)) routes.put(r)
 			emit(
 				JSONObject()
 					.put("type", "audioRoute")
 					.put("callId", callId)
-					.put("route", am.communicationDevice?.let { name(it.type) } ?: "unknown")
+					.put("route", currentRoute(am))
 					.put("routes", routes)
 					.put("muted", muted),
 			)
@@ -415,26 +478,33 @@ object CallHub {
 	/** The same hands-free default in fallback mode, where there is no Telecom to ask. */
 	private fun preferSpeakerWithoutTelecom(am: AudioManager) {
 		try {
-			val devices = am.availableCommunicationDevices
 			// a headset of any kind wins; we only override the earpiece
-			val headset = devices.any {
-				it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-					it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-					it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
-					it.type == AudioDeviceInfo.TYPE_USB_HEADSET
-			}
-			if (!headset) {
-				devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }?.let { am.setCommunicationDevice(it) }
-			}
-			emitFallbackRoute(am)
+			val routes = availableRoutes(am)
+			if (!routes.contains("bluetooth") && !routes.contains("wired")) setRouteWithoutTelecom("speaker")
+			else emitFallbackRoute(am)
 		} catch (e: Exception) {
 			Log.w(TAG, "could not choose the speaker", e)
 		}
 	}
 
+	@Suppress("DEPRECATION")
 	private fun releaseAudioFocus() {
 		val am = appContext?.getSystemService(AudioManager::class.java) ?: return
 		focusRequest?.let {
+			// A communication device stays selected for the lifetime of the *process*, so a call
+			// we forget to unpin would still be routing the next app's audio (and ours) hours
+			// later. Same for the pre-31 switches, which are equally global.
+			try {
+				if (Build.VERSION.SDK_INT >= 31) {
+					am.clearCommunicationDevice()
+				} else {
+					am.isBluetoothScoOn = false
+					am.stopBluetoothSco()
+					am.isSpeakerphoneOn = false
+				}
+			} catch (e: Exception) {
+				Log.w(TAG, "could not release the route", e)
+			}
 			am.abandonAudioFocusRequest(it)
 			am.mode = savedAudioMode
 		}

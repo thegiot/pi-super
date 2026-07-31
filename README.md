@@ -50,9 +50,10 @@ your Codex login (gpt-live) and can fall back to the browser's own speech
 engine (but you'd be missing a lot).
 
 The voice experience is full-duplex and async-first, already feeling just like
-the new GPT-Live-based ChatGPT voice. However, phone-integration-wise it is not
-yet compatible with hands-free devices or with the screen locked — a standalone
-mobile app will be required to actually emulate a call.
+the new GPT-Live-based ChatGPT voice. In a plain browser it is still *media* as
+far as the phone is concerned — hands-free devices and a locked screen need the
+thin Android wrapper in `android/`, which puts voice mode inside a real
+self-managed Telecom call (see [docs/android.md](docs/android.md)).
 
 ## Driving, or delegating
 
@@ -208,8 +209,9 @@ The call is meant to behave like a phone call, within what a browser allows:
   headset's call button does nothing, and the tab may be suspended with the screen off.
   There is no web API to fix this. The thin WebView wrapper in `android/` loads this very
   PWA and wraps voice mode in a self-managed Telecom call plus a foreground service, which
-  is what makes Android route it as a call — see [docs/android.md](docs/android.md). In
-  plain Chrome nothing changes.
+  is what tells Android to route it as a call — see [docs/android.md](docs/android.md),
+  including what has and has not been verified on real hardware. In plain Chrome nothing
+  changes.
 
 
 

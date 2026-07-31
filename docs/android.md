@@ -39,7 +39,17 @@ rendered by the browser, in the browser's process.)
 * A **fallback to plain audio focus** (`AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE` with
   `USAGE_VOICE_COMMUNICATION`, plus `MODE_IN_COMMUNICATION`) for when Telecom refuses —
   an emergency call is up, an OEM does not allow self-managed accounts. Media still stops;
-  the call-specific niceties do not happen. The page is told which of the two it got.
+  the call-specific niceties do not happen. The page is told which of the two it got. If
+  even the focus request is refused — typically the *same* emergency call that made Telecom
+  refuse — the call is reported as hung up rather than forcing `MODE_IN_COMMUNICATION` on
+  top of somebody else's, which would take the microphone and talk to nobody.
+* **Hands-free by default**: a call starts on the earpiece, which is wrong for an assistant
+  across the room, so the route is moved to the speaker exactly once at the start and only
+  when it is on the earpiece — a headset is somebody's deliberate choice. After that, and
+  after any tap on the call bar's route button (which cycles through the routes the phone
+  actually offers), the route is never second-guessed again. Below API 31 the fallback
+  drives the pre-`setCommunicationDevice` switches (`setSpeakerphoneOn`, SCO) instead, and
+  either way the selection is released on hang-up: it is process-wide, not call-wide.
 * A **foreground service** (`phoneCall|microphone`) with an ongoing-call notification and a
   hang-up action, so the microphone survives the screen going off.
 * The **microphone permission** flow WebView needs
@@ -61,8 +71,12 @@ wrapper injected `window.PiNative`. `voice.ts` calls it unconditionally:
 | hang up | `endCall` | a *reconnect* does not: the call spans redials |
 
 and back, as a `pi-native` CustomEvent: `callReady` (with `mode: telecom | audiofocus`),
-`disconnect` (a hang-up that came from the car, the headset or the notification) and
-`audioRoute`.
+`disconnect` (a hang-up that came from the car, the headset or the notification, with a
+`reason` when there is something to say) and `audioRoute`.
+
+The wrapper also takes **no screen wake lock** — `voice.ts` skips it when the bridge is
+there. The foreground service is what keeps the call alive, so the screen is free to time
+out, which is the whole point of the call-like treatment.
 
 The bridge is `WebViewCompat.addWebMessageListener` scoped to the configured origin, not
 `addJavascriptInterface`, which is injected into every frame with no way to tell who called.
@@ -84,8 +98,15 @@ sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 `assembleRelease` signs with the debug key on purpose: this is a sideloaded app for one
 person, not a Play listing.
 
-On first launch, paste the URL pi-super printed, token and all. The app remembers it; the
-launcher shortcut ("Change server") gets back to that screen.
+`versionCode`/`versionName` in `android/app/build.gradle.kts` are kept in step with the npm
+package by hand, and a release that changes anything under `android/` should attach the
+APK to the GitHub release — otherwise “which build is on the phone” has no answer, and the
+only way to get one is to have the SDK installed.
+
+On first launch, give it the URL pi-super printed, token and all — the field prefills from
+a share or from the clipboard, because a tailnet hostname plus a token is not something
+anyone types on a phone. The app remembers it; the launcher shortcut ("Change server") gets
+back to that screen.
 
 ### Passkeys: the ceremony happens in a browser
 
@@ -113,8 +134,10 @@ Instead, the sign-in is borrowed from a browser, where an origin is just an orig
    `pi-super://handoff?code=…`.
 4. The app POSTs it to `/api/auth/handoff/redeem` **as a navigation inside the WebView**,
    which is the only way a `Set-Cookie` can land in the WebView's own cookie jar (it shares
-   nothing with Chrome). A POST, so neither half of the credential is ever in a URL, a
-   history entry or a proxy log.
+   nothing with Chrome). A POST, so neither half of the credential is ever in an *HTTP*
+   URL, a history entry or a proxy log. The code does travel in the `pi-super://` URL of
+   step 3, which is the part PKCE is there to cover: it is one-time, minutes old, and
+   worthless to the app that intercepts it without the verifier.
 
 Step 3 is the load-bearing one, and it must never become silent. PKCE stops an eavesdropper
 from stealing an honest app's code — it says nothing about *who wrote the challenge*, and on
@@ -122,6 +145,13 @@ Android that is whichever app claimed the `pi-super:` scheme. A hostile app can 
 verifier and open that URL; the only thing between it and a shell is that exporting a
 session costs a deliberate, named, user-verified approval. The server enforces the same
 thing from its side: it will not mint a handoff for a session older than three minutes.
+
+Be clear about what that buys: it is **consent, not caller authentication**. Nothing here
+tells the browser *which* app asked — a hostile one can reproduce the whole “Unlock in
+browser” flow, screen included. The defence is that the user is told, in words, that they
+are handing out a shell, at a moment they did not initiate. Binding the code to a verified
+caller would need an app-attestation the tailnet cannot serve (the same Digital Asset Links
+lookup that keeps passkeys out of the WebView in the first place).
 
 The code is single-use, expires in two minutes, only one lives per challenge (a reloaded
 page does not leave a usable sibling behind), and it is refused if the passkey *or the

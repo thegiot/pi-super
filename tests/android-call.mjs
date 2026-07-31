@@ -9,7 +9,9 @@
  *
  * Needs an Android SDK (ANDROID_HOME or ANDROID_SDK_ROOT) with `emulator`,
  * `platform-tools` and a system image, plus KVM. Skips politely (exit 0) if the SDK is
- * not there, since this is not something CI on a random box can do.
+ * not there, since this is not something CI on a random box can do. It boots its own
+ * emulator on a fixed port and talks only to that serial, so a phone plugged into the same
+ * machine is never installed to, never has permissions revoked, and never gets uninstalled.
  *
  * What it cannot tell us, and what therefore still needs a phone: whether WebView's own
  * WebRTC audio actually follows the Telecom route onto a Bluetooth headset.
@@ -29,6 +31,15 @@ const APK = new URL("../android/app/build/outputs/apk/debug/app-debug.apk", impo
 const PKG = "dev.pasky.pisuper";
 const AVD = "pi-super-test";
 const IMAGE = process.env.ANDROID_IMAGE ?? "system-images;android-34;google_apis;x86_64";
+/**
+ * The console port our emulator is pinned to, and therefore the adb serial it will have.
+ * Everything below goes through `adb -s`: this test installs an APK, overwrites its
+ * preferences, revokes permissions and uninstalls at the end, and an unscoped `adb` picks
+ * whichever single device is attached — which, on a developer's machine, can be their own
+ * phone with the real app and its real session on it.
+ */
+const EMU_PORT = Number(process.env.PI_SUPER_EMU_PORT ?? 5580);
+const SERIAL = `emulator-${EMU_PORT}`;
 const PORT = 8891;
 const HANDOFF_CODE = "test-handoff-code";
 /** the host, as seen from inside the emulator */
@@ -38,7 +49,9 @@ const log = (...a) => console.log("·", ...a);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 // Always through `timeout`: adb blocks forever on "- waiting for device -" the moment the
 // emulator dies, which turns any failure into a hang instead of a failure.
-const adb = (...args) => spawnSync(ADB, args, { encoding: "utf8", timeout: 60_000 });
+const adb = (...args) => spawnSync(ADB, ["-s", SERIAL, ...args], { encoding: "utf8", timeout: 60_000 });
+/** the two commands that are about adb itself rather than about a device */
+const adbHost = (...args) => spawnSync(ADB, args, { encoding: "utf8", timeout: 60_000 });
 const cleanups = [];
 const cleanup = async () => {
 	for (const fn of cleanups.reverse()) {
@@ -151,6 +164,25 @@ location.href = "pi-super://handoff?code=${HANDOFF_CODE}";
 	res.writeHead(200, { "content-type": "text/html" }).end(PAGE);
 });
 
+/**
+ * Launch the activity and wait for the page inside it to report in, retrying the launch.
+ * A freshly wiped emulator restarts GMS under us, and Android answers that by killing
+ * whatever depends on its font provider — which is our brand new app, ten seconds in. That
+ * is the emulator being an emulator; the test's business is what happens once the page is
+ * there, so knock again rather than fail.
+ */
+async function launchUntilLoaded(what, tries = 6) {
+	for (let i = 0; i < tries; i++) {
+		adb("shell", "am", "start", "-n", `${PKG}/.MainActivity`);
+		try {
+			return await expect((e) => e.type === "loaded", what, 30_000);
+		} catch {
+			log(`${what}: no page yet, launching again`);
+		}
+	}
+	throw new Error(`timed out waiting for ${what}`);
+}
+
 /** wait for a reported event matching `pred`, or throw */
 async function expect(pred, what, timeoutMs = 15000) {
 	const deadline = Date.now() + timeoutMs;
@@ -184,6 +216,9 @@ async function boot() {
 		[
 			"-avd",
 			AVD,
+			// pinned, so every adb below can name this emulator and nothing else
+			"-port",
+			String(EMU_PORT),
 			"-no-window",
 			"-no-audio",
 			"-no-boot-anim",
@@ -201,18 +236,23 @@ async function boot() {
 		emu.kill("SIGTERM");
 	});
 
-	adb("start-server");
+	adbHost("start-server");
 	const deadline = Date.now() + 300_000;
 	while (Date.now() < deadline) {
 		const booted = adb("shell", "getprop", "sys.boot_completed").stdout?.trim();
 		if (booted === "1") {
-			log("emulator up");
+			// Belt and braces before anything destructive: the serial says "emulator", and so
+			// must the device itself. A phone that somehow answered to it does not get wiped.
+			const qemu = adb("shell", "getprop", "ro.boot.qemu").stdout?.trim();
+			const kernelQemu = adb("shell", "getprop", "ro.kernel.qemu").stdout?.trim();
+			if (qemu !== "1" && kernelQemu !== "1") throw new Error(`${SERIAL} is not an emulator; refusing to touch it`);
+			log(`emulator up (${SERIAL})`);
 			await wait(2000);
 			return;
 		}
 		await wait(2000);
 	}
-	throw new Error("emulator did not boot in five minutes");
+	throw new Error(`emulator did not boot in five minutes (waited for ${SERIAL})`);
 }
 
 /** wait for a condition on the side-channel state, or throw */
@@ -269,9 +309,7 @@ async function main() {
 
 	adb("logcat", "-c");
 	log("launching");
-	adb("shell", "am", "start", "-n", `${PKG}/.MainActivity`);
-
-	const loaded = await expect((e) => e.type === "loaded", "the page to load", 120_000);
+	const loaded = await launchUntilLoaded("the page to load");
 	check(loaded.bridge === true, "the page sees the native bridge");
 
 	// --- a call, from the page's point of view and from the system's ------------------
@@ -363,15 +401,20 @@ async function main() {
 		adb("shell", "pm", "revoke", PKG, "android.permission.RECORD_AUDIO");
 		await wait(2000);
 		reports.length = 0;
-		// The kill and the relaunch race; keep knocking until the page reports in.
-		for (let i = 0; i < 12 && !reports.some((e) => e.type === "loaded"); i++) {
-			adb("shell", "am", "start", "-n", `${PKG}/.MainActivity`);
-			await wait(5000);
+		await launchUntilLoaded("the page after the app was killed");
+		// The revoke kills the app and the relaunch can be killed in turn, taking the queued
+		// command with it (a `loaded` report empties the queue). So ask again until it sticks.
+		let ready;
+		for (let i = 0; i < 4 && !ready; i++) {
+			await wait(1500);
+			commands.push({ type: "startCall", callId: "test4" });
+			try {
+				ready = await expect((e) => e.detail?.type === "callReady" && e.detail.callId === "test4", "a call without a mic");
+			} catch {
+				await launchUntilLoaded("the page for the mic-denied call", 2);
+			}
 		}
-		await expect((e) => e.type === "loaded", "the page after the app was killed", 30_000);
-		await wait(1500);
-		commands.push({ type: "startCall", callId: "test4" });
-		await expect((e) => e.detail?.type === "callReady" && e.detail.callId === "test4", "a call without a mic");
+		if (!ready) throw new Error("timed out waiting for a call without a mic");
 		check(true, "a call with RECORD_AUDIO denied still comes up");
 		commands.push({ type: "endCall", callId: "test4" });
 		await wait(2000);
@@ -391,6 +434,16 @@ main()
 	})
 	.catch(async (err) => {
 		console.error("ERROR", err.message);
+		// The device is about to be killed, and "it just stopped" is unanswerable without its
+		// log — the app being killed by the emulator's own GMS churn looks exactly like the
+		// wrapper going quiet. Grab it while there is still something to ask.
+		const dump = adb("logcat", "-d").stdout ?? "";
+		if (dump) {
+			writeFileSync("/tmp/pi-super-android-logcat.txt", dump);
+			const ours = dump.split("\n").filter((l) => l.includes(PKG) || l.includes("PiSuperCall"));
+			console.error(ours.slice(-15).join("\n"));
+			console.error("(full log in /tmp/pi-super-android-logcat.txt)");
+		}
 		if (!KEEP) await cleanup();
 		process.exit(1);
 	});

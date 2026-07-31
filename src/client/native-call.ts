@@ -13,7 +13,7 @@ interface NativeBridge {
 
 type NativeEvent =
 	| { type: "callReady"; callId: string; mode: "telecom" | "audiofocus"; reason?: string }
-	| { type: "disconnect"; callId: string }
+	| { type: "disconnect"; callId: string; reason?: string }
 	| { type: "audioRoute"; callId: string; route: string; routes: string[]; muted: boolean };
 
 /**
@@ -136,6 +136,9 @@ if (nativeCall.available) {
 				callId = undefined;
 				mode = undefined;
 				waiting?.();
+				// A call the OS took away (an emergency call, a headset button) should say so:
+				// otherwise voice mode just stops, with nothing on screen to explain it.
+				if (detail.reason) nativeCall.onNotice?.(`call ended: ${detail.reason}`);
 				nativeCall.onDisconnect?.();
 				break;
 			case "audioRoute":

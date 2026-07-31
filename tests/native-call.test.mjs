@@ -156,6 +156,22 @@ test("a hang-up from the car ends the call here too, and only once", async () =>
 	assert.equal(win.sent.length, before, "no endCall after the OS already hung up");
 });
 
+test("a hang-up the OS can explain says why", async () => {
+	const win = fakeWindow();
+	const call = await load(win);
+	const notices = [];
+	call.onNotice = (t) => notices.push(t);
+	call.onDisconnect = () => {};
+	const dial = call.begin();
+	const callId = win.sent[0].callId;
+	win.emit({ type: "callReady", callId, mode: "telecom" });
+	await dial;
+	// The native side sends a reason when it has one — audio focus refused because an
+	// emergency call holds it, say. Without it voice mode would just stop, silently.
+	win.emit({ type: "disconnect", callId, reason: "the audio is busy (telecom unavailable)" });
+	assert.deepEqual(notices, ["call ended: the audio is busy (telecom unavailable)"]);
+});
+
 test("route changes reach the page", async () => {
 	const win = fakeWindow();
 	const call = await load(win);

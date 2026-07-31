@@ -783,6 +783,19 @@ function degradedVoiceWarning(): string {
  */
 let callRoute = "speaker";
 let callRoutes: string[] = [];
+const ROUTE_ICON: Record<string, string> = { speaker: "🔊", bluetooth: "🎧", wired: "🎧", earpiece: "📞" };
+/**
+ * One button, so it cycles rather than toggles — and it cycles through the routes the
+ * phone actually offers. A hardcoded speaker/earpiece switch would strand anyone on a
+ * headset: tapping it once would drop bluetooth with no way back, and on a tablet with no
+ * earpiece at all it would do nothing.
+ */
+const ROUTE_ORDER = ["speaker", "bluetooth", "wired", "earpiece"];
+function nextRoute(): string | undefined {
+	const ring = ROUTE_ORDER.filter((r) => callRoutes.includes(r));
+	if (ring.length < 2) return undefined;
+	return ring[(ring.indexOf(callRoute) + 1) % ring.length];
+}
 
 function refreshCallBar(detail?: string): void {
 	const s = voice.state;
@@ -903,14 +916,15 @@ voice.onRoute = (route, routes) => {
 	callRoute = route;
 	callRoutes = routes;
 	const btn = $("btn-speaker");
-	btn.textContent = route === "speaker" ? "🔊" : route === "bluetooth" ? "🎧" : "📞";
-	btn.title = `audio: ${route} (tap to change)`;
+	btn.textContent = ROUTE_ICON[route] ?? "📞";
+	const next = nextRoute();
+	btn.title = next ? `audio: ${route} (tap for ${next})` : `audio: ${route}`;
 	btn.classList.toggle("armed", route === "speaker");
 	refreshCallBar();
 };
 $("btn-speaker").onclick = () => {
-	// a plain two-way switch: the loud one, or whatever the phone thinks is next to your ear
-	voice.setRoute(callRoute === "speaker" ? "earpiece" : "speaker");
+	const next = nextRoute();
+	if (next) voice.setRoute(next);
 };
 
 // Throwing away the conversation is not undoable, and this button sits under the thumb

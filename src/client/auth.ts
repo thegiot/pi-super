@@ -106,9 +106,18 @@ async function completeHandoff(): Promise<boolean> {
 				// mints a handoff for a session minutes old, so approval means a biometric now.
 				await loginWithPasskey();
 				const { code } = await api<{ code: string }>("/api/auth/handoff", { challenge });
-				location.href = `pi-super://handoff?code=${encodeURIComponent(code)}`;
-				msg.textContent = "Sent. You can close this tab.";
-				button.remove();
+				const url = `pi-super://handoff?code=${encodeURIComponent(code)}`;
+				// The passkey ceremony and the fetch can outlive this page's user activation, and a
+				// browser may then refuse to leave for a custom scheme without saying so. Offer the
+				// tap as well as attempting the jump, or the sign-in dead-ends on “Sent”.
+				const link = document.createElement("a");
+				link.className = "primary";
+				link.id = "handoff-return";
+				link.href = url;
+				link.textContent = "Return to the pi-super app";
+				msg.textContent = "Approved. If the app does not come back by itself, tap below.";
+				button.replaceWith(link);
+				location.href = url;
 			} catch (e) {
 				err.textContent = String((e as Error).message);
 				button.disabled = false;
