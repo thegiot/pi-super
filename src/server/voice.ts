@@ -13,7 +13,10 @@ export interface VoiceConfig {
 }
 
 const CODEX_BASE = process.env.PI_SUPER_CODEX_BASE ?? "https://chatgpt.com/backend-api/codex";
-const CODEX_MODEL = process.env.PI_SUPER_VOICE_MODEL ?? "gpt-live-1-boulder-alpha";
+// The Codex desktop app ships `gpt-live-1-codex`; `gpt-live-1-boulder-alpha` was its alpha
+// codename and is still accepted (and still what the open-source codex repo hardcodes), but
+// it is no longer what OpenAI's own client asks for. Both pass the server-side allowlist.
+const CODEX_MODEL = process.env.PI_SUPER_VOICE_MODEL ?? "gpt-live-1-codex";
 const OPENAI_MODEL = process.env.PI_SUPER_VOICE_MODEL ?? "gpt-realtime-2.1-mini";
 
 // The voice sets must not be mixed: asking a gpt-live (V3) session for a V2 voice such as
