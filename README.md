@@ -113,6 +113,11 @@ Options:
       --url               Print the access URL and exit
 ```
 
+Optionally, you can also install a thin Android native app wrapper - it will
+give a call-like treatment to the voice chat (it'll keep working with the
+screen off and talk through your handsfree).  Ask your Pi to walk you through
+the setup.
+
 ### Exposure and passkeys
 
 Terminal access is shell access, so pi-super separates *reachability* from *authorization*.
