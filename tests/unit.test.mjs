@@ -4,7 +4,7 @@ import { isAuthed, originAllowed, parseCookies, requestToken, tokenEquals } from
 import { parseArgs } from "../dist/server/config.js";
 import { buildVocabulary, dictationInstructions } from "../dist/server/dictation.js";
 import { voiceInstructions } from "../dist/server/server.js";
-import { Tmux } from "../dist/server/tmux.js";
+import { Tmux, appOwnsPageKeys } from "../dist/server/tmux.js";
 import { storeUpload } from "../dist/server/uploads.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,6 +31,26 @@ test("newline framing keeps empty trailing fields", () => {
 	assert.deepEqual(parseRows("", 3), []);
 	assert.deepEqual(parseRows("a\nb\n", 2), [["a", "b"]]);
 	assert.equal(typeof new Tmux([]).listSessions, "function");
+});
+
+// --- PgUp routing ----------------------------------------------------------
+
+test("PgUp reaches a full-screen app even when tmux ignores the alternate screen", () => {
+	// fields of PANE_KEY_FORMAT: alt, in_mode, cursor, wrap, keypad_cursor, keypad, mouse, command
+	const pane = (f) => f.join("\n") + "\n";
+	// measured with `set -g alternate-screen off`, where alternate_on is stuck at 0
+	assert.equal(appOwnsPageKeys(pane(["0", "0", "0", "0", "0", "0", "0", "pi"])), true, "pi");
+	assert.equal(appOwnsPageKeys(pane(["0", "0", "1", "1", "1", "1", "0", "vim"])), true, "vim");
+	assert.equal(appOwnsPageKeys(pane(["0", "0", "1", "1", "1", "1", "0", "less"])), true, "less");
+	assert.equal(appOwnsPageKeys(pane(["0", "0", "0", "1", "1", "1", "0", "top"])), true, "top");
+	// and the scrolling cases still get copy-mode
+	assert.equal(appOwnsPageKeys(pane(["0", "0", "1", "1", "0", "0", "0", "-bash"])), false, "login shell");
+	assert.equal(appOwnsPageKeys(pane(["0", "0", "1", "1", "0", "0", "0", "npm"])), false, "build output");
+	// a shell left with a hidden cursor by a crashed TUI must not lose its scrollback
+	assert.equal(appOwnsPageKeys(pane(["0", "0", "0", "0", "0", "0", "0", "bash"])), false, "wedged shell");
+	// the plain alternate-screen answer still wins, and copy-mode keeps paging
+	assert.equal(appOwnsPageKeys(pane(["1", "0", "1", "1", "0", "0", "0", "vim"])), true, "alternate screen");
+	assert.equal(appOwnsPageKeys(pane(["0", "1", "1", "1", "0", "0", "0", "bash"])), true, "already in copy mode");
 });
 
 // --- auth ------------------------------------------------------------------

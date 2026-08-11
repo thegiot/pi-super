@@ -6,6 +6,37 @@ import { randomBytes } from "node:crypto";
 // field values too, so a value can never contain a raw newline and break the framing.
 const FS = "\n";
 
+/** Everything appOwnsPageKeys() needs, in one display-message. */
+export const PANE_KEY_FORMAT =
+	"#{alternate_on}\n#{pane_in_mode}\n#{cursor_flag}\n#{wrap_flag}\n#{keypad_cursor_flag}\n#{keypad_flag}\n#{mouse_any_flag}\n#{pane_current_command}";
+
+const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ash", "ksh", "mksh", "csh", "tcsh", "nu", "elvish", "xonsh"]);
+
+/**
+ * Does the application in the pane own PgUp/PgDn (it paints the whole screen and keeps
+ * its own scrollback), or should the keys drive tmux's copy-mode over the pane history?
+ *
+ * `#{alternate_on}` is the honest answer — but only where tmux is allowed to act on
+ * smcup. With `set -g alternate-screen off` (a deliberate config: it keeps full-screen
+ * output in the scrollback) tmux drops the sequence and the flag never leaves 0, which
+ * is why every PgUp on a pi or vim pane used to open copy-mode instead of reaching the
+ * app. So when the flag is silent, fall back on the traces such an app leaves anyway —
+ * application cursor keys/keypad, mouse tracking, a hidden cursor, autowrap turned off.
+ * Measured with alternate-screen off: vim/less/top set the keypad modes, pi and mutt
+ * hide the cursor (pi also drops autowrap), while a shell or a scrolling build (npm,
+ * make) sets none of them and correctly keeps copy-mode.
+ *
+ * The shell check keeps a shell that a crashed TUI left with the cursor hidden out of
+ * the passthrough case — losing the scrollback at a prompt is the worse failure.
+ */
+export function appOwnsPageKeys(displayMessageOutput: string): boolean {
+	const [alt, inMode, cursor, wrap, keypadCursor, keypad, mouse, command] = displayMessageOutput.split(FS);
+	if (alt === "1" || inMode === "1") return true;
+	// login shells report themselves as `-bash`
+	if (SHELLS.has((command ?? "").replace(/^-/, ""))) return false;
+	return keypadCursor === "1" || keypad === "1" || mouse === "1" || cursor === "0" || wrap === "0";
+}
+
 export interface TmuxSession {
 	id: string;
 	name: string;
@@ -177,15 +208,16 @@ export class Tmux {
 	}
 
 	/**
-	 * PageUp with tmux's own smarts: for pi/shell panes enter copy mode scrolled up a
-	 * page (`-e`: PageDown past the bottom exits copy mode again); when already in copy
-	 * mode keep paging; full-screen apps on the alternate screen (vim, htop) want the
-	 * key itself.
+	 * PageUp with tmux's own smarts: for shell panes enter copy mode scrolled up a page
+	 * (`-e`: PageDown past the bottom exits copy mode again); when already in copy mode
+	 * keep paging; full-screen apps (vim, htop, pi) want the key itself.
+	 *
+	 * PageDown needs no counterpart: sent raw it is consumed by copy mode when the pane
+	 * is in it, and reaches the application when it is not.
 	 */
 	async smartPageUp(target: string): Promise<void> {
-		const flags = (await this.run(["display-message", "-p", "-t", target, "#{alternate_on} #{pane_in_mode}"])).trim();
-		const [alt, inMode] = flags.split(" ");
-		if (alt === "1" || inMode === "1") await this.sendKeys(target, ["PageUp"]);
+		const out = await this.run(["display-message", "-p", "-t", target, PANE_KEY_FORMAT]);
+		if (appOwnsPageKeys(out)) await this.sendKeys(target, ["PageUp"]);
 		else await this.run(["copy-mode", "-eu", "-t", target]);
 	}
 
