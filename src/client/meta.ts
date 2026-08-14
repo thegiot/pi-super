@@ -19,7 +19,8 @@ export interface MetaState {
 }
 
 export interface MetaApi {
-	send(text: string): void;
+	/** source is recorded in the server's prompt log, so a lost prompt says where it came from */
+	send(text: string, source?: "chat" | "voice"): void;
 	abort(): void;
 	newSession(): void;
 	onSpeak?: (msg: { message: string; kind: string }) => void;
@@ -40,9 +41,9 @@ export function createMeta(container: HTMLElement): MetaApi {
 	}
 
 	const api: MetaApi = {
-		send(text) {
+		send(text, source = "chat") {
 			if (!text.trim()) return;
-			post({ t: "prompt", text });
+			post({ t: "prompt", text, source });
 		},
 		abort() {
 			post({ t: "abort" });

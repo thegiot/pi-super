@@ -410,7 +410,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				const text = result[0]?.transcript?.trim();
 				if (!text) continue;
 				api.onTranscript?.("user", text);
-				meta.send(text);
+				meta.send(text, "voice");
 			}
 		};
 		recog.onerror = (ev: { error?: string }) => {
@@ -575,7 +575,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				flushQueued();
 				// no onTranscript here: turn.done already reported what the user said, and the
 				// delegated text is a paraphrase of it
-				if (text) meta.send(text);
+				if (text) meta.send(text, "voice");
 				break;
 			}
 			// --- standard realtime function calling ----------------------------
@@ -590,7 +590,7 @@ export function createVoice(meta: MetaApi): VoiceApi {
 				}
 				if (request) {
 					api.onTranscript?.("user", request);
-					meta.send(request);
+					meta.send(request, "voice");
 				}
 				sendEvent({
 					type: "conversation.item.create",

@@ -466,6 +466,8 @@ export class MetaAgent extends EventEmitter {
 				this.busy = false;
 				this.turnPending = false;
 				this.lastPrompt = undefined;
+				// whatever the user asked has now been answered; the prompt log can let it go
+				this.emit("settled");
 				if (this.assistant && this.assistant.kind === "assistant") {
 					this.assistant.done = true;
 					this.patch(this.assistant);
@@ -539,6 +541,11 @@ export class MetaAgent extends EventEmitter {
 		this.lastPrompt = message;
 		this.lastEventAt = Date.now();
 		this.write(cmd);
+	}
+
+	/** Put a note in the chat (and thus the journal) without prompting the agent. */
+	note(text: string): void {
+		this.push({ kind: "system", id: 0, text });
 	}
 
 	abort(): void {

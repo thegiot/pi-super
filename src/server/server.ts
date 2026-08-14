@@ -7,6 +7,7 @@ import type { Config } from "./config.js";
 import { buildVocabulary, dictationInstructions } from "./dictation.js";
 import { readPeek } from "./files.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
+import { PromptLog } from "./prompts.js";
 import { SESSION_PREFIX, sweepStaleSessions, TermConnection } from "./term.js";
 import { Tmux } from "./tmux.js";
 import { MAX_UPLOAD_BYTES, readBody, storeUpload } from "./uploads.js";
@@ -66,6 +67,10 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		inheritExtensions: cfg.metaInheritExtensions,
 		sessionDir: join(cfg.stateDir, "meta-sessions"),
 	});
+
+	const prompts = new PromptLog(cfg.stateDir);
+	/** prompt ids handed to the agent whose turn has not settled yet */
+	let owed: string[] = [];
 
 	/** when this process began running the code it is running (see serverStale()) */
 	const startedAt = Date.now();
@@ -138,17 +143,47 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		broadcastMeta({ t: "speak", ...(speak as object) });
 	});
 	meta.on("exit", () => broadcastMeta({ t: "state", state: meta.state }));
+	// A settled turn has answered everything queued behind it (steering folds prompts into
+	// the turn in flight), so one settle clears the lot.
+	meta.on("settled", () => {
+		if (owed.length === 0) return;
+		prompts.answered(owed);
+		owed = [];
+	});
 	// If a previous meta session exists, resume it eagerly — it may owe the user a
 	// report (an interrupted tmux_wait_idle), which must not wait for the app to open.
 	// The caller invokes this only after listen() succeeds: holding the port proves we
 	// are the only pi-super instance, so two `pi` children can't fight over the session.
 	function resumeMeta(): void {
-		if (!cfg.metaEnabled || !meta.hasPreviousSession) return;
-		try {
-			meta.start();
-		} catch (err) {
-			process.stderr.write(`pi-super: meta resume failed: ${String((err as Error).message)}\n`);
+		if (!cfg.metaEnabled) return;
+		if (meta.hasPreviousSession) {
+			try {
+				meta.start();
+			} catch (err) {
+				process.stderr.write(`pi-super: meta resume failed: ${String((err as Error).message)}\n`);
+			}
 		}
+		// after start(): rehydration fills the transcript, and these belong on top of it
+		reportUnanswered();
+	}
+
+	/**
+	 * Prompts the previous process took and never finished a turn on — the agent was
+	 * killed by the watchdog, or pi-super went down mid-turn. The resumed agent has no
+	 * idea they existed, so put them back in front of the user *verbatim* instead of
+	 * replaying them at the agent: some of them it may have half-done already, and a
+	 * silent re-send is how you get two of everything.
+	 */
+	function reportUnanswered(): void {
+		const pending = prompts.unanswered();
+		if (pending.length === 0) return;
+		for (const p of pending) {
+			const when = new Date(p.at).toLocaleString();
+			log(`meta: unanswered prompt from ${when} (${p.source}): ${preview(p.text)}`);
+			meta.note(`unanswered since ${when} (${p.source}) — resend if it still matters:\n${p.text}`);
+		}
+		// they have been surfaced; do not nag about them on every restart from now on
+		prompts.answered(pending.map((p) => p.id));
 	}
 
 	/** Base session to mirror: explicit config, else the first real (non-ours) session. */
@@ -864,7 +899,11 @@ export function createServer(cfg: Config, token: string): SuperServer {
 						// reached the agent: the phone shows the chat, but when nothing comes
 						// back there is no way to tell "never sent" from "agent wedged".
 						log(`meta ws: ${ip} prompt${meta.state.busy ? " (busy, steering)" : ""}: ${preview(text)}`);
-						meta.prompt(text, msg.images as Array<{ data: string; mimeType: string }> | undefined);
+						const images = msg.images as Array<{ data: string; mimeType: string }> | undefined;
+						// on disk before the agent gets it: a turn that wedges must not take the
+						// user's words down with it (see PromptLog)
+						owed.push(prompts.record(text, String(msg.source ?? "chat"), images?.length ? { images: images.length } : undefined));
+						meta.prompt(text, images);
 						break;
 					}
 					case "abort":

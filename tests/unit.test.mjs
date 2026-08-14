@@ -55,6 +55,46 @@ test("PgUp reaches a full-screen app even when tmux ignores the alternate screen
 	assert.equal(appOwnsPageKeys(pane(["0", "1", "1", "1", "0", "0", "0", "bash"])), true, "already in copy mode");
 });
 
+// --- prompt log ------------------------------------------------------------
+
+test("a prompt survives the agent that never answered it", async () => {
+	const { PromptLog } = await import("../dist/server/prompts.js");
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-prompts-"));
+	const log = new PromptLog(dir);
+	const answered = log.record("what is the build status", "chat");
+	const lost = log.record("a long batch of feedback", "voice");
+	log.answered([answered]);
+
+	// the log is the point: a fresh reader (i.e. the restarted process) sees the same thing
+	const pending = new PromptLog(dir).unanswered();
+	assert.deepEqual(
+		pending.map((p) => [p.id, p.source, p.text]),
+		[[lost, "voice", "a long batch of feedback"]],
+	);
+	assert.ok(readFileSync(join(dir, "prompts.jsonl"), "utf8").includes("a long batch of feedback"));
+
+	// once reported it must not come back on every later restart
+	log.answered([lost]);
+	assert.deepEqual(new PromptLog(dir).unanswered(), []);
+});
+
+test("the prompt log survives a torn line and forgets ancient prompts", async () => {
+	const { PromptLog } = await import("../dist/server/prompts.js");
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-prompts-"));
+	const file = join(dir, "prompts.jsonl");
+	const old = Date.now() - 8 * 24 * 60 * 60 * 1000;
+	writeFileSync(
+		file,
+		`${JSON.stringify({ id: "ancient", at: old, source: "chat", text: "last week" })}\n{"id":"torn","te`,
+	);
+	const log = new PromptLog(dir);
+	const live = log.record("still owed", "chat");
+	assert.deepEqual(
+		log.unanswered().map((p) => p.id),
+		[live],
+	);
+});
+
 // --- auth ------------------------------------------------------------------
 
 test("parseCookies survives malformed percent-encoding", () => {
