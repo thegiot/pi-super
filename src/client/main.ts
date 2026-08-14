@@ -350,7 +350,7 @@ function activeWindow(): WindowInfo | undefined {
  */
 function selectWindow(id: string, opts: { show?: boolean } = {}): void {
 	send({ t: "select", window: id });
-	if (opts.show && state.view === "meta") setView(state.lastTermView);
+	const leaveChat = opts.show && state.view === "meta";
 	if (state.windows.some((w) => w.id === id)) {
 		for (const w of state.windows) w.active = w.id === id;
 		localStorage.setItem("lastWindow", id);
@@ -359,6 +359,10 @@ function selectWindow(id: string, opts: { show?: boolean } = {}): void {
 		syncDraft();
 		if (state.view === "reader") void refreshReader();
 	}
+	// After the switch, never before it: entering the reader view kicks off a capture, and
+	// one aimed at the window we are leaving would win the readerBusy race and leave the
+	// wrong pane on screen until the next poll.
+	if (leaveChat) setView(state.lastTermView);
 }
 
 /** Neighbouring window, in list order. Clamped: wrapping past the ends feels like a bug. */

@@ -6,7 +6,7 @@ import { buildVocabulary, dictationInstructions } from "../dist/server/dictation
 import { voiceInstructions } from "../dist/server/server.js";
 import { Tmux, appOwnsPageKeys } from "../dist/server/tmux.js";
 import { storeUpload } from "../dist/server/uploads.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -542,4 +542,32 @@ test("dictationInstructions carries the prompt plus the vocabulary", () => {
 	// a missing prompt file must still produce a usable microphone, not an empty prompt
 	const fallback = dictationInstructions("/nonexistent", "");
 	assert.match(fallback, /[Nn]ever speak/);
+});
+
+test("rotation keeps what is still owed, and a dead log says so", async () => {
+	const { PromptLog } = await import("../dist/server/prompts.js");
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-prompts-"));
+	const log = new PromptLog(dir);
+	const owed = log.record("the batch of feedback", "voice");
+	// push the log past the 4 MiB rotation threshold with answered traffic
+	for (let i = 0; i < 160; i++) log.answered([`filler-${i}-${"x".repeat(30_000)}`]);
+	assert.ok(existsSync(join(dir, "prompts.jsonl.1")), "the log rotated");
+	assert.deepEqual(
+		log.unanswered().map((p) => p.id),
+		[owed],
+	);
+	// a second rotation must not drop it with the byte window it was first written in
+	for (let i = 0; i < 160; i++) log.answered([`filler2-${i}-${"x".repeat(30_000)}`]);
+	assert.deepEqual(
+		new PromptLog(dir).unanswered().map((p) => p.id),
+		[owed],
+		"a prompt nobody answered survives being rotated out twice",
+	);
+
+	assert.equal(log.broken, undefined);
+	const dead = new PromptLog(dir);
+	rmSync(dir, { recursive: true, force: true });
+	writeFileSync(dir, ""); // the state dir is now a file: every write must fail
+	dead.record("into the void", "chat");
+	assert.ok(dead.broken, "a log that cannot be written must admit it, not pretend");
 });

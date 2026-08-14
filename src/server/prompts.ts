@@ -41,6 +41,8 @@ type Line = { id: string; at?: number; source?: string; text?: string; done?: bo
 export class PromptLog {
 	readonly file: string;
 	private seq = 0;
+	/** set once a write fails, so a broken log is reported instead of pretended */
+	broken: string | undefined;
 
 	constructor(stateDir: string) {
 		mkdirSync(stateDir, { recursive: true });
@@ -102,6 +104,17 @@ export class PromptLog {
 	private append(line: Line & Record<string, unknown>): void {
 		try {
 			this.rotate();
+			this.writeLine(line);
+			this.broken = undefined;
+		} catch (err) {
+			// The log is a safety net, not a gate: a full or read-only state dir must not stop
+			// the user from talking to the agent. It must not do so *quietly* either — a
+			// safety net nobody knows is torn is worse than none.
+			this.broken = (err as Error).message;
+		}
+	}
+
+	private writeLine(line: Line & Record<string, unknown>): void {
 			// A line torn by a kill mid-write would otherwise swallow the *next* prompt too,
 			// by fusing with it into one unparsable line. Cost of the guard: one stat.
 			const torn = this.endsMidLine();
@@ -112,10 +125,6 @@ export class PromptLog {
 			} finally {
 				closeSync(fd);
 			}
-		} catch {
-			// The log is a safety net, not a gate: a full or read-only state dir must not
-			// stop the user from talking to the agent.
-		}
 	}
 
 	/** Did the previous write not finish? Reads the last byte, not the file. */
@@ -136,7 +145,11 @@ export class PromptLog {
 	private rotate(): void {
 		try {
 			if (!existsSync(this.file) || statSync(this.file).size < MAX_BYTES) return;
+			// Carry what is still owed across: `.1` is a byte window, not a record set, and a
+			// second rotation would drop a prompt that nobody has answered yet.
+			const pending = this.unanswered();
 			renameSync(this.file, `${this.file}.1`);
+			for (const p of pending) this.writeLine({ id: p.id, at: p.at, source: p.source, text: p.text });
 		} catch {
 			// keep appending to the oversized file rather than lose the write
 		}

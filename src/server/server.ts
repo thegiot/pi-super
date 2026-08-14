@@ -71,6 +71,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	const prompts = new PromptLog(cfg.stateDir);
 	/** prompt ids handed to the agent whose turn has not settled yet */
 	let owed: string[] = [];
+	/** ids surfaced into the chat but not yet in front of any client (see reportUnanswered) */
+	let unread: string[] = [];
 
 	/** when this process began running the code it is running (see serverStale()) */
 	const startedAt = Date.now();
@@ -144,7 +146,10 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	});
 	meta.on("exit", () => broadcastMeta({ t: "state", state: meta.state }));
 	// A settled turn has answered everything queued behind it (steering folds prompts into
-	// the turn in flight), so one settle clears the lot.
+	// the turn in flight), so one settle clears the lot. A prompt that lands in the gap
+	// between pi emitting agent_settled and us reading it is acked without having been
+	// answered; the text itself is still in the log and the journal, only the replay hint
+	// is lost, which is not worth correlating RPC ids for.
 	meta.on("settled", () => {
 		if (owed.length === 0) return;
 		prompts.answered(owed);
@@ -182,8 +187,10 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			log(`meta: unanswered prompt from ${when} (${p.source}): ${preview(p.text)}`);
 			meta.note(`unanswered since ${when} (${p.source}) — resend if it still matters:\n${p.text}`);
 		}
-		// they have been surfaced; do not nag about them on every restart from now on
-		prompts.answered(pending.map((p) => p.id));
+		// The note lives in a transcript that dies with this process, so it is not "delivered"
+		// until a client has actually been sent it. Acking here would lose the prompt for good
+		// on a second restart before anyone opened the chat — the exact failure this is for.
+		unread = pending.map((p) => p.id);
 	}
 
 	/** Base session to mirror: explicit config, else the first real (non-ours) session. */
@@ -884,6 +891,11 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 		};
 		send({ t: "init", transcript: meta.transcript, state: meta.state });
+		// the recovered prompts have now reached a screen; stop carrying them
+		if (unread.length > 0) {
+			prompts.answered(unread);
+			unread = [];
+		}
 		ws.on("message", (data) => {
 			let msg: Record<string, unknown>;
 			try {
@@ -903,6 +915,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 						// on disk before the agent gets it: a turn that wedges must not take the
 						// user's words down with it (see PromptLog)
 						owed.push(prompts.record(text, String(msg.source ?? "chat"), images?.length ? { images: images.length } : undefined));
+						// a safety net nobody knows is torn is worse than no safety net
+						if (prompts.broken) log(`meta ws: WARNING prompt log is not writable (${prompts.broken}) — ${prompts.file}`);
 						meta.prompt(text, images);
 						break;
 					}
