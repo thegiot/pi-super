@@ -46,8 +46,10 @@ test("PgUp reaches a full-screen app even when tmux ignores the alternate screen
 	// and the scrolling cases still get copy-mode
 	assert.equal(appOwnsPageKeys(pane(["0", "0", "1", "1", "0", "0", "0", "-bash"])), false, "login shell");
 	assert.equal(appOwnsPageKeys(pane(["0", "0", "1", "1", "0", "0", "0", "npm"])), false, "build output");
-	// a shell left with a hidden cursor by a crashed TUI must not lose its scrollback
-	assert.equal(appOwnsPageKeys(pane(["0", "0", "0", "0", "0", "0", "0", "bash"])), false, "wedged shell");
+	// a shell left with just a hidden cursor by a crashed TUI must not lose its scrollback
+	assert.equal(appOwnsPageKeys(pane(["0", "0", "0", "1", "0", "0", "0", "bash"])), false, "wedged shell");
+	// a side-agent pane runs pi under a launch.sh wrapper, so tmux names the pane `bash`
+	assert.equal(appOwnsPageKeys(pane(["0", "0", "0", "0", "0", "0", "0", "bash"])), true, "pi under a wrapper");
 	// the plain alternate-screen answer still wins, and copy-mode keeps paging
 	assert.equal(appOwnsPageKeys(pane(["1", "0", "1", "1", "0", "0", "0", "vim"])), true, "alternate screen");
 	assert.equal(appOwnsPageKeys(pane(["0", "1", "1", "1", "0", "0", "0", "bash"])), true, "already in copy mode");

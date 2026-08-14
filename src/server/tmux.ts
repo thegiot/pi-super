@@ -26,12 +26,18 @@ const SHELLS = new Set(["sh", "bash", "zsh", "fish", "dash", "ash", "ksh", "mksh
  * hide the cursor (pi also drops autowrap), while a shell or a scrolling build (npm,
  * make) sets none of them and correctly keeps copy-mode.
  *
- * The shell check keeps a shell that a crashed TUI left with the cursor hidden out of
- * the passthrough case — losing the scrollback at a prompt is the worse failure.
+ * A hidden cursor *and* autowrap off together is pi's signature and conclusive on its
+ * own: no shell prompt is ever in that state. It has to be, because the command name
+ * cannot be trusted — a side-agent pane runs pi from a `launch.sh`, and tmux names the
+ * pane after the foreground process group leader, i.e. `bash`. A single one of those
+ * two flags is weaker (a TUI that died without restoring them leaves it behind), so
+ * there the shell name still vetoes: losing the scrollback at a prompt is the worse
+ * failure.
  */
 export function appOwnsPageKeys(displayMessageOutput: string): boolean {
 	const [alt, inMode, cursor, wrap, keypadCursor, keypad, mouse, command] = displayMessageOutput.split(FS);
 	if (alt === "1" || inMode === "1") return true;
+	if (cursor === "0" && wrap === "0") return true;
 	// login shells report themselves as `-bash`
 	if (SHELLS.has((command ?? "").replace(/^-/, ""))) return false;
 	return keypadCursor === "1" || keypad === "1" || mouse === "1" || cursor === "0" || wrap === "0";
