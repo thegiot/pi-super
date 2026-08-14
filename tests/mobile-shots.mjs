@@ -567,6 +567,19 @@ async function main() {
     return { meta, term };
   })()`);
 	console.log("top bar colours:", JSON.stringify(bar));
+
+	// Tapping a window tab is asking to look at that window. Staying in the chat made the
+	// tap look like the tap had done nothing at all, since the chat shows no window.
+	const tabFromChat = await c.evaluate(`(() => {
+    const S = window.piSuper;
+    S.setView("meta");
+    const tabs = [...document.querySelectorAll("#tabs .tab")];
+    const other = tabs.find((t) => !t.classList.contains("active"));
+    other.click();
+    return { view: S.state.view, tab: other.textContent, active: document.querySelector("#tabs .tab.active").textContent };
+  })()`);
+	console.log("tab tapped from the chat:", JSON.stringify(tabFromChat));
+
 	const GREEN = "rgb(126, 231, 135)";
 	const BLUE = "rgb(79, 127, 208)";
 
@@ -591,6 +604,7 @@ async function main() {
 		["swipe up/down pages the terminal", pagedKeys === "PageDown,PageUp"],
 		["dragging a window to the top renumbers it to 0", reorder.order.startsWith("0:agent")],
 		["footer visible above the fold", metrics.footer.top + metrics.footer.h <= metrics.viewport.h + 1],
+		["tapping a window tab in the chat view leaves the chat for that window", tabFromChat.view !== "meta" && tabFromChat.active === tabFromChat.tab],
 		["terminal ribbon hidden in chat view", viewChecks.view !== "meta" || !viewChecks.ribbonVisible],
 		["abort button shown in chat view", viewChecks.view !== "meta" || viewChecks.abortVisible],
 		// green is the active tmux window and nothing else, in every view; super's button

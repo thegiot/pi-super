@@ -237,6 +237,56 @@ setInterval(() => {}, 1000);
 	assert.ok(asked[1].includes(asked[0]), "the recovery prompt still carries the original request");
 });
 
+test("a tool-heavy turn does not push the user's own messages out of the chat", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-meta-"));
+	// a pi that answers every prompt with a flood of tool calls, as a real research turn does
+	const fakePi = join(dir, "fake-pi.mjs");
+	writeFileSync(
+		fakePi,
+		`process.stdin.setEncoding("utf8");
+let buf = "";
+process.stdin.on("data", (c) => {
+	buf += c;
+	let i;
+	while ((i = buf.indexOf("\\n")) >= 0) {
+		const line = buf.slice(0, i);
+		buf = buf.slice(i + 1);
+		if (!line.trim()) continue;
+		if (JSON.parse(line).type !== "prompt") continue;
+		process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+		for (let n = 0; n < 700; n++) {
+			process.stdout.write(JSON.stringify({ type: "tool_execution_start", toolCallId: "t" + n, toolName: "tmux_capture", args: {} }) + "\\n");
+			process.stdout.write(JSON.stringify({ type: "tool_execution_end", toolCallId: "t" + n, toolName: "tmux_capture", result: { content: [] } }) + "\\n");
+		}
+		process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+	}
+});
+setInterval(() => {}, 1000);
+`,
+	);
+	const shim = join(dir, "pi");
+	writeFileSync(shim, `#!/bin/sh\nexec ${process.execPath} ${fakePi}\n`, { mode: 0o755 });
+	const { MetaAgent } = await import("../dist/server/meta.js");
+	const meta = new MetaAgent({
+		metaDir: join(import.meta.dirname, "..", "src", "meta"),
+		socketArgs: [],
+		piBin: shim,
+		sessionDir: join(dir, "sessions"),
+	});
+	const settled = new Promise((r) => meta.once("settled", r));
+	meta.prompt("here is a batch of feedback I just dictated");
+	await settled;
+	await meta.stop();
+
+	const user = meta.transcript.filter((i) => i.kind === "user");
+	assert.deepEqual(
+		user.map((i) => i.text),
+		["here is a batch of feedback I just dictated"],
+		"the user's message must outlive the tool spam that buried it",
+	);
+	assert.ok(meta.transcript.length <= 500, `transcript still bounded (${meta.transcript.length})`);
+});
+
 test("compaction is announced and survives the watchdog", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "pi-super-compact-"));
 	// Compaction is one long blocking summarization call: start event, then nothing on the

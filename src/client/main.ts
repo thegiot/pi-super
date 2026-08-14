@@ -340,9 +340,17 @@ function activeWindow(): WindowInfo | undefined {
 	return state.windows.find((w) => w.active);
 }
 
-/** Optimistic switch: flip the UI immediately, let the server's push confirm. */
-function selectWindow(id: string): void {
+/**
+ * Optimistic switch: flip the UI immediately, let the server's push confirm.
+ *
+ * `show` marks the deliberate ones (a tab, a row in the drawer). Picking a window by hand
+ * means wanting to look at it, so it also leaves the chat — staying in it made the tap
+ * look like it had done nothing at all. Server-driven switches must not do that: they
+ * would yank the user out of a conversation they are in the middle of.
+ */
+function selectWindow(id: string, opts: { show?: boolean } = {}): void {
 	send({ t: "select", window: id });
+	if (opts.show && state.view === "meta") setView(state.lastTermView);
 	if (state.windows.some((w) => w.id === id)) {
 		for (const w of state.windows) w.active = w.id === id;
 		localStorage.setItem("lastWindow", id);
@@ -368,7 +376,7 @@ function renderTabs(): void {
 			const b = document.createElement("button");
 			b.className = `tab${w.active ? " active" : ""}${w.activity || w.bell ? " activity" : ""}`;
 			b.textContent = `${w.index}:${w.name}`;
-			b.onclick = () => selectWindow(w.id);
+			b.onclick = () => selectWindow(w.id, { show: true });
 			return b;
 		}),
 	);
@@ -473,7 +481,7 @@ function renderWindowList(): void {
 			path.textContent = w.paneCwd;
 			meta.append(name, path);
 			meta.onclick = () => {
-				selectWindow(w.id);
+				selectWindow(w.id, { show: true });
 				closeDrawer();
 			};
 			row.append(grip, meta);

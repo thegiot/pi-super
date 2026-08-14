@@ -44,6 +44,10 @@ export function createMeta(container: HTMLElement): MetaApi {
 		send(text, source = "chat") {
 			if (!text.trim()) return;
 			post({ t: "prompt", text, source });
+			// Sending is also a request to *watch*: if the log was scrolled up (or the keyboard
+			// resize left it a few pixels off the bottom), the echo of what was just said lands
+			// below the fold and the send reads as having gone nowhere.
+			container.scrollTop = container.scrollHeight;
 		},
 		abort() {
 			post({ t: "abort" });
@@ -58,7 +62,9 @@ export function createMeta(container: HTMLElement): MetaApi {
 	}
 
 	function render(item: ChatItem): void {
-		const stick = atBottom();
+		// One's own message always pulls the view along, whether or not it was pinned: it is
+		// the one item nobody expects to have to go looking for.
+		const stick = atBottom() || (item.kind === "user" && !nodes.has(item.id));
 		let node = nodes.get(item.id);
 		if (!node) {
 			node = document.createElement("div");

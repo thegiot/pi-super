@@ -394,9 +394,26 @@ export class MetaAgent extends EventEmitter {
 	private push(item: ChatItem): ChatItem {
 		if (!item.id) item.id = ++this.nextId;
 		this.transcript.push(item);
-		if (this.transcript.length > 500) this.transcript.splice(0, this.transcript.length - 500);
+		this.trim();
 		this.emit("item", item);
 		return item;
+	}
+
+	/**
+	 * Keep the transcript bounded by dropping tool chatter first. A plain "keep the last
+	 * 500" let a single tool-heavy turn push the user's own messages out of the chat — and
+	 * those are the one part of it that exists nowhere else on screen.
+	 */
+	private trim(): void {
+		let excess = this.transcript.length - 500;
+		if (excess <= 0) return;
+		for (let i = 0; i < this.transcript.length && excess > 0; ) {
+			if (this.transcript[i]?.kind === "tool") {
+				this.transcript.splice(i, 1);
+				excess--;
+			} else i++;
+		}
+		if (excess > 0) this.transcript.splice(0, excess);
 	}
 
 	/** Streaming text: coalesce patches so a fast stream can't flood slow clients. */
