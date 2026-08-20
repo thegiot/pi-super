@@ -194,14 +194,10 @@ async function main() {
 	log("swipe:", `${beforeSwipe} -> ${afterSwipe} -> ${backSwipe}`);
 
 	// vertical swipes must reach the pty as PageUp/PageDown
-	await c.evaluate(`window.__keys = []; window.__rawKeys = []; (() => {
+	await c.evaluate(`window.__keys = []; (() => {
     const ws = window.piSuper.state.ws;
-    const send = ws.send.bind(ws), dec = new TextDecoder();
-    ws.send = (d) => {
-      if (d instanceof Uint8Array) window.__rawKeys.push(dec.decode(d));
-      else try { const m = JSON.parse(d); if (m.t === "keys") window.__keys.push(m.keys.join("")); } catch {}
-      return send(d);
-    };
+    const send = ws.send.bind(ws);
+    ws.send = (d) => { try { const m = JSON.parse(d); if (m.t === "keys") window.__keys.push(m.keys.join("")); } catch {} return send(d); };
   })(); 1`);
 	await c.drag({ x: 200, y: 600 }, { x: 205, y: 300 });
 	await wait(500);
@@ -225,28 +221,39 @@ async function main() {
   })()`);
 	log("ribbon key:", JSON.stringify(ribbon));
 
-	// Reproduce Gboard's Android path: keyCode 229, an accepted whole-word correction,
-	// then ordinary letters. The wire must contain a terminal edit for the correction and
-	// each following letter exactly once — never the keyboard's whole accumulated textarea.
-	const rawIme = await c.evaluate(`(() => {
+	// xterm's hidden textarea is what Android keyboards edit in raw-terminal mode. Gboard
+	// ignores xterm's autocorrect hint on some versions and offers replacements anyway;
+	// accepting one must be blocked before xterm turns it into repeated garbage.
+	const rawIme = await c.evaluate(`(async () => {
     const input = window.piSuper.term.textarea;
-    window.__rawKeys.length = 0;
-    input.value = "";
-    const edit = (inputType, data, value) => {
-      input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, keyCode: 229, which: 229 }));
-      input.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType, data }));
-      input.value = value;
-      input.setSelectionRange(value.length, value.length);
-      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data }));
-      input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, keyCode: 229, which: 229 }));
-    };
-    for (const char of "teh") edit("insertText", char, input.value + char);
-    edit("insertReplacementText", "the", "the");
-    for (const char of " nice") edit("insertText", char, input.value + char);
+    const replacement = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertReplacementText", data: "fixed" });
+    const plain = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: "x" });
+    input.dispatchEvent(replacement);
+    input.value = "fresh";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertReplacementText", data: "fresh" }));
+    const canceledSnapshotCleared = input.value === "fresh";
+    input.dispatchEvent(plain);
+    input.value = "teh";
+    input.setSelectionRange(3, 3);
+    input.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: false, inputType: "insertReplacementText", data: "the" }));
+    // Native Chromium takes a microtask checkpoint between these events; separate tasks
+    // prevent this test from getting a false green from synthetic dispatch ordering.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    input.value = "the"; // what a non-cancelable browser edit does before input
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertReplacementText", data: "the" }));
+    const nonCancelableRestored = input.value === "teh";
+    input.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: false, inputType: "insertReplacementText", data: "old" }));
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    input.value = "fresh-again";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertReplacementText", data: "fresh-again" }));
     return {
       autocomplete: input.autocomplete,
-      helperValue: input.value,
-      transmitted: window.__rawKeys.join(""),
+      replacementBlocked: replacement.defaultPrevented,
+      canceledSnapshotCleared,
+      nonCancelableRestored,
+      expiredSnapshotIgnored: input.value === "fresh-again",
+      warned: document.getElementById("status").textContent.includes("autocorrect is unavailable"),
+      plainAllowed: !plain.defaultPrevented,
     };
   })()`);
 	log("raw terminal IME:", JSON.stringify(rawIme));
@@ -687,8 +694,14 @@ async function main() {
 		["the two views never look the same", bar.term.tab !== bar.meta.tab && bar.term.call !== bar.meta.call],
 		["ribbon key reaches the pty without stealing focus", ribbon.sent === "C-t" && ribbon.focused === "input"],
 		[
-			"raw terminal applies Android autocorrect without replaying the keyboard buffer",
-			rawIme.autocomplete === "off" && rawIme.helperValue === "the nice" && rawIme.transmitted === "teh\x7f\x7fhe nice",
+			"raw terminal disables suggestions and blocks unsupported autocorrect replacement",
+			rawIme.autocomplete === "off" &&
+				rawIme.replacementBlocked &&
+				rawIme.canceledSnapshotCleared &&
+				rawIme.nonCancelableRestored &&
+				rawIme.expiredSnapshotIgnored &&
+				rawIme.warned &&
+				rawIme.plainAllowed,
 		],
 		[
 			"meta can show a window on the active client",
