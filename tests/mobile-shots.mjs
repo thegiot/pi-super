@@ -245,6 +245,20 @@ async function main() {
     for (const char of " nice") edit("insertText", char, input.value + char);
     const transmitted = window.__rawKeys.join("");
 
+    const midEditStart = window.__rawKeys.length;
+    edit("insertReplacementText", "the rice", "the rice");
+    const midEdit = window.__rawKeys.slice(midEditStart).join("");
+
+    const pasteStart = window.__rawKeys.length;
+    const transfer = new DataTransfer();
+    transfer.setData("text/plain", "clip");
+    input.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, composed: true, clipboardData: transfer }));
+    input.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, composed: true, cancelable: true, inputType: "insertFromPaste", data: "clip" }));
+    input.value = "clip";
+    input.setSelectionRange(4, 4);
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertFromPaste", data: "clip" }));
+    const paste = window.__rawKeys.slice(pasteStart).join("");
+
     const compositionStart = window.__rawKeys.length;
     input.value = "";
     input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, composed: true, data: "" }));
@@ -259,6 +273,8 @@ async function main() {
       autocomplete: input.autocomplete,
       helperValue: input.value,
       transmitted,
+      midEdit,
+      paste,
       composition: window.__rawKeys.slice(compositionStart).join(""),
     };
   })()`);
@@ -704,6 +720,8 @@ async function main() {
 			rawIme.autocomplete === "off" &&
 				rawIme.helperValue === "あ" &&
 				rawIme.transmitted === "teh\x7f\x7fhe nice" &&
+				["\x1b[D\x1b[D\x1b[D\x7fr\x1b[C\x1b[C\x1b[C", "\x1bOD\x1bOD\x1bOD\x7fr\x1bOC\x1bOC\x1bOC"].includes(rawIme.midEdit) &&
+				["clip", "\x1b[200~clip\x1b[201~"].includes(rawIme.paste) &&
 				rawIme.composition === "あ",
 		],
 		[

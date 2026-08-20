@@ -122,9 +122,9 @@ term.open(el.term);
 
 // xterm's keyCode-229 fallback compares Gboard's hidden textarea before and after an
 // edit. An accepted correction rewrites old text, so xterm mistakes the whole textarea for
-// newly typed data and replays it on following keys. Android input events are composed and
-// therefore cannot fall through to xterm's narrower InputEvent handler; own non-composing
-// edits here, while leaving xterm's composition lifecycle intact for CJK and other IMEs.
+// newly typed data and replays it on following keys. xterm's narrower InputEvent handler
+// also skips composed events while their keydown is live, as Android's always is; own
+// non-composing edits here, while leaving xterm's composition lifecycle intact for CJK.
 if (term.textarea) {
 	const input = term.textarea;
 	const android = /Android/i.test(navigator.userAgent);
@@ -134,6 +134,7 @@ if (term.textarea) {
 		type EditSnapshot = { value: string; cursor: number; at: number };
 		let beforeEdit: EditSnapshot | undefined;
 		let finishingComposition = false;
+		let xtermPasted = false;
 		let editWarned = false;
 		const key = (name: string, keyCode: number) => {
 			const options = { key: name, keyCode, which: keyCode, bubbles: true, cancelable: true };
@@ -164,6 +165,12 @@ if (term.textarea) {
 			finishingComposition = true;
 			setTimeout(() => (finishingComposition = false), 0);
 		});
+		input.addEventListener("paste", () => {
+			// xterm owns ClipboardEvent and has already sent it before the browser follows
+			// with insertFromPaste. The latter must update the helper, not send it twice.
+			xtermPasted = true;
+			setTimeout(() => (xtermPasted = false), 0);
+		});
 		input.addEventListener("beforeinput", () => {
 			const snapshot = { value: input.value, cursor: input.selectionEnd ?? input.value.length, at: Date.now() };
 			beforeEdit = snapshot;
@@ -178,6 +185,10 @@ if (term.textarea) {
 				const snapshot = beforeEdit;
 				beforeEdit = undefined;
 				if (ev.isComposing || finishingComposition) return;
+				if (ev.inputType === "insertFromPaste" && xtermPasted) {
+					xtermPasted = false;
+					return;
+				}
 				e.stopPropagation();
 
 				if (ev.inputType === "insertLineBreak" || ev.inputType === "insertParagraph") {
@@ -185,9 +196,9 @@ if (term.textarea) {
 					return;
 				}
 				if (!snapshot || Date.now() - snapshot.at > 500) {
-					if (ev.inputType === "insertText" && ev.data) send(enc.encode(ev.data));
+					if (ev.inputType === "insertText" && ev.data) term.input(ev.data);
 					else if (ev.inputType === "deleteContentBackward") key("Backspace", 8);
-					else warnEdit();
+					else if (ev.inputType !== "insertCompositionText") warnEdit();
 					return;
 				}
 
@@ -210,7 +221,7 @@ if (term.textarea) {
 
 				move(oldCursor, oldEditEnd);
 				for (let i = 0; i < removed; i++) key("Backspace", 8);
-				if (inserted) send(enc.encode(inserted));
+				if (inserted) term.input(inserted);
 				move(prefix + Array.from(inserted).length, newCursor);
 			},
 			true,
@@ -219,6 +230,12 @@ if (term.textarea) {
 		// Off Android, keep the conservative fallback: refuse a replacement that xterm does
 		// not support rather than trying to infer a platform's unrelated editing semantics.
 		let beforeReplacement: { value: string; start: number | null; end: number | null; at: number } | undefined;
+		let correctionWarned = false;
+		const warnCorrection = () => {
+			if (correctionWarned) return;
+			correctionWarned = true;
+			status("autocorrect is unavailable in the raw terminal — use the prompt box", 5000);
+		};
 		input.addEventListener("beforeinput", (e) => {
 			if ((e as InputEvent).inputType !== "insertReplacementText") {
 				beforeReplacement = undefined;
@@ -226,6 +243,7 @@ if (term.textarea) {
 			}
 			if (e.cancelable) {
 				e.preventDefault();
+				warnCorrection();
 				beforeReplacement = undefined;
 				return;
 			}
@@ -243,12 +261,17 @@ if (term.textarea) {
 				beforeReplacement = undefined;
 				if (Date.now() - snapshot.at > 500) return;
 				e.stopPropagation();
+				warnCorrection();
 				input.value = snapshot.value;
 				if (snapshot.start !== null && snapshot.end !== null) input.setSelectionRange(snapshot.start, snapshot.end);
 			},
 			true,
 		);
 	}
+}
+
+function resetTerminalInput(): void {
+	if (term.textarea) term.textarea.value = "";
 }
 
 term.onData((d) => send(enc.encode(d)));
@@ -364,7 +387,9 @@ function connect(): void {
 				resizeTerm(Number(msg.cols), Number(msg.rows));
 				break;
 			case "windows": {
+				const previousActive = activeWindow()?.id;
 				state.windows = msg.windows as WindowInfo[];
+				if (previousActive && previousActive !== activeWindow()?.id) resetTerminalInput();
 				// A restarted server rebuilds the mirror session on window 0; put the user
 				// back where they were. Otherwise, remember where they are.
 				const active = activeWindow();
@@ -494,6 +519,7 @@ function activeWindow(): WindowInfo | undefined {
  */
 function selectWindow(id: string, opts: { show?: boolean } = {}): void {
 	state.clientShowPending = undefined;
+	resetTerminalInput();
 	send({ t: "select", window: id });
 	const leaveChat = opts.show && state.view === "meta";
 	if (state.windows.some((w) => w.id === id)) {
@@ -832,7 +858,10 @@ function sendText(text: string, enter: boolean): void {
 	dictate.stop();
 	if (!text) return;
 	if (state.view === "meta") meta.send(text);
-	else send({ t: "paste", text, enter });
+	else {
+		resetTerminalInput();
+		send({ t: "paste", text, enter });
+	}
 	el.input.value = "";
 	saveDraft();
 	autogrow();
@@ -1145,7 +1174,10 @@ el.input.addEventListener("keydown", (e) => {
 
 el.ribbon.addEventListener("click", (e) => {
 	const key = (e.target as HTMLElement).dataset.key;
-	if (key) send({ t: "keys", keys: [key] });
+	if (key) {
+		resetTerminalInput();
+		send({ t: "keys", keys: [key] });
+	}
 });
 
 // A ribbon key is a modifier for what you are typing, not a change of subject: taking
