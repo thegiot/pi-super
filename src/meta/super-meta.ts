@@ -74,8 +74,9 @@ async function paste(target: string, body: string): Promise<void> {
 
 /**
  * A new default tmux pane has an interactive shell, but keystrokes sent while its startup
- * files are still running can be displayed and never executed. This is the same guard used
- * by pi-side-agents; timing out merely falls back to tmux's queued tty input.
+ * files are still running can be displayed and never executed. This is the same heuristic
+ * guard used by pi-side-agents (prompt text is not structurally knowable across shells);
+ * timing out merely falls back to tmux's queued tty input.
  */
 async function waitForShellReady(target: string, timeoutMs = 5000): Promise<void> {
 	const started = Date.now();
@@ -245,7 +246,7 @@ export default function superMeta(pi: ExtensionAPI) {
 		name: "client_show",
 		label: "show window on client",
 		description:
-			"Switch the currently active pi-super browser/app from the meta chat to a tmux window. Use this when the user asks to open, show, or take them to work you started. Defaults to the live raw terminal; reader reflows captured output.",
+			"Request that the currently active pi-super browser/app switch from the meta chat to a tmux window. Use this when the user asks to open, show, or take them to work you started. Delivery requires one foreground client and is not guaranteed; pi-super posts a system note if it cannot route the request. Defaults to the live raw terminal; reader reflows captured output.",
 		parameters: Type.Object({
 			window: Type.String({ description: "tmux window id returned by tmux_open, e.g. @12" }),
 			view: Type.Optional(
@@ -258,7 +259,11 @@ export default function superMeta(pi: ExtensionAPI) {
 			if (!/^@\d+$/.test(params.window)) return fail(new Error("window must be a tmux window id such as @12"));
 			// pi-super observes this tool's RPC completion and routes it to the one client
 			// most recently in the foreground; the extension itself has no browser socket.
-			return json({ ok: true, requested: { window: params.window, view: params.view ?? "raw" } });
+			return json({
+				ok: true,
+				status: "requested; delivery requires an eligible foreground pi-super client",
+				requested: { window: params.window, view: params.view ?? "raw" },
+			});
 		},
 	});
 

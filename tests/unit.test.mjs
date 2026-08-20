@@ -61,8 +61,11 @@ test("a new window with blank cwd opens in home, not the server checkout", async
 	assert.equal(await tmux.newWindow("work"), "@42");
 	assert.deepEqual(calls[0].slice(-2), ["-c", homedir()]);
 
+	await tmux.newWindow("work", { cwd: "" });
+	assert.deepEqual(calls[1].slice(-2), ["-c", homedir()]);
+
 	await tmux.newWindow("work", { cwd: "/tmp/intended" });
-	assert.deepEqual(calls[1].slice(-2), ["-c", "/tmp/intended"]);
+	assert.deepEqual(calls[2].slice(-2), ["-c", "/tmp/intended"]);
 });
 
 // --- PgUp routing ----------------------------------------------------------

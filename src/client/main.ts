@@ -70,7 +70,7 @@ const state = {
 	readerCwd: "",
 	reconnectTimer: 0 as number | ReturnType<typeof setTimeout>,
 	/** reader switch requested before a just-created window reached our window list */
-	clientShowPending: undefined as { window: string; view: "reader" } | undefined,
+	clientShowPending: undefined as { window: string; view: "reader"; expiresAt: number } | undefined,
 	/** a sticky "disconnected" notice is showing; the next open says "reconnected" */
 	wasDown: false,
 };
@@ -128,6 +128,12 @@ term.open(el.term);
 if (term.textarea) {
 	const input = term.textarea;
 	let beforeReplacement: { value: string; start: number | null; end: number | null; at: number } | undefined;
+	let correctionWarned = false;
+	const warnCorrection = () => {
+		if (correctionWarned) return;
+		correctionWarned = true;
+		status("autocorrect is unavailable in the raw terminal — use the prompt box", 5000);
+	};
 	input.autocomplete = "off";
 	input.addEventListener("beforeinput", (e) => {
 		if ((e as InputEvent).inputType !== "insertReplacementText") {
@@ -136,6 +142,7 @@ if (term.textarea) {
 		}
 		if (e.cancelable) {
 			e.preventDefault();
+			warnCorrection();
 			// No input event follows a canceled edit. Keeping this snapshot would let an
 			// unrelated input-without-beforeinput rewind text to a stale value later.
 			beforeReplacement = undefined;
@@ -160,6 +167,7 @@ if (term.textarea) {
 			beforeReplacement = undefined;
 			if (Date.now() - snapshot.at > 500) return;
 			e.stopPropagation();
+			warnCorrection();
 			input.value = snapshot.value;
 			if (snapshot.start !== null && snapshot.end !== null) input.setSelectionRange(snapshot.start, snapshot.end);
 		},
@@ -294,7 +302,11 @@ function connect(): void {
 					localStorage.setItem("lastWindow", active.id);
 				}
 				const pendingShow = state.clientShowPending;
-				if (pendingShow && state.windows.some((w) => w.id === pendingShow.window)) {
+				if (pendingShow && pendingShow.expiresAt <= Date.now()) {
+					state.clientShowPending = undefined;
+				} else if (pendingShow && state.windows.some((w) => w.id === pendingShow.window)) {
+					// Clear first: selectWindow/setView deliberately cancel deferred control,
+					// including user navigation that races this poll.
 					state.clientShowPending = undefined;
 					selectWindow(pendingShow.window);
 					setView(pendingShow.view);
@@ -824,7 +836,11 @@ meta.onShowWindow = ({ window, view }) => {
 		// raw mode, then finish the requested reader switch when the next poll brings it in;
 		// otherwise it captures and displays the old active pane in the meantime.
 		setView("raw");
-		state.clientShowPending = { window, view };
+		const pending = { window, view, expiresAt: Date.now() + 5000 } as const;
+		state.clientShowPending = pending;
+		setTimeout(() => {
+			if (state.clientShowPending === pending) state.clientShowPending = undefined;
+		}, 5000);
 		return;
 	}
 	state.clientShowPending = undefined;

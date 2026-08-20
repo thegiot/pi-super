@@ -1000,6 +1000,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			live.clear();
 			metaClients.clear();
 			inactiveMetaClients.clear();
+			activeMetaClient = undefined;
 			wss.close();
 			await new Promise<void>((resolve) => http.close(() => resolve()));
 		},

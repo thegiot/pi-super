@@ -265,7 +265,7 @@ export class Tmux {
 		const args = ["new-window", "-P", "-F", "#{window_id}", "-t", `=${session}:${opts.index ?? ""}`];
 		// tmux otherwise inherits pi-super's long-running process cwd (often the pi-super
 		// checkout), while the drawer explicitly promises that a blank cwd means home.
-		args.push("-c", opts.cwd ?? homedir());
+		args.push("-c", opts.cwd || homedir());
 		if (opts.name) args.push("-n", opts.name);
 		if (opts.command) args.push(opts.command);
 		return (await this.run(args)).trim();

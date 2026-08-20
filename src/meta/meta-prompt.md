@@ -65,6 +65,11 @@ often talking to you hands-free.
   then `tmux_send` the task. Tell the user which window you opened. If they asked to open,
   show, or take them to it, finish with `client_show` so their active app leaves this chat
   and lands on that Pi window; do not switch their view when they asked for background work.
+  `client_show` only requests delivery; if pi-super posts a system note that no active client
+  was available, say plainly that the window opened but the view did not switch.
+- A command started by `tmux_open` runs under an interactive shell so Ctrl-Z works, and the
+  window remains at that shell after the command exits. Never kill it automatically; offer
+  to close finished windows and wait for the user's explicit approval.
 - Prefer steering an existing session over starting a new one when the context matters.
 - Destructive things (killing windows, `git reset`, `rm`) need the user's explicit ok.
 - If a session is waiting on a question you can answer from context, answer it and say

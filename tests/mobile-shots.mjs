@@ -252,6 +252,7 @@ async function main() {
       canceledSnapshotCleared,
       nonCancelableRestored,
       expiredSnapshotIgnored: input.value === "fresh-again",
+      warned: document.getElementById("status").textContent.includes("autocorrect is unavailable"),
       plainAllowed: !plain.defaultPrevented,
     };
   })()`);
@@ -645,7 +646,13 @@ async function main() {
     const canceled = S.state.clientShowPending === undefined;
     S.meta.onShowWindow({ window: info.id, view: "reader" });
     S.state.ws.onmessage({ data: JSON.stringify({ t: "windows", windows: [...S.state.windows, info] }) });
-    return { missing: false, deferred, canceled, active: S.state.windows.find((w) => w.active)?.id, view: S.state.view };
+    const active = S.state.windows.find((w) => w.active)?.id, view = S.state.view;
+    S.setView("meta");
+    const staleTarget = S.state.windows.find((w) => w.id !== info.id);
+    S.state.clientShowPending = { window: staleTarget.id, view: "reader", expiresAt: Date.now() - 1 };
+    S.state.ws.onmessage({ data: JSON.stringify({ t: "windows", windows: S.state.windows }) });
+    const expired = S.state.clientShowPending === undefined && S.state.view === "meta";
+    return { missing: false, deferred, canceled, active, view, expired };
   })()`);
 	console.log("meta deferred reader client_show:", JSON.stringify(metaReaderShow));
 	sh("tmux", ["-L", SOCKET, "kill-window", "-t", readerWindow]);
@@ -692,6 +699,7 @@ async function main() {
 				rawIme.canceledSnapshotCleared &&
 				rawIme.nonCancelableRestored &&
 				rawIme.expiredSnapshotIgnored &&
+				rawIme.warned &&
 				rawIme.plainAllowed,
 		],
 		[
@@ -699,12 +707,13 @@ async function main() {
 			metaShow.active === metaShow.requested && metaShow.view === "raw",
 		],
 		[
-			"reader client_show waits for a new window and yields to user navigation",
+			"reader client_show waits for a new window, expires, and yields to user navigation",
 			!metaReaderShow.missing &&
 				metaReaderShow.deferred &&
 				metaReaderShow.canceled &&
 				metaReaderShow.active === readerWindow &&
-				metaReaderShow.view === "reader",
+				metaReaderShow.view === "reader" &&
+				metaReaderShow.expired,
 		],
 		["drafts are per window and per view", drafts.onB === "" && drafts.backOnA === "for A" && drafts.onMeta === ""],
 		["tapping a path opens the file", peeked.open && peeked.path.startsWith(peekTxt) && peeked.lines === "alpha|beta|gamma"],
