@@ -900,6 +900,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			case "keys": {
 				const keys = (msg.keys as string[] | undefined) ?? [];
 				if (keys.length === 1 && keys[0] === "PageUp") await tmux.smartPageUp(`${s}:`);
+				else if (keys.length === 1 && keys[0] === "ScrollBottom") await tmux.smartScrollBottom(`${s}:`);
 				else await tmux.sendKeys(`${s}:`, keys);
 				return;
 			}

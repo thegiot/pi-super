@@ -228,6 +228,17 @@ export class Tmux {
 		else await this.run(["copy-mode", "-eu", "-t", target]);
 	}
 
+	/**
+	 * Jump back to the live bottom of the pane: leave copy mode if it is in it (that is
+	 * where scrolled-back history lives), let a full-screen app interpret End itself, and
+	 * do nothing for a shell prompt — it is already at the bottom.
+	 */
+	async smartScrollBottom(target: string): Promise<void> {
+		const out = await this.run(["display-message", "-p", "-t", target, PANE_KEY_FORMAT]);
+		if (out.split(FS)[1] === "1") await this.run(["copy-mode", "-q", "-t", target]);
+		else if (appOwnsPageKeys(out)) await this.sendKeys(target, ["End"]);
+	}
+
 	async newSessionGrouped(name: string, base: string): Promise<void> {
 		await this.run(["new-session", "-d", "-s", name, "-t", `=${base}`]);
 	}
