@@ -94,7 +94,10 @@ Tools beyond pi's builtins (bash already covers most of tmux):
 * `tmux_read` — `capture-pane` of a window (with `-S` scrollback depth).
 * `tmux_send` — send a prompt/keys to a window (`!` interrupt prefix, `/` slash cmds —
   same contract as pi-side-agents' `agent-send`, which the model already knows).
-* `tmux_open` — new window in a given cwd, optionally starting `pi` with a prompt.
+* `tmux_open` — new window in a given cwd, optionally starting `pi` from an interactive
+  shell so suspending it with Ctrl-Z returns to a usable prompt.
+* `client_show` — switch the most recently active app/browser from meta chat to a chosen
+  tmux window (raw terminal or reader), without moving every connected client.
 * `speak` — push a short spoken/notified update to the phone *asynchronously*
   (the ack/status/final contract borrowed from `pi-realtime`; keeps voice grounded
   while long work runs).

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { homedir } from "node:os";
 
 // tmux >= 3.4 escapes control characters (\037 etc.) in non-tty output, so a control
 // separator is unusable. Newline works instead: tmux sanitises control chars *inside*
@@ -262,7 +263,9 @@ export class Tmux {
 		opts: { cwd?: string; name?: string; command?: string; index?: number } = {},
 	): Promise<string> {
 		const args = ["new-window", "-P", "-F", "#{window_id}", "-t", `=${session}:${opts.index ?? ""}`];
-		if (opts.cwd) args.push("-c", opts.cwd);
+		// tmux otherwise inherits pi-super's long-running process cwd (often the pi-super
+		// checkout), while the drawer explicitly promises that a blank cwd means home.
+		args.push("-c", opts.cwd ?? homedir());
 		if (opts.name) args.push("-n", opts.name);
 		if (opts.command) args.push(opts.command);
 		return (await this.run(args)).trim();

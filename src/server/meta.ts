@@ -535,6 +535,18 @@ export class MetaAgent extends EventEmitter {
 						this.emit("speak", { message: args.message, kind: speech });
 					}
 				}
+				if (name === "client_show" && ev.isError !== true) {
+					const args = (pending?.args ?? {}) as { window?: string; view?: string };
+					// A browser only accepts real tmux window ids. Silently dropping malformed model
+					// output is safer than turning it into tmux's broad target syntax.
+					if (args.window && /^@\d+$/.test(args.window)) {
+						this.emit("clientControl", {
+							action: "showWindow",
+							window: args.window,
+							view: args.view === "reader" ? "reader" : "raw",
+						});
+					}
+				}
 				break;
 			}
 		}

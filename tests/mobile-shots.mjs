@@ -221,6 +221,42 @@ async function main() {
   })()`);
 	log("ribbon key:", JSON.stringify(ribbon));
 
+	// xterm's hidden textarea is what Android keyboards edit in raw-terminal mode. Gboard
+	// ignores xterm's autocorrect hint on some versions and offers replacements anyway;
+	// accepting one must be blocked before xterm turns it into repeated garbage.
+	const rawIme = await c.evaluate(`(async () => {
+    const input = window.piSuper.term.textarea;
+    const replacement = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertReplacementText", data: "fixed" });
+    const plain = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: "x" });
+    input.dispatchEvent(replacement);
+    input.value = "fresh";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertReplacementText", data: "fresh" }));
+    const canceledSnapshotCleared = input.value === "fresh";
+    input.dispatchEvent(plain);
+    input.value = "teh";
+    input.setSelectionRange(3, 3);
+    input.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: false, inputType: "insertReplacementText", data: "the" }));
+    // Native Chromium takes a microtask checkpoint between these events; separate tasks
+    // prevent this test from getting a false green from synthetic dispatch ordering.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    input.value = "the"; // what a non-cancelable browser edit does before input
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertReplacementText", data: "the" }));
+    const nonCancelableRestored = input.value === "teh";
+    input.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: false, inputType: "insertReplacementText", data: "old" }));
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    input.value = "fresh-again";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertReplacementText", data: "fresh-again" }));
+    return {
+      autocomplete: input.autocomplete,
+      replacementBlocked: replacement.defaultPrevented,
+      canceledSnapshotCleared,
+      nonCancelableRestored,
+      expiredSnapshotIgnored: input.value === "fresh-again",
+      plainAllowed: !plain.defaultPrevented,
+    };
+  })()`);
+	log("raw terminal IME:", JSON.stringify(rawIme));
+
 	// A half-typed prompt belongs to the window it was aimed at, not to whichever window
 	// happens to be up when it is finally sent.
 	const drafts = await c.evaluate(`(() => {
@@ -580,6 +616,40 @@ async function main() {
   })()`);
 	console.log("tab tapped from the chat:", JSON.stringify(tabFromChat));
 
+	// client_show arrives over the meta socket and uses this callback. Drive the callback
+	// directly here: protocol extraction/routing is covered server-side, while this proves
+	// the active browser actually selects the requested window and leaves chat.
+	const metaShow = await c.evaluate(`(() => {
+    const S = window.piSuper;
+    S.setView("meta");
+    const other = S.state.windows.find((w) => !w.active);
+    S.meta.onShowWindow({ window: other.id, view: "raw" });
+    return { requested: other.id, active: S.state.windows.find((w) => w.active)?.id, view: S.state.view };
+  })()`);
+	console.log("meta client_show:", JSON.stringify(metaShow));
+
+	// Exercise the race client_show actually has: tmux knows the new window before the
+	// browser's one-second list poll does. Reader mode must wait for its pane metadata, and
+	// a deliberate user view change in that gap must cancel the pending switch.
+	const readerWindow = sh("tmux", ["-L", SOCKET, "new-window", "-d", "-P", "-F", "#{window_id}", "-t", "phone", "bash"]).stdout.trim();
+	await wait(1200);
+	const metaReaderShow = await c.evaluate(`(() => {
+    const S = window.piSuper;
+    const info = S.state.windows.find((w) => w.id === ${JSON.stringify(readerWindow)});
+    if (!info) return { missing: true };
+    S.state.windows = S.state.windows.filter((w) => w.id !== info.id);
+    S.setView("meta");
+    S.meta.onShowWindow({ window: info.id, view: "reader" });
+    const deferred = S.state.view === "raw" && S.state.clientShowPending?.window === info.id;
+    S.setView("meta");
+    const canceled = S.state.clientShowPending === undefined;
+    S.meta.onShowWindow({ window: info.id, view: "reader" });
+    S.state.ws.onmessage({ data: JSON.stringify({ t: "windows", windows: [...S.state.windows, info] }) });
+    return { missing: false, deferred, canceled, active: S.state.windows.find((w) => w.active)?.id, view: S.state.view };
+  })()`);
+	console.log("meta deferred reader client_show:", JSON.stringify(metaReaderShow));
+	sh("tmux", ["-L", SOCKET, "kill-window", "-t", readerWindow]);
+
 	const GREEN = "rgb(126, 231, 135)";
 	const BLUE = "rgb(79, 127, 208)";
 
@@ -615,6 +685,27 @@ async function main() {
 		["chat view: the window tab drops to blue", bar.meta.tab === BLUE],
 		["the two views never look the same", bar.term.tab !== bar.meta.tab && bar.term.call !== bar.meta.call],
 		["ribbon key reaches the pty without stealing focus", ribbon.sent === "C-t" && ribbon.focused === "input"],
+		[
+			"raw terminal disables suggestions and blocks unsupported autocorrect replacement",
+			rawIme.autocomplete === "off" &&
+				rawIme.replacementBlocked &&
+				rawIme.canceledSnapshotCleared &&
+				rawIme.nonCancelableRestored &&
+				rawIme.expiredSnapshotIgnored &&
+				rawIme.plainAllowed,
+		],
+		[
+			"meta can show a window on the active client",
+			metaShow.active === metaShow.requested && metaShow.view === "raw",
+		],
+		[
+			"reader client_show waits for a new window and yields to user navigation",
+			!metaReaderShow.missing &&
+				metaReaderShow.deferred &&
+				metaReaderShow.canceled &&
+				metaReaderShow.active === readerWindow &&
+				metaReaderShow.view === "reader",
+		],
 		["drafts are per window and per view", drafts.onB === "" && drafts.backOnA === "for A" && drafts.onMeta === ""],
 		["tapping a path opens the file", peeked.open && peeked.path.startsWith(peekTxt) && peeked.lines === "alpha|beta|gamma"],
 		["a :line suffix lands on that line", peeked.hit === "beta"],

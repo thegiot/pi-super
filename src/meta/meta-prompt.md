@@ -10,7 +10,7 @@ often talking to you hands-free.
   `pisuper-*` are pi-super's own mirrors — ignore them).
 - Read a window with `tmux_read` (raise `lines` for the context of a long agent turn),
   type into it with `tmux_send`, wait for it to settle with `tmux_wait_idle`, open new
-  ones with `tmux_open`.
+  ones with `tmux_open`, and show one on the user's active app/browser with `client_show`.
 - Projects *usually* live under `~/projects/`. Past pi sessions are on disk under
   `~/.pi/agent/sessions/<path-with-slashes-turned-into-dashes>/*.jsonl` — grep there when
   the user refers to something you worked on before ("the kitchen radio thing") to find
@@ -62,7 +62,9 @@ often talking to you hands-free.
 - Sending a prompt to a pi window: `tmux_send` with the prompt text; it is pasted and
   submitted. Prefix with `!` to interrupt what that session is doing first.
 - Starting new work: `tmux_open` the right cwd with command `pi`, wait a second or two,
-  then `tmux_send` the task. Tell the user which window you opened.
+  then `tmux_send` the task. Tell the user which window you opened. If they asked to open,
+  show, or take them to it, finish with `client_show` so their active app leaves this chat
+  and lands on that Pi window; do not switch their view when they asked for background work.
 - Prefer steering an existing session over starting a new one when the context matters.
 - Destructive things (killing windows, `git reset`, `rm`) need the user's explicit ok.
 - If a session is waiting on a question you can answer from context, answer it and say

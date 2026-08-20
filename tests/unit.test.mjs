@@ -3,11 +3,11 @@ import { test } from "node:test";
 import { isAuthed, originAllowed, parseCookies, requestToken, tokenEquals } from "../dist/server/auth.js";
 import { parseArgs } from "../dist/server/config.js";
 import { buildVocabulary, dictationInstructions } from "../dist/server/dictation.js";
-import { voiceInstructions } from "../dist/server/server.js";
+import { chooseActiveMetaClient, voiceInstructions } from "../dist/server/server.js";
 import { Tmux, appOwnsPageKeys } from "../dist/server/tmux.js";
 import { storeUpload } from "../dist/server/uploads.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 // --- tmux output framing ---------------------------------------------------
@@ -31,6 +31,38 @@ test("newline framing keeps empty trailing fields", () => {
 	assert.deepEqual(parseRows("", 3), []);
 	assert.deepEqual(parseRows("a\nb\n", 2), [["a", "b"]]);
 	assert.equal(typeof new Tmux([]).listSessions, "function");
+});
+
+test("meta client control targets foreground activity without guessing among clients", () => {
+	const first = { readyState: 1, name: "first" };
+	const second = { readyState: 1, name: "second" };
+	const closed = { readyState: 3, name: "closed" };
+	assert.equal(chooseActiveMetaClient([first, second], second), second, "reported foreground client wins");
+	assert.equal(chooseActiveMetaClient([first, closed], closed), first, "one open client is an unambiguous fallback");
+	assert.equal(chooseActiveMetaClient([first, second]), undefined, "do not move either of two clients without presence");
+	assert.equal(chooseActiveMetaClient([first], first, new Set([first])), undefined, "a hidden client is not eligible even alone");
+	assert.equal(
+		chooseActiveMetaClient([first, second], first, new Set([first])),
+		second,
+		"the sole visible client wins when the formerly active one is hidden",
+	);
+	assert.equal(chooseActiveMetaClient([closed]), undefined, "closed clients are never targets");
+});
+
+test("a new window with blank cwd opens in home, not the server checkout", async () => {
+	const calls = [];
+	class RecordingTmux extends Tmux {
+		async run(args) {
+			calls.push(args);
+			return "@42\n";
+		}
+	}
+	const tmux = new RecordingTmux([]);
+	assert.equal(await tmux.newWindow("work"), "@42");
+	assert.deepEqual(calls[0].slice(-2), ["-c", homedir()]);
+
+	await tmux.newWindow("work", { cwd: "/tmp/intended" });
+	assert.deepEqual(calls[1].slice(-2), ["-c", "/tmp/intended"]);
 });
 
 // --- PgUp routing ----------------------------------------------------------
@@ -176,6 +208,41 @@ test("parseArgs maps flags and rejects nonsense", () => {
 });
 
 // --- meta agent watchdog ---------------------------------------------------
+
+test("client_show tool completion requests a validated foreground-client switch", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-client-show-"));
+	const fakePi = join(dir, "fake-pi.mjs");
+	writeFileSync(
+		fakePi,
+		`process.stdin.setEncoding("utf8");
+let buf = "";
+const say = (ev) => process.stdout.write(JSON.stringify(ev) + "\\n");
+process.stdin.on("data", (chunk) => {
+	buf += chunk;
+	if (!buf.includes("\\n")) return;
+	say({ type: "agent_start" });
+	say({ type: "tool_execution_start", toolCallId: "show1", toolName: "client_show", args: { window: "@42", view: "reader" } });
+	say({ type: "tool_execution_end", toolCallId: "show1", toolName: "client_show", result: { content: [] } });
+	say({ type: "agent_settled" });
+	buf = "";
+});
+setInterval(() => {}, 1000);
+`,
+	);
+	const shim = join(dir, "pi");
+	writeFileSync(shim, `#!/bin/sh\nexec ${process.execPath} ${fakePi}\n`, { mode: 0o755 });
+	const { MetaAgent } = await import("../dist/server/meta.js");
+	const meta = new MetaAgent({
+		metaDir: join(import.meta.dirname, "..", "src", "meta"),
+		socketArgs: [],
+		piBin: shim,
+		sessionDir: join(dir, "sessions"),
+	});
+	const control = new Promise((resolve) => meta.once("clientControl", resolve));
+	meta.prompt("show me the new project");
+	assert.deepEqual(await control, { action: "showWindow", window: "@42", view: "reader" });
+	await meta.stop();
+});
 
 test("a turn that goes silent is restarted and re-asked", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "pi-super-meta-"));

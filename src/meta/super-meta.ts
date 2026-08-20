@@ -62,6 +62,32 @@ const fail = (err: unknown) => text(JSON.stringify({ ok: false, error: String((e
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+async function paste(target: string, body: string): Promise<void> {
+	const buffer = `pi-super-meta-${Math.random().toString(36).slice(2, 10)}`;
+	await tmux(["load-buffer", "-b", buffer, "-"], body);
+	try {
+		await tmux(["paste-buffer", "-d", "-p", "-b", buffer, "-t", target]);
+	} finally {
+		await tmux(["delete-buffer", "-b", buffer]).catch(() => {});
+	}
+}
+
+/**
+ * A new default tmux pane has an interactive shell, but keystrokes sent while its startup
+ * files are still running can be displayed and never executed. This is the same guard used
+ * by pi-side-agents; timing out merely falls back to tmux's queued tty input.
+ */
+async function waitForShellReady(target: string, timeoutMs = 5000): Promise<void> {
+	const started = Date.now();
+	while (Date.now() - started < timeoutMs) {
+		const out = await tmux(["capture-pane", "-p", "-t", target]);
+		const lines = out.split(/\r?\n/).filter((line) => line.trim());
+		const last = lines.at(-1);
+		if (last && /[$#%>❯›➜λ]\s*$/u.test(last)) return;
+		await sleep(100);
+	}
+}
+
 export default function superMeta(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "tmux_windows",
@@ -156,13 +182,7 @@ export default function superMeta(pi: ExtensionAPI) {
 					body = body.slice(1);
 				}
 				if (body) {
-					const buffer = `pi-super-meta-${Math.random().toString(36).slice(2, 10)}`;
-					await tmux(["load-buffer", "-b", buffer, "-"], body);
-					try {
-						await tmux(["paste-buffer", "-d", "-p", "-b", buffer, "-t", params.window]);
-					} finally {
-						await tmux(["delete-buffer", "-b", buffer]).catch(() => {});
-					}
+					await paste(params.window, body);
 					if (params.submit !== false) {
 						await sleep(150);
 						await tmux(["send-keys", "-t", params.window, "Enter"]);
@@ -180,7 +200,7 @@ export default function superMeta(pi: ExtensionAPI) {
 		name: "tmux_open",
 		label: "tmux open window",
 		description:
-			"Open a new tmux window (in the user's main session) at a given cwd, optionally running a command such as `pi`. Returns the new window id/index. To start work: open the window with command 'pi', wait a moment for the TUI, then tmux_send the prompt.",
+			"Open a new tmux window (in the user's main session) at a given cwd, optionally typing a command such as `pi` into its interactive shell. The shell stays underneath the command, so Ctrl-Z works. Returns the new window id/index. To start work: open with command 'pi', wait a moment for the TUI, then tmux_send the prompt.",
 		parameters: Type.Object({
 			cwd: Type.String({ description: "absolute working directory for the new window" }),
 			name: Type.Optional(Type.String({ description: "window name" })),
@@ -200,12 +220,45 @@ export default function superMeta(pi: ExtensionAPI) {
 				const next = idx.reduce((m, r) => Math.max(m, Number(r[0])), -1) + 1;
 				const args = ["new-window", "-d", "-P", "-F", "#{window_id} #{window_index}", "-t", `=${session}:${next}`, "-c", params.cwd];
 				if (params.name) args.push("-n", params.name);
-				if (params.command) args.push(params.command);
-				const [window, index] = (await tmux(args)).trim().split(" ");
+				// Do not pass the command as tmux's pane command: that has no interactive
+				// parent shell to regain control when the user presses Ctrl-Z. Start the normal
+				// shell first and type into it, exactly like pi-side-agents does.
+				const [window, index] = (await tmux(args)).trim().split(/\s+/);
+				if (!window || !/^@\d+$/.test(window) || !index || !/^\d+$/.test(index)) {
+					throw new Error(`could not parse new tmux window identity: ${window ?? ""} ${index ?? ""}`);
+				}
+				if (params.command) {
+					await waitForShellReady(window);
+					// This target is a shell, not a TUI prompt: literal keys avoid bracketed-paste
+					// markers becoming command text in shells that do not support that mode.
+					await tmux(["send-keys", "-l", "-t", window, params.command]);
+					await tmux(["send-keys", "-t", window, "Enter"]);
+				}
 				return json({ ok: true, session, window, index: Number(index) });
 			} catch (err) {
 				return fail(err);
 			}
+		},
+	});
+
+	pi.registerTool({
+		name: "client_show",
+		label: "show window on client",
+		description:
+			"Switch the currently active pi-super browser/app from the meta chat to a tmux window. Use this when the user asks to open, show, or take them to work you started. Defaults to the live raw terminal; reader reflows captured output.",
+		parameters: Type.Object({
+			window: Type.String({ description: "tmux window id returned by tmux_open, e.g. @12" }),
+			view: Type.Optional(
+				Type.Union([Type.Literal("raw"), Type.Literal("reader")], {
+					description: "view to show (default raw)",
+				}),
+			),
+		}),
+		async execute(_id, params) {
+			if (!/^@\d+$/.test(params.window)) return fail(new Error("window must be a tmux window id such as @12"));
+			// pi-super observes this tool's RPC completion and routes it to the one client
+			// most recently in the foreground; the extension itself has no browser socket.
+			return json({ ok: true, requested: { window: params.window, view: params.view ?? "raw" } });
 		},
 	});
 

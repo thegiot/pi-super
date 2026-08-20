@@ -29,6 +29,17 @@ const MIME: Record<string, string> = {
 const WINDOW_POLL_MS = 1000;
 const MAX_WS_BUFFER = 2 * 1024 * 1024;
 
+/** Prefer reported foreground activity; one open client is an unambiguous fallback. */
+export function chooseActiveMetaClient<T extends { readyState: number }>(
+	clients: Iterable<T>,
+	active?: T,
+	inactive: ReadonlySet<T> = new Set(),
+): T | undefined {
+	if (active?.readyState === WebSocket.OPEN && !inactive.has(active)) return active;
+	const eligible = [...clients].filter((client) => client.readyState === WebSocket.OPEN && !inactive.has(client));
+	return eligible.length === 1 ? eligible[0] : undefined;
+}
+
 export interface SuperServer {
 	http: Server;
 	/** resume a previous meta session, if any — call once the port is bound (owned) */
@@ -88,6 +99,9 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		return fwd || req.socket.remoteAddress || "?";
 	};
 	const metaClients = new Set<WebSocket>();
+	const inactiveMetaClients = new Set<WebSocket>();
+	/** Last foreground/interacting browser; meta UI commands must never move every client. */
+	let activeMetaClient: WebSocket | undefined;
 
 	/**
 	 * Crude per-peer bucket for the endpoints anyone can reach: 30 hits a minute.
@@ -143,6 +157,19 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	meta.on("speak", (speak) => {
 		log(`meta: speak/${(speak as { kind?: string }).kind}: ${preview((speak as { message: string }).message)}`);
 		broadcastMeta({ t: "speak", ...(speak as object) });
+	});
+	meta.on("clientControl", (control) => {
+		const request = control as { action: string; window: string; view: string };
+		// If presence was lost to a reconnect, one client is unambiguous. With several,
+		// doing nothing is better than switching the wrong person's desktop or phone.
+		const target = chooseActiveMetaClient(metaClients, activeMetaClient, inactiveMetaClients);
+		if (!target) {
+			log(`meta: client control dropped (no unambiguous active client): ${request.action} ${request.window}`);
+			meta.note(`could not switch the app to ${request.window}: no single active client`);
+			return;
+		}
+		target.send(JSON.stringify({ t: "clientControl", ...request }));
+		log(`meta: client control: ${request.action} ${request.window} (${request.view})`);
 	});
 	meta.on("exit", () => broadcastMeta({ t: "state", state: meta.state }));
 	// A settled turn has answered everything queued behind it (steering folds prompts into
@@ -905,7 +932,18 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			}
 			try {
 				switch (msg.t) {
+					case "active":
+						inactiveMetaClients.delete(ws);
+						activeMetaClient = ws;
+						break;
+					case "inactive":
+						inactiveMetaClients.add(ws);
+						if (activeMetaClient === ws) activeMetaClient = undefined;
+						break;
 					case "prompt": {
+						// A prompt identifies its client, but a background client remains ineligible;
+						// it must report foreground activity before asking to move a screen.
+						if (!inactiveMetaClients.has(ws)) activeMetaClient = ws;
 						const text = String(msg.text ?? "");
 						// The journal is the only place to see whether a *voice* prompt ever
 						// reached the agent: the phone shows the chat, but when nothing comes
@@ -940,6 +978,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			}
 		});
 		const drop = () => {
+			if (activeMetaClient === ws) activeMetaClient = undefined;
+			inactiveMetaClients.delete(ws);
 			if (metaClients.delete(ws)) log(`meta ws: ${ip} disconnected`);
 		};
 		ws.on("close", drop);
@@ -959,6 +999,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			for (const term of live) await term.dispose();
 			live.clear();
 			metaClients.clear();
+			inactiveMetaClients.clear();
 			wss.close();
 			await new Promise<void>((resolve) => http.close(() => resolve()));
 		},

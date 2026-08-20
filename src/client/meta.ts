@@ -25,12 +25,15 @@ export interface MetaApi {
 	newSession(): void;
 	onSpeak?: (msg: { message: string; kind: string }) => void;
 	onState?: (state: MetaState) => void;
+	/** Meta agent asked the foreground pi-super client to show a tmux window. */
+	onShowWindow?: (request: { window: string; view: "raw" | "reader" }) => void;
 }
 
 export function createMeta(container: HTMLElement): MetaApi {
 	const nodes = new Map<number, HTMLElement>();
 	let ws: WebSocket | undefined;
 	let backoff = 500;
+	let lastActiveAt = 0;
 
 	// Voice/chat input must survive a reconnect rather than vanish into a closed socket.
 	const outbox: string[] = [];
@@ -38,6 +41,20 @@ export function createMeta(container: HTMLElement): MetaApi {
 		const data = JSON.stringify(msg);
 		if (ws?.readyState === WebSocket.OPEN) ws.send(data);
 		else if (outbox.length < 50) outbox.push(data);
+	}
+
+	/**
+	 * A meta agent is global but its UI commands are not: with a phone and desktop both
+	 * connected, only the one the user is touching should move. Presence is deliberately
+	 * ephemeral (never queued through reconnect), and throttled so typing is not a stream of
+	 * bookkeeping messages.
+	 */
+	function markActive(force = false): void {
+		if (document.hidden || ws?.readyState !== WebSocket.OPEN) return;
+		const now = Date.now();
+		if (!force && now - lastActiveAt < 1000) return;
+		lastActiveAt = now;
+		ws.send(JSON.stringify({ t: "active" }));
 	}
 
 	const api: MetaApi = {
@@ -95,6 +112,8 @@ export function createMeta(container: HTMLElement): MetaApi {
 		ws.onopen = () => {
 			backoff = 500;
 			while (outbox.length > 0 && ws?.readyState === WebSocket.OPEN) ws.send(outbox.shift() as string);
+			if (document.hidden) ws?.send(JSON.stringify({ t: "inactive" }));
+			else markActive(true);
 		};
 		ws.onmessage = (ev) => {
 			const msg = JSON.parse(String(ev.data)) as Record<string, unknown>;
@@ -114,6 +133,11 @@ export function createMeta(container: HTMLElement): MetaApi {
 				case "speak":
 					api.onSpeak?.(msg as unknown as { message: string; kind: string });
 					break;
+				case "clientControl":
+					if (msg.action === "showWindow" && typeof msg.window === "string") {
+						api.onShowWindow?.({ window: msg.window, view: msg.view === "reader" ? "reader" : "raw" });
+					}
+					break;
 			}
 		};
 		ws.onclose = () => {
@@ -123,6 +147,17 @@ export function createMeta(container: HTMLElement): MetaApi {
 		};
 		ws.onerror = () => ws?.close();
 	}
+
+	document.addEventListener("visibilitychange", () => {
+		if (document.hidden) {
+			// A phone put in a pocket must stop being the target even if no other client has
+			// been clicked since. This presence hint is intentionally not queued.
+			if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "inactive" }));
+		} else markActive(true);
+	});
+	window.addEventListener("focus", () => markActive(true));
+	window.addEventListener("pointerdown", () => markActive(), { passive: true });
+	window.addEventListener("keydown", () => markActive(), { passive: true });
 
 	connect();
 	return api;

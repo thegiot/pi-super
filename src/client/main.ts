@@ -69,6 +69,8 @@ const state = {
 	/** cwd of the pane the reader text was captured from, snapshotted with it */
 	readerCwd: "",
 	reconnectTimer: 0 as number | ReturnType<typeof setTimeout>,
+	/** reader switch requested before a just-created window reached our window list */
+	clientShowPending: undefined as { window: string; view: "reader" } | undefined,
 	/** a sticky "disconnected" notice is showing; the next open says "reconnected" */
 	wasDown: false,
 };
@@ -117,6 +119,53 @@ const term = new Terminal({
 const fit = new FitAddon();
 term.loadAddon(fit);
 term.open(el.term);
+
+// xterm already disables autocorrect/capitalisation/spellcheck, but omits autocomplete.
+// Gboard can consequently still offer a correction; accepting it emits
+// `insertReplacementText`, which xterm 5.5 does not understand and turns into repeated,
+// garbled input through its hidden textarea. Ask Android not to offer it, and if a keyboard
+// ignores that hint, refuse the unsupported replacement rather than corrupting the terminal.
+if (term.textarea) {
+	const input = term.textarea;
+	let beforeReplacement: { value: string; start: number | null; end: number | null; at: number } | undefined;
+	input.autocomplete = "off";
+	input.addEventListener("beforeinput", (e) => {
+		if ((e as InputEvent).inputType !== "insertReplacementText") {
+			beforeReplacement = undefined;
+			return;
+		}
+		if (e.cancelable) {
+			e.preventDefault();
+			// No input event follows a canceled edit. Keeping this snapshot would let an
+			// unrelated input-without-beforeinput rewind text to a stale value later.
+			beforeReplacement = undefined;
+			return;
+		}
+		const snapshot = { value: input.value, start: input.selectionStart, end: input.selectionEnd, at: Date.now() };
+		beforeReplacement = snapshot;
+		// Native Chromium may run a microtask checkpoint between beforeinput and input, so
+		// expiry must be time-bounded rather than microtask-bounded. A later unrelated
+		// replacement must never rewind the helper to this old value.
+		setTimeout(() => {
+			if (beforeReplacement === snapshot) beforeReplacement = undefined;
+		}, 500);
+	});
+	// Chromium documents that autocomplete-originated beforeinput can be non-cancelable.
+	// Restore xterm's helper before its delayed IME diff sees the replacement in that case.
+	el.term.addEventListener(
+		"input",
+		(e) => {
+			if ((e as InputEvent).inputType !== "insertReplacementText" || !beforeReplacement) return;
+			const snapshot = beforeReplacement;
+			beforeReplacement = undefined;
+			if (Date.now() - snapshot.at > 500) return;
+			e.stopPropagation();
+			input.value = snapshot.value;
+			if (snapshot.start !== null && snapshot.end !== null) input.setSelectionRange(snapshot.start, snapshot.end);
+		},
+		true,
+	);
+}
 
 term.onData((d) => send(enc.encode(d)));
 term.onBinary((d) => send(Uint8Array.from(d, (c) => c.charCodeAt(0) & 0xff)));
@@ -244,6 +293,12 @@ function connect(): void {
 				} else if (active) {
 					localStorage.setItem("lastWindow", active.id);
 				}
+				const pendingShow = state.clientShowPending;
+				if (pendingShow && state.windows.some((w) => w.id === pendingShow.window)) {
+					state.clientShowPending = undefined;
+					selectWindow(pendingShow.window);
+					setView(pendingShow.view);
+				}
 				renderTabs();
 				renderWindowList();
 				syncDraft();
@@ -349,6 +404,7 @@ function activeWindow(): WindowInfo | undefined {
  * would yank the user out of a conversation they are in the middle of.
  */
 function selectWindow(id: string, opts: { show?: boolean } = {}): void {
+	state.clientShowPending = undefined;
 	send({ t: "select", window: id });
 	const leaveChat = opts.show && state.view === "meta";
 	if (state.windows.some((w) => w.id === id)) {
@@ -592,6 +648,7 @@ function cellText(row: number, col: number): { text: string; index: number } | u
 }
 
 function setView(view: "raw" | "reader" | "meta"): void {
+	state.clientShowPending = undefined;
 	state.view = view;
 	if (view !== "meta") state.lastTermView = view;
 	el.reader.hidden = view !== "reader";
@@ -758,6 +815,20 @@ const meta = createMeta(el.meta);
 meta.onState = (s) => {
 	metaBusy = s.busy;
 	refreshCallButton();
+};
+meta.onShowWindow = ({ window, view }) => {
+	const known = state.windows.some((w) => w.id === window);
+	selectWindow(window);
+	if (view === "reader" && !known) {
+		// refreshReader needs the pane id from the window list. Leave chat immediately in
+		// raw mode, then finish the requested reader switch when the next poll brings it in;
+		// otherwise it captures and displays the old active pane in the meantime.
+		setView("raw");
+		state.clientShowPending = { window, view };
+		return;
+	}
+	state.clientShowPending = undefined;
+	setView(view === "reader" ? "reader" : "raw");
 };
 
 const voice = createVoice(meta);
