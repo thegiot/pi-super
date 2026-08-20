@@ -135,6 +135,7 @@ if (term.textarea) {
 		let beforeEdit: EditSnapshot | undefined;
 		let finishingComposition = false;
 		let xtermPasted = false;
+		let xtermKey: object | undefined;
 		let editWarned = false;
 		const key = (name: string, keyCode: number) => {
 			const options = { key: name, keyCode, which: keyCode, bubbles: true, cancelable: true };
@@ -155,13 +156,32 @@ if (term.textarea) {
 		// Returning false before CompositionHelper.keydown avoids its broken whole-textarea
 		// diff. Browser input still proceeds, and the capture handler below becomes the one
 		// source of terminal data for virtual-keyboard edits.
-		term.attachCustomKeyEventHandler((e) => e.type !== "keydown" || e.keyCode !== 229);
+		term.attachCustomKeyEventHandler((e) => {
+			if (e.type !== "keydown") return true;
+			if (e.keyCode === 229) {
+				xtermKey = undefined;
+				return false;
+			}
+			if (e.isTrusted) {
+				// Some Android keyboards mutate the textarea despite xterm preventing the real
+				// keydown's default. Mark the following input as already handled; if there is no
+				// input event, the timer still discards the now-stale helper base.
+				const marker = {};
+				xtermKey = marker;
+				setTimeout(() => {
+					if (xtermKey !== marker) return;
+					xtermKey = undefined;
+					resetTerminalInput();
+				}, 0);
+			}
+			return true;
+		});
 		input.addEventListener("compositionstart", () => {
 			finishingComposition = false;
 		});
 		input.addEventListener("compositionend", () => {
-			// xterm queues the committed composition from this same event. Let the following
-			// input event pass rather than sending the commit once here and once there.
+			// xterm queues the committed composition from this event. Ignore the browser's
+			// follow-up input instead of also translating the same committed text here.
 			finishingComposition = true;
 			setTimeout(() => (finishingComposition = false), 0);
 		});
@@ -184,7 +204,16 @@ if (term.textarea) {
 				const ev = e as InputEvent;
 				const snapshot = beforeEdit;
 				beforeEdit = undefined;
-				if (ev.isComposing || finishingComposition) return;
+				if (ev.isComposing || finishingComposition) {
+					xtermKey = undefined; // its reset timer must not erase an active preedit
+					return;
+				}
+				if (xtermKey) {
+					xtermKey = undefined;
+					e.stopPropagation();
+					resetTerminalInput();
+					return;
+				}
 				if (ev.inputType === "insertFromPaste" && xtermPasted) {
 					xtermPasted = false;
 					return;
