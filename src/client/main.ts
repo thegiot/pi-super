@@ -120,59 +120,79 @@ const fit = new FitAddon();
 term.loadAddon(fit);
 term.open(el.term);
 
-// xterm already disables autocorrect/capitalisation/spellcheck, but omits autocomplete.
-// Gboard can consequently still offer a correction; accepting it emits
-// `insertReplacementText`, which xterm 5.5 does not understand and turns into repeated,
-// garbled input through its hidden textarea. Ask Android not to offer it, and if a keyboard
-// ignores that hint, refuse the unsupported replacement rather than corrupting the terminal.
+// xterm's keyCode-229 fallback compares Gboard's hidden textarea before and after an
+// edit. An accepted correction rewrites old text, so xterm mistakes the whole textarea for
+// newly typed data and repeats it on every following key. On Android, let xterm keep its
+// normal insert/composition handling but bypass that fallback and translate rewritten text
+// into the cursor moves, deletes and insertion that a terminal editor understands.
 if (term.textarea) {
 	const input = term.textarea;
-	let beforeReplacement: { value: string; start: number | null; end: number | null; at: number } | undefined;
-	let correctionWarned = false;
-	const warnCorrection = () => {
-		if (correctionWarned) return;
-		correctionWarned = true;
-		status("autocorrect is unavailable in the raw terminal — use the prompt box", 5000);
-	};
+	const android = /Android/i.test(navigator.userAgent);
+	type EditSnapshot = { value: string; cursor: number; at: number };
+	let beforeEdit: EditSnapshot | undefined;
+	let editWarned = false;
 	input.autocomplete = "off";
-	input.addEventListener("beforeinput", (e) => {
-		if ((e as InputEvent).inputType !== "insertReplacementText") {
-			beforeReplacement = undefined;
-			return;
-		}
-		if (e.cancelable) {
-			e.preventDefault();
-			warnCorrection();
-			// No input event follows a canceled edit. Keeping this snapshot would let an
-			// unrelated input-without-beforeinput rewind text to a stale value later.
-			beforeReplacement = undefined;
-			return;
-		}
-		const snapshot = { value: input.value, start: input.selectionStart, end: input.selectionEnd, at: Date.now() };
-		beforeReplacement = snapshot;
-		// Native Chromium may run a microtask checkpoint between beforeinput and input, so
-		// expiry must be time-bounded rather than microtask-bounded. A later unrelated
-		// replacement must never rewind the helper to this old value.
-		setTimeout(() => {
-			if (beforeReplacement === snapshot) beforeReplacement = undefined;
-		}, 500);
-	});
-	// Chromium documents that autocomplete-originated beforeinput can be non-cancelable.
-	// Restore xterm's helper before its delayed IME diff sees the replacement in that case.
-	el.term.addEventListener(
-		"input",
-		(e) => {
-			if ((e as InputEvent).inputType !== "insertReplacementText" || !beforeReplacement) return;
-			const snapshot = beforeReplacement;
-			beforeReplacement = undefined;
-			if (Date.now() - snapshot.at > 500) return;
-			e.stopPropagation();
-			warnCorrection();
-			input.value = snapshot.value;
-			if (snapshot.start !== null && snapshot.end !== null) input.setSelectionRange(snapshot.start, snapshot.end);
-		},
-		true,
-	);
+
+	if (android) {
+		term.attachCustomKeyEventHandler((e) => e.type !== "keydown" || e.keyCode !== 229);
+		input.addEventListener("beforeinput", () => {
+			const snapshot = { value: input.value, cursor: input.selectionEnd ?? input.value.length, at: Date.now() };
+			beforeEdit = snapshot;
+			// Some Chromium input paths omit the matching input event. Never apply an old
+			// snapshot to a later edit after the keyboard or tab has changed state.
+			setTimeout(() => {
+				if (beforeEdit === snapshot) beforeEdit = undefined;
+			}, 500);
+		});
+		el.term.addEventListener(
+			"input",
+			(e) => {
+				const ev = e as InputEvent;
+				const snapshot = beforeEdit;
+				beforeEdit = undefined;
+				if (!snapshot || Date.now() - snapshot.at > 500) {
+					if (ev.inputType === "insertReplacementText") {
+						e.stopPropagation();
+						if (!editWarned) {
+							editWarned = true;
+							status("the keyboard correction could not be applied", 4000, true);
+						}
+					}
+					return;
+				}
+
+				const before = Array.from(snapshot.value);
+				const after = Array.from(input.value);
+				let prefix = 0;
+				while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
+				let suffix = 0;
+				while (
+					suffix < before.length - prefix &&
+					suffix < after.length - prefix &&
+					before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+				)
+					suffix++;
+				const removed = before.length - prefix - suffix;
+				const inserted = after.slice(prefix, after.length - suffix).join("");
+				// xterm already handles a plain insertion correctly from InputEvent.data. Only
+				// take over rewrites and deletions; stopping every input would break IMEs whose
+				// composition lifecycle xterm does understand.
+				if (removed === 0 && ev.inputType === "insertText" && inserted === (ev.data ?? "")) return;
+				if (ev.inputType !== "insertReplacementText" && !ev.inputType.startsWith("delete") && removed === 0) return;
+				e.stopPropagation();
+
+				const oldCursor = Array.from(snapshot.value.slice(0, snapshot.cursor)).length;
+				const oldEditEnd = before.length - suffix;
+				const newCursor = Array.from(input.value.slice(0, input.selectionEnd ?? input.value.length)).length;
+				const move = (from: number, to: number) =>
+					to < from ? "\x1b[D".repeat(from - to) : "\x1b[C".repeat(to - from);
+				const sequence =
+					move(oldCursor, oldEditEnd) + "\x7f".repeat(removed) + inserted + move(prefix + Array.from(inserted).length, newCursor);
+				if (sequence) send(enc.encode(sequence));
+			},
+			true,
+		);
+	}
 }
 
 term.onData((d) => send(enc.encode(d)));
