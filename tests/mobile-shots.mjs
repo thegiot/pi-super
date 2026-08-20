@@ -652,7 +652,8 @@ async function main() {
     S.state.clientShowPending = { window: staleTarget.id, view: "reader", expiresAt: Date.now() - 1 };
     S.state.ws.onmessage({ data: JSON.stringify({ t: "windows", windows: S.state.windows }) });
     const expired = S.state.clientShowPending === undefined && S.state.view === "meta";
-    return { missing: false, deferred, canceled, active, view, expired };
+    const expiryExplained = document.getElementById("status").textContent.includes("new window did not appear");
+    return { missing: false, deferred, canceled, active, view, expired, expiryExplained };
   })()`);
 	console.log("meta deferred reader client_show:", JSON.stringify(metaReaderShow));
 	sh("tmux", ["-L", SOCKET, "kill-window", "-t", readerWindow]);
@@ -713,7 +714,8 @@ async function main() {
 				metaReaderShow.canceled &&
 				metaReaderShow.active === readerWindow &&
 				metaReaderShow.view === "reader" &&
-				metaReaderShow.expired,
+				metaReaderShow.expired &&
+				metaReaderShow.expiryExplained,
 		],
 		["drafts are per window and per view", drafts.onB === "" && drafts.backOnA === "for A" && drafts.onMeta === ""],
 		["tapping a path opens the file", peeked.open && peeked.path.startsWith(peekTxt) && peeked.lines === "alpha|beta|gamma"],

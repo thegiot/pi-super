@@ -304,6 +304,7 @@ function connect(): void {
 				const pendingShow = state.clientShowPending;
 				if (pendingShow && pendingShow.expiresAt <= Date.now()) {
 					state.clientShowPending = undefined;
+					status("the new window did not appear — staying on the live terminal", 5000, true);
 				} else if (pendingShow && state.windows.some((w) => w.id === pendingShow.window)) {
 					// Clear first: selectWindow/setView deliberately cancel deferred control,
 					// including user navigation that races this poll.
@@ -838,8 +839,12 @@ meta.onShowWindow = ({ window, view }) => {
 		setView("raw");
 		const pending = { window, view, expiresAt: Date.now() + 5000 } as const;
 		state.clientShowPending = pending;
+		// The timer handles a live but unchanged list; the timestamp check in the poll also
+		// handles a suspended phone whose timers only resume after the deadline.
 		setTimeout(() => {
-			if (state.clientShowPending === pending) state.clientShowPending = undefined;
+			if (state.clientShowPending !== pending) return;
+			state.clientShowPending = undefined;
+			status("the new window did not appear — staying on the live terminal", 5000, true);
 		}, 5000);
 		return;
 	}

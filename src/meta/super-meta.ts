@@ -12,6 +12,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -76,7 +77,7 @@ async function paste(target: string, body: string): Promise<void> {
  * A new default tmux pane has an interactive shell, but keystrokes sent while its startup
  * files are still running can be displayed and never executed. This is the same heuristic
  * guard used by pi-side-agents (prompt text is not structurally knowable across shells);
- * timing out merely falls back to tmux's queued tty input.
+ * on timeout we make the same best-effort key delivery rather than blocking forever.
  */
 async function waitForShellReady(target: string, timeoutMs = 5000): Promise<void> {
 	const started = Date.now();
@@ -203,7 +204,7 @@ export default function superMeta(pi: ExtensionAPI) {
 		description:
 			"Open a new tmux window (in the user's main session) at a given cwd, optionally typing a command such as `pi` into its interactive shell. The shell stays underneath the command, so Ctrl-Z works. Returns the new window id/index. To start work: open with command 'pi', wait a moment for the TUI, then tmux_send the prompt.",
 		parameters: Type.Object({
-			cwd: Type.String({ description: "absolute working directory for the new window" }),
+			cwd: Type.String({ description: "absolute working directory for the new window (blank defaults to home)" }),
 			name: Type.Optional(Type.String({ description: "window name" })),
 			command: Type.Optional(Type.String({ description: "command to run (default: the user's shell)" })),
 			session: Type.Optional(Type.String({ description: "target session (default: first non-mirror session)" })),
@@ -219,7 +220,8 @@ export default function superMeta(pi: ExtensionAPI) {
 				}
 				const idx = await query(["list-windows", "-t", `=${session}`], ["#{window_index}"]);
 				const next = idx.reduce((m, r) => Math.max(m, Number(r[0])), -1) + 1;
-				const args = ["new-window", "-d", "-P", "-F", "#{window_id} #{window_index}", "-t", `=${session}:${next}`, "-c", params.cwd];
+				const cwd = params.cwd.trim() || homedir();
+				const args = ["new-window", "-d", "-P", "-F", "#{window_id} #{window_index}", "-t", `=${session}:${next}`, "-c", cwd];
 				if (params.name) args.push("-n", params.name);
 				// Do not pass the command as tmux's pane command: that has no interactive
 				// parent shell to regain control when the user presses Ctrl-Z. Start the normal
@@ -235,7 +237,7 @@ export default function superMeta(pi: ExtensionAPI) {
 					await tmux(["send-keys", "-l", "-t", window, params.command]);
 					await tmux(["send-keys", "-t", window, "Enter"]);
 				}
-				return json({ ok: true, session, window, index: Number(index) });
+				return json({ ok: true, session, window, index: Number(index), cwd });
 			} catch (err) {
 				return fail(err);
 			}
