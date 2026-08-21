@@ -20,7 +20,9 @@ const TMUX_KEY_NAMES: Record<string, string> = {
 	left: "Left",
 	right: "Right",
 	enter: "Enter",
+	return: "Enter",
 	escape: "Escape",
+	esc: "Escape",
 	tab: "Tab",
 	space: "Space",
 	backspace: "BSpace",
@@ -28,7 +30,11 @@ const TMUX_KEY_NAMES: Record<string, string> = {
 	insert: "IC",
 };
 
-/** Translate a pi keybinding id ("ctrl+shift+end") to a tmux key name ("C-S-End"). */
+/**
+ * Translate a pi keybinding id ("ctrl+shift+end") to a tmux key name ("C-S-End").
+ * Undefined for anything tmux cannot express: the super modifier, and a bare ";" —
+ * tmux parses that argument as a command separator, not a key.
+ */
 export function piKeyToTmux(key: string): string | undefined {
 	const parts = key.toLowerCase().split("+");
 	const base = parts.pop() ?? "";
@@ -41,26 +47,39 @@ export function piKeyToTmux(key: string): string | undefined {
 	}
 	const name =
 		TMUX_KEY_NAMES[base] ??
-		(/^[a-z0-9]$/.test(base) ? base : /^f\d{1,2}$/.test(base) ? base.toUpperCase() : undefined);
+		(/^f\d{1,2}$/.test(base)
+			? base.toUpperCase()
+			: /^[!-~]$/.test(base) && base !== ";"
+				? base
+				: undefined);
 	return name === undefined ? undefined : mods + name;
 }
 
 /**
- * The tmux key for pi's `tui.altScreen.bottom`. Read per call, not cached: it is a
- * rarely pressed key and re-reading means an edited keybindings.json works without a
- * server restart (the exact trap AGENTS.md warns about for everything else).
+ * The tmux key for pi's `tui.altScreen.bottom`, or undefined when pi has it unbound (an
+ * explicit `[]` means the user removed the shortcut on purpose — falling back to End
+ * would poke the editor with a key they took away) or bound only to chords tmux cannot
+ * type. No config, or a config that does not mention the binding, is stock pi: End.
+ *
+ * Read per call, not cached: it is a rarely pressed key and re-reading means an edited
+ * keybindings.json works without a server restart (the exact trap AGENTS.md warns about
+ * for everything else). The default dir mirrors pi's getAgentDir(), including its
+ * PI_CODING_AGENT_DIR override.
  */
-export function scrollBottomKey(configDir = join(homedir(), ".pi", "agent")): string {
+export function scrollBottomKey(configDir?: string): string | undefined {
+	const dir = configDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+	let bindings: Record<string, unknown>;
 	try {
-		const raw = readFileSync(join(configDir, "keybindings.json"), "utf8");
-		const bound: unknown = JSON.parse(raw)["tui.altScreen.bottom"];
-		const keys = Array.isArray(bound) ? bound : typeof bound === "string" ? [bound] : [];
-		for (const key of keys) {
-			const tmuxKey = piKeyToTmux(String(key));
-			if (tmuxKey !== undefined) return tmuxKey;
-		}
+		bindings = JSON.parse(readFileSync(join(dir, "keybindings.json"), "utf8"));
 	} catch {
-		// no config, unreadable, or unparsable — stock pi it is
+		return "End"; // no config, unreadable, or unparsable — stock pi
 	}
-	return "End";
+	if (!bindings || typeof bindings !== "object" || !("tui.altScreen.bottom" in bindings)) return "End";
+	const bound = bindings["tui.altScreen.bottom"];
+	const keys = Array.isArray(bound) ? bound : typeof bound === "string" ? [bound] : [];
+	for (const key of keys) {
+		const tmuxKey = piKeyToTmux(String(key));
+		if (tmuxKey !== undefined) return tmuxKey;
+	}
+	return undefined;
 }

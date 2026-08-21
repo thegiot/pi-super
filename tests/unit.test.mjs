@@ -99,8 +99,16 @@ test("pi keybinding ids translate to tmux key names", () => {
 	assert.equal(piKeyToTmux("ctrl+shift+down"), "C-S-Down");
 	assert.equal(piKeyToTmux("alt+g"), "M-g");
 	assert.equal(piKeyToTmux("f12"), "F12");
-	// a chord pi understands but tmux cannot express must not be sent mangled
+	assert.equal(piKeyToTmux("pageDown"), "PageDown");
+	// pi's key grammar has aliases and symbol keys
+	assert.equal(piKeyToTmux("esc"), "Escape");
+	assert.equal(piKeyToTmux("return"), "Enter");
+	assert.equal(piKeyToTmux("ctrl+]"), "C-]");
+	// chords pi understands but tmux cannot express must not be sent mangled
+	assert.equal(piKeyToTmux("super+end"), undefined);
 	assert.equal(piKeyToTmux("cmd+end"), undefined);
+	// a lone ";" argument is a command separator to tmux, not a key
+	assert.equal(piKeyToTmux(";"), undefined);
 });
 
 test("scrollBottomKey follows the local pi config and falls back to stock End", () => {
@@ -112,9 +120,34 @@ test("scrollBottomKey follows the local pi config and falls back to stock End", 
 	assert.equal(scrollBottomKey(dir), "End", "config without this binding");
 	writeFileSync(join(dir, "keybindings.json"), "{ not json");
 	assert.equal(scrollBottomKey(dir), "End", "broken config");
-	writeFileSync(join(dir, "keybindings.json"), JSON.stringify({ "tui.altScreen.bottom": ["cmd+end", "ctrl+end"] }));
+	writeFileSync(join(dir, "keybindings.json"), JSON.stringify({ "tui.altScreen.bottom": ["super+end", "ctrl+end"] }));
 	assert.equal(scrollBottomKey(dir), "C-End", "untranslatable binding skipped");
+	// explicitly unbound is a decision, not an omission: no key may be synthesized
+	writeFileSync(join(dir, "keybindings.json"), JSON.stringify({ "tui.altScreen.bottom": [] }));
+	assert.equal(scrollBottomKey(dir), undefined, "explicitly unbound");
+	writeFileSync(join(dir, "keybindings.json"), JSON.stringify({ "tui.altScreen.bottom": ["super+end"] }));
+	assert.equal(scrollBottomKey(dir), undefined, "only untranslatable bindings");
 	rmSync(dir, { recursive: true, force: true });
+});
+
+test("\u21ca routes by pane kind: copy mode, pi, other fullscreen, shell", async () => {
+	// fields of PANE_KEY_FORMAT: alt, in_mode, cursor, wrap, keypad_cursor, keypad, mouse, command
+	const route = async (fields, piKey) => {
+		const t = new Tmux([]);
+		const calls = [];
+		t.run = async (args) => {
+			if (args[0] === "display-message") return fields.join("\n");
+			calls.push(args.join(" "));
+			return "";
+		};
+		await t.smartScrollBottom("t:", piKey);
+		return calls;
+	};
+	assert.deepEqual(await route(["0", "1", "1", "1", "0", "0", "0", "bash"], "C-End"), ["copy-mode -q -t t:"], "copy mode");
+	assert.deepEqual(await route(["0", "0", "0", "0", "0", "0", "0", "node"], "C-End"), ["send-keys -t t: C-End"], "pi");
+	assert.deepEqual(await route(["0", "0", "0", "0", "0", "0", "0", "node"], undefined), [], "pi, binding removed");
+	assert.deepEqual(await route(["0", "0", "1", "1", "1", "1", "0", "vim"], "C-End"), ["send-keys -t t: End"], "vim gets plain End");
+	assert.deepEqual(await route(["0", "0", "1", "1", "0", "0", "0", "bash"], "C-End"), [], "shell prompt is a no-op");
 });
 
 // --- prompt log ------------------------------------------------------------

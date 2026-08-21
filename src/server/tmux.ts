@@ -44,6 +44,16 @@ export function appOwnsPageKeys(displayMessageOutput: string): boolean {
 	return keypadCursor === "1" || keypad === "1" || mouse === "1" || cursor === "0" || wrap === "0";
 }
 
+/**
+ * Is the pane running pi specifically? The hidden-cursor-plus-autowrap-off signature is
+ * conclusive per the appOwnsPageKeys() measurements above; the command name would lie
+ * (pi shows up as `node`, or `bash` under a side-agent launch.sh wrapper).
+ */
+export function paneLooksLikePi(displayMessageOutput: string): boolean {
+	const [, , cursor, wrap] = displayMessageOutput.split(FS);
+	return cursor === "0" && wrap === "0";
+}
+
 export interface TmuxSession {
 	id: string;
 	name: string;
@@ -230,14 +240,19 @@ export class Tmux {
 
 	/**
 	 * Jump back to the live bottom of the pane: leave copy mode if it is in it (that is
-	 * where scrolled-back history lives); a full-screen app gets `appKey` — whatever this
-	 * pi installation binds to `tui.altScreen.bottom` (see pi-keybindings.ts); a shell
-	 * prompt is already at the bottom, so nothing to do.
+	 * where scrolled-back history lives); a pi pane gets `piKey` — whatever this pi
+	 * installation binds to `tui.altScreen.bottom` (see pi-keybindings.ts; undefined means
+	 * unbound on purpose, so send nothing rather than poke the editor); any other
+	 * full-screen app gets plain End, the conventional bottom-ish navigation key — pi's
+	 * personal binding would be gibberish to mutt or less; a shell prompt is already at
+	 * the bottom, so nothing to do.
 	 */
-	async smartScrollBottom(target: string, appKey: string): Promise<void> {
+	async smartScrollBottom(target: string, piKey: string | undefined): Promise<void> {
 		const out = await this.run(["display-message", "-p", "-t", target, PANE_KEY_FORMAT]);
 		if (out.split(FS)[1] === "1") await this.run(["copy-mode", "-q", "-t", target]);
-		else if (appOwnsPageKeys(out)) await this.sendKeys(target, [appKey]);
+		else if (paneLooksLikePi(out)) {
+			if (piKey !== undefined) await this.sendKeys(target, [piKey]);
+		} else if (appOwnsPageKeys(out)) await this.sendKeys(target, ["End"]);
 	}
 
 	async newSessionGrouped(name: string, base: string): Promise<void> {
