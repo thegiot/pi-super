@@ -230,8 +230,10 @@ export class Tmux {
 
 	/**
 	 * Jump back to the live bottom of the pane: leave copy mode if it is in it (that is
-	 * where scrolled-back history lives), let a full-screen app interpret End itself, and
-	 * do nothing for a shell prompt — it is already at the bottom.
+	 * where scrolled-back history lives); a full-screen app gets End, which is exactly
+	 * pi's default `tui.altScreen.bottom` binding ("Scroll viewport to bottom", consumed
+	 * globally in fullscreen mode, shadowing the editor's end-of-line); a shell prompt is
+	 * already at the bottom, so nothing to do.
 	 */
 	async smartScrollBottom(target: string): Promise<void> {
 		const out = await this.run(["display-message", "-p", "-t", target, PANE_KEY_FORMAT]);
