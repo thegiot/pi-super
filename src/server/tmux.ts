@@ -230,16 +230,14 @@ export class Tmux {
 
 	/**
 	 * Jump back to the live bottom of the pane: leave copy mode if it is in it (that is
-	 * where scrolled-back history lives); a full-screen app gets C-End — pi's
-	 * `tui.altScreen.bottom` ("Scroll viewport to bottom") per the local
-	 * ~/.pi/agent/keybindings.json, which moves it off the default plain End so that End
-	 * stays the editor's end-of-line; a shell prompt is already at the bottom, so nothing
-	 * to do.
+	 * where scrolled-back history lives); a full-screen app gets `appKey` — whatever this
+	 * pi installation binds to `tui.altScreen.bottom` (see pi-keybindings.ts); a shell
+	 * prompt is already at the bottom, so nothing to do.
 	 */
-	async smartScrollBottom(target: string): Promise<void> {
+	async smartScrollBottom(target: string, appKey: string): Promise<void> {
 		const out = await this.run(["display-message", "-p", "-t", target, PANE_KEY_FORMAT]);
 		if (out.split(FS)[1] === "1") await this.run(["copy-mode", "-q", "-t", target]);
-		else if (appOwnsPageKeys(out)) await this.sendKeys(target, ["C-End"]);
+		else if (appOwnsPageKeys(out)) await this.sendKeys(target, [appKey]);
 	}
 
 	async newSessionGrouped(name: string, base: string): Promise<void> {

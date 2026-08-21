@@ -7,6 +7,7 @@ import type { Config } from "./config.js";
 import { buildVocabulary, dictationInstructions } from "./dictation.js";
 import { readPeek } from "./files.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
+import { scrollBottomKey } from "./pi-keybindings.js";
 import { PromptLog } from "./prompts.js";
 import { SESSION_PREFIX, sweepStaleSessions, TermConnection } from "./term.js";
 import { Tmux } from "./tmux.js";
@@ -900,7 +901,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			case "keys": {
 				const keys = (msg.keys as string[] | undefined) ?? [];
 				if (keys.length === 1 && keys[0] === "PageUp") await tmux.smartPageUp(`${s}:`);
-				else if (keys.length === 1 && keys[0] === "ScrollBottom") await tmux.smartScrollBottom(`${s}:`);
+				else if (keys.length === 1 && keys[0] === "ScrollBottom") await tmux.smartScrollBottom(`${s}:`, scrollBottomKey());
 				else await tmux.sendKeys(`${s}:`, keys);
 				return;
 			}

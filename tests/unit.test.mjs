@@ -4,6 +4,7 @@ import { isAuthed, originAllowed, parseCookies, requestToken, tokenEquals } from
 import { parseArgs } from "../dist/server/config.js";
 import { buildVocabulary, dictationInstructions } from "../dist/server/dictation.js";
 import { chooseActiveMetaClient, voiceInstructions } from "../dist/server/server.js";
+import { piKeyToTmux, scrollBottomKey } from "../dist/server/pi-keybindings.js";
 import { Tmux, appOwnsPageKeys } from "../dist/server/tmux.js";
 import { storeUpload } from "../dist/server/uploads.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -88,6 +89,32 @@ test("PgUp reaches a full-screen app even when tmux ignores the alternate screen
 	// the plain alternate-screen answer still wins, and copy-mode keeps paging
 	assert.equal(appOwnsPageKeys(pane(["1", "0", "1", "1", "0", "0", "0", "vim"])), true, "alternate screen");
 	assert.equal(appOwnsPageKeys(pane(["0", "1", "1", "1", "0", "0", "0", "bash"])), true, "already in copy mode");
+});
+
+// --- scroll-to-bottom key from pi's own keybindings ------------------------
+
+test("pi keybinding ids translate to tmux key names", () => {
+	assert.equal(piKeyToTmux("end"), "End");
+	assert.equal(piKeyToTmux("ctrl+end"), "C-End");
+	assert.equal(piKeyToTmux("ctrl+shift+down"), "C-S-Down");
+	assert.equal(piKeyToTmux("alt+g"), "M-g");
+	assert.equal(piKeyToTmux("f12"), "F12");
+	// a chord pi understands but tmux cannot express must not be sent mangled
+	assert.equal(piKeyToTmux("cmd+end"), undefined);
+});
+
+test("scrollBottomKey follows the local pi config and falls back to stock End", () => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-super-keys-"));
+	assert.equal(scrollBottomKey(dir), "End", "no config file");
+	writeFileSync(join(dir, "keybindings.json"), JSON.stringify({ "tui.altScreen.bottom": ["ctrl+end"] }));
+	assert.equal(scrollBottomKey(dir), "C-End", "rebound");
+	writeFileSync(join(dir, "keybindings.json"), JSON.stringify({ "app.clipboard.pasteImage": [] }));
+	assert.equal(scrollBottomKey(dir), "End", "config without this binding");
+	writeFileSync(join(dir, "keybindings.json"), "{ not json");
+	assert.equal(scrollBottomKey(dir), "End", "broken config");
+	writeFileSync(join(dir, "keybindings.json"), JSON.stringify({ "tui.altScreen.bottom": ["cmd+end", "ctrl+end"] }));
+	assert.equal(scrollBottomKey(dir), "C-End", "untranslatable binding skipped");
+	rmSync(dir, { recursive: true, force: true });
 });
 
 // --- prompt log ------------------------------------------------------------
