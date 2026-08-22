@@ -146,7 +146,8 @@ test("\u21ca routes by pane kind: copy mode, pi, other fullscreen, shell", async
 	assert.deepEqual(await route(["0", "1", "1", "1", "0", "0", "0", "bash"], "C-End"), ["copy-mode -q -t t:"], "copy mode");
 	assert.deepEqual(await route(["0", "0", "0", "0", "0", "0", "0", "node"], "C-End"), ["send-keys -t t: C-End"], "pi");
 	assert.deepEqual(await route(["0", "0", "0", "0", "0", "0", "0", "node"], undefined), [], "pi, binding removed");
-	assert.deepEqual(await route(["0", "0", "1", "1", "1", "1", "0", "vim"], "C-End"), ["send-keys -t t: End"], "vim gets plain End");
+	// the same key goes to every fullscreen app — ctrl+end is right in vim/irssi too
+	assert.deepEqual(await route(["0", "0", "1", "1", "1", "1", "0", "vim"], "C-End"), ["send-keys -t t: C-End"], "vim");
 	assert.deepEqual(await route(["0", "0", "1", "1", "0", "0", "0", "bash"], "C-End"), [], "shell prompt is a no-op");
 });
 
