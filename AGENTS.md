@@ -42,6 +42,13 @@ explicitly that the server was restarted.
   (it types into panes and kills windows). Extract the token with
   `grep -oP 'token=\K\S+'`, or start the server with `--auth token`.
 
+## Finishing a change
+
+Carry every change through to the end without being asked: typecheck (`npm run
+typecheck`), `npm test`, then commit. The post-commit hook builds and restarts the live
+server. If Android code changed, also make sure it compiles (`cd android && ./gradlew
+compileDebugKotlin`). Only stop short of committing when told to.
+
 ## Conventions
 
 - No formatter is configured (prettier's defaults fight the house style: tabs, wide lines).
