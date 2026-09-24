@@ -88,6 +88,9 @@ npm run build:android          # or: cd android && ./gradlew assembleDebug
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
+No cable handy: `contrib/serve-apk.sh` serves the APK on this machine's tailnet address for
+30 minutes and prints a QR code to scan with the phone.
+
 Needs a JDK 17+ and an Android SDK; point `android/local.properties` at it
 (`sdk.dir=/path/to/android-sdk`). A bare command-line SDK is enough:
 

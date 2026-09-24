@@ -46,8 +46,10 @@ explicitly that the server was restarted.
 
 Carry every change through to the end without being asked: typecheck (`npm run
 typecheck`), `npm test`, then commit. The post-commit hook builds and restarts the live
-server. If Android code changed, also build the APK (`npm run build:android`) and say where
-it is, ready to install. Only stop short of committing when told to.
+server. If Android code changed, also build the APK (`npm run build:android`), run
+`contrib/serve-apk.sh`, and paste the QR code it prints into your reply (in a code block)
+together with the URL as a link. That is how the APK gets onto the phone: no typing, no
+adb, no Taildrop. Only stop short of committing when told to.
 
 ## Conventions
 
