@@ -904,22 +904,34 @@ function autogrow(): void {
 	el.input.style.height = `${Math.min(el.input.scrollHeight, viewH * 0.3)}px`;
 }
 
-async function upload(file: File | Blob, name?: string): Promise<void> {
-	status("uploading…", 0);
-	const res = await fetch(`/api/upload?name=${encodeURIComponent(name ?? (file as File).name ?? "paste.png")}`, {
-		method: "POST",
-		headers: { "content-type": file.type || "application/octet-stream" },
-		body: file,
-	});
-	if (!res.ok) {
-		status(`upload failed: ${res.status}`, 4000, true);
-		return;
-	}
-	const { path } = (await res.json()) as { path: string };
+/**
+ * Uploads one after another and inserts all paths in one go: assigning `value` moves the
+ * caret to the end, so inserting per file would scatter later paths away from the cursor.
+ */
+async function upload(files: (File | Blob)[]): Promise<void> {
+	if (!files.length) return;
 	const pos = el.input.selectionStart ?? el.input.value.length;
-	el.input.value = `${el.input.value.slice(0, pos)}${path} ${el.input.value.slice(pos)}`;
+	const paths: string[] = [];
+	for (const [i, file] of files.entries()) {
+		status(files.length > 1 ? `uploading ${i + 1}/${files.length}…` : "uploading…", 0);
+		const res = await fetch(`/api/upload?name=${encodeURIComponent((file as File).name || "paste.png")}`, {
+			method: "POST",
+			headers: { "content-type": file.type || "application/octet-stream" },
+			body: file,
+		});
+		if (!res.ok) {
+			status(`upload failed: ${res.status}`, 4000, true);
+			break;
+		}
+		paths.push(((await res.json()) as { path: string }).path);
+	}
+	if (!paths.length) return;
+	const ins = paths.map((p) => `${p} `).join("");
+	el.input.value = `${el.input.value.slice(0, pos)}${ins}${el.input.value.slice(pos)}`;
+	el.input.setSelectionRange(pos + ins.length, pos + ins.length);
 	autogrow();
-	status("attached", 1500);
+	saveDraft();
+	if (paths.length === files.length) status(paths.length > 1 ? `attached ${paths.length}` : "attached", 1500);
 }
 
 function openDrawer(): void {
@@ -1241,20 +1253,19 @@ function zoomBy(factor: number): void {
 
 $("btn-img").onclick = () => el.file.click();
 el.file.onchange = () => {
-	const f = el.file.files?.[0];
-	if (f) void upload(f);
+	// copy before clearing: the FileList is live and empties with the input
+	const files = Array.from(el.file.files ?? []);
 	el.file.value = "";
+	void upload(files);
 };
 document.addEventListener("paste", (e) => {
-	for (const item of e.clipboardData?.items ?? []) {
-		if (item.kind === "file") {
-			const f = item.getAsFile();
-			if (f) {
-				e.preventDefault();
-				void upload(f);
-				return;
-			}
-		}
+	const files = Array.from(e.clipboardData?.items ?? [])
+		.filter((item) => item.kind === "file")
+		.map((item) => item.getAsFile())
+		.filter((f): f is File => !!f);
+	if (files.length) {
+		e.preventDefault();
+		void upload(files);
 	}
 });
 

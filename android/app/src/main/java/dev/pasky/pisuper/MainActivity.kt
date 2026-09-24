@@ -47,8 +47,16 @@ class MainActivity : AppCompatActivity() {
 	) { result ->
 		val cb = pendingFiles
 		pendingFiles = null
+		// parseResult() only reads getData(), which a multi-select leaves empty and puts the
+		// picks in clipData instead
+		val clip = result.data?.clipData
+		val uris = if (result.resultCode == RESULT_OK && clip != null && clip.itemCount > 0) {
+			Array(clip.itemCount) { clip.getItemAt(it).uri }
+		} else {
+			WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+		}
 		// null on cancel, and the page waits forever if we skip this
-		cb?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data))
+		cb?.onReceiveValue(uris)
 	}
 
 	override fun onCreate(savedInstanceState: Bundle?) {
