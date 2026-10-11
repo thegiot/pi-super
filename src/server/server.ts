@@ -6,6 +6,8 @@ import { COOKIE_NAME, isAuthed, isSecureRequest, originAllowed, requestToken, to
 import type { Config } from "./config.js";
 import { buildVocabulary, dictationInstructions } from "./dictation.js";
 import { readPeek } from "./files.js";
+import { FleetMonitor, validateFleetRequest } from "./fleet.js";
+import { HerdrError, herdrRun } from "./herdr.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
 import { scrollBottomKey } from "./pi-keybindings.js";
 import { PromptLog } from "./prompts.js";
@@ -45,6 +47,8 @@ export interface SuperServer {
 	http: Server;
 	/** resume a previous meta session, if any — call once the port is bound (owned) */
 	resumeMeta(): void;
+	/** the cached view of the herdr fleet; undefined when herdr is disabled */
+	fleet: FleetMonitor | undefined;
 	close(): Promise<void>;
 }
 
@@ -71,6 +75,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		if (passkeyRequired() && !cfg.allowToken) return { ok: false, reason: "passkey-required" };
 		return { ok: true, via: "token" };
 	}
+	const herdrMachines = cfg.herdrEnabled
+		? cfg.herdrMachines
+				.split(",")
+				.map((m) => m.trim())
+				.filter(Boolean)
+		: [];
 	const meta = new MetaAgent({
 		metaDir: cfg.metaDir,
 		socketArgs: cfg.socketArgs,
@@ -78,14 +88,14 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		piBin: cfg.piBin,
 		inheritExtensions: cfg.metaInheritExtensions,
 		sessionDir: join(cfg.stateDir, "meta-sessions"),
-		herdrMachines: cfg.herdrEnabled
-			? cfg.herdrMachines
-					.split(",")
-					.map((m) => m.trim())
-					.filter(Boolean)
-			: [],
+		herdrMachines,
 		herdrBin: cfg.herdrBin,
 	});
+	// The fleet view is cached, not per-request: the Agents page polls it, and a page
+	// refresh must never turn into a burst of ssh sessions to every saved machine.
+	const fleet = herdrMachines.length
+		? new FleetMonitor({ machines: herdrMachines, stateDir: cfg.stateDir, herdrBin: cfg.herdrBin })
+		: undefined;
 
 	const prompts = new PromptLog(cfg.stateDir);
 	/** prompt ids handed to the agent whose turn has not settled yet */
@@ -622,6 +632,87 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				sendJson(res, 200, { path, bytes: body.length });
 				return;
 			}
+			case "GET /api/fleet": {
+				if (!fleet) {
+					sendJson(res, 404, { error: "herdr disabled" });
+					return;
+				}
+				sendJson(res, 200, fleet.snapshot());
+				return;
+			}
+			case "GET /api/fleet/read": {
+				if (!fleet) {
+					sendJson(res, 404, { error: "herdr disabled" });
+					return;
+				}
+				const v = validateFleetRequest(fleet.machines, "read", {
+					machine: url.searchParams.get("machine"),
+					target: url.searchParams.get("target"),
+					lines: url.searchParams.get("lines"),
+				});
+				if (!v.ok) {
+					sendJson(res, v.status, { error: v.error });
+					return;
+				}
+				try {
+					const out = await herdrRun(v.machine, ["pane", "read", v.target, "--source", "recent-unwrapped", "--lines", String(v.lines)], {
+						bin: cfg.herdrBin,
+					});
+					res.writeHead(200, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+					res.end(out);
+				} catch (err) {
+					sendJson(res, 502, { error: String((err as Error)?.message ?? err) });
+				}
+				return;
+			}
+			case "POST /api/fleet/prompt":
+			case "POST /api/fleet/keys": {
+				if (!originAllowed(req, cfg.allowedOrigins)) {
+					sendJson(res, 403, { error: "bad origin" });
+					return;
+				}
+				if (!fleet) {
+					sendJson(res, 404, { error: "herdr disabled" });
+					return;
+				}
+				const kind = url.pathname.endsWith("/prompt") ? "prompt" : "keys";
+				let raw: Buffer;
+				try {
+					raw = await readBody(req, 64 * 1024);
+				} catch (err) {
+					sendJson(res, 413, { error: String((err as Error)?.message ?? err) });
+					return;
+				}
+				let fields: { target?: unknown; text?: unknown; keys?: unknown; machine?: unknown };
+				try {
+					fields = JSON.parse(raw.toString("utf8") || "{}") as typeof fields;
+				} catch {
+					sendJson(res, 400, { error: "bad json" });
+					return;
+				}
+				const v = validateFleetRequest(fleet.machines, kind, fields);
+				if (!v.ok) {
+					sendJson(res, v.status, { error: v.error });
+					return;
+				}
+				try {
+					const args =
+						kind === "prompt"
+							? ["agent", "prompt", v.target, v.text!, "--wait", "--until", "working", "--timeout", "60000"]
+							: ["agent", "send-keys", v.target, ...v.keys!];
+					await herdrRun(v.machine, args, { bin: cfg.herdrBin, timeoutMs: 90_000 });
+					sendJson(res, 200, { ok: true });
+				} catch (err) {
+					// herdr's coded errors (agent_blocked, timeout, ...) are answers, not faults —
+					// they go back as 200 so the UI can show the code; everything else is a 502
+					if (err instanceof HerdrError) {
+						sendJson(res, 200, { ok: false, code: err.code, error: err.message });
+					} else {
+						sendJson(res, 502, { error: String((err as Error)?.message ?? err) });
+					}
+				}
+				return;
+			}
 			default:
 				sendJson(res, 404, { error: "not found" });
 		}
@@ -1000,7 +1091,9 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	return {
 		http,
 		resumeMeta,
+		fleet,
 		async close() {
+			fleet?.stop();
 			clearInterval(revalidate);
 			socketAuth.clear();
 			await meta.stop();

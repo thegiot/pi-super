@@ -10,7 +10,7 @@
  * Bluetooth audio routing, and background lifecycle.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
@@ -116,11 +116,22 @@ async function main() {
 	}
 	cleanups.push(() => sh("tmux", ["-L", SOCKET, "kill-server"]));
 
-	const server = spawn("node", ["dist/server/index.js", "-L", SOCKET, "-s", "phone", "--port", String(PORT)], {
-		cwd: new URL("..", import.meta.url).pathname,
-		env: { ...process.env, PI_SUPER_STATE_DIR: STATE_DIR },
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	const fakeHerdr = new URL("./fixtures/fake-herdr.mjs", import.meta.url).pathname;
+	const herdrArgvLog = join(STATE_DIR, "herdr-argv.log");
+	const server = spawn(
+		"node",
+		["dist/server/index.js", "-L", SOCKET, "-s", "phone", "--port", String(PORT), "--herdr-machines", "auto"],
+		{
+			cwd: new URL("..", import.meta.url).pathname,
+			env: {
+				...process.env,
+				PI_SUPER_STATE_DIR: STATE_DIR,
+				PI_SUPER_HERDR_BIN: fakeHerdr,
+				FAKE_HERDR_ARGV_LOG: herdrArgvLog,
+			},
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
 	cleanups.push(() => server.kill());
 	await wait(2000);
 	const token = readFileSync(join(STATE_DIR, "token"), "utf8").trim();
@@ -680,6 +691,80 @@ async function main() {
 	console.log("meta deferred reader client_show:", JSON.stringify(metaReaderShow));
 	sh("tmux", ["-L", SOCKET, "kill-window", "-t", readerWindow]);
 
+	// ---- agents view (fake herdr: local + one remote machine) --------------
+	await c.evaluate(`window.piSuper.setView("agents"); 1`);
+	let cards = 0;
+	for (let i = 0; i < 30 && cards < 5; i++) {
+		await wait(400);
+		cards = await c.evaluate(`document.querySelectorAll("#agents .agent-card").length`);
+	}
+	const agentsList = await c.evaluate(`(() => {
+    return {
+      cards: document.querySelectorAll("#agents .agent-card").length,
+      sections: [...document.querySelectorAll("#agents .ag-sec")].map(e => e.textContent),
+      down: [...document.querySelectorAll("#agents .ag-down")].map(e => e.textContent),
+      badge: document.getElementById("agents-badge").textContent,
+      badgeHidden: document.getElementById("agents-badge").hidden,
+      btnHidden: document.getElementById("btn-agents").hidden,
+      composerVisible: !document.getElementById("composer").hidden,
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+  })()`);
+	log("agents list:", JSON.stringify(agentsList));
+	await c.shot("07-agents-list");
+
+	// open the blocked agent's detail: read tail, keys row, composer as prompt
+	const cardSpot = await c.evaluate(`(() => {
+    const card = [...document.querySelectorAll("#agents .agent-card")].find(x => x.textContent.includes("rev-412"));
+    if (!card) return null;
+    const b = card.getBoundingClientRect();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  })()`);
+	if (!cardSpot) throw new Error("the rev-412 card never rendered");
+	await c.tap(cardSpot.x, cardSpot.y);
+	await wait(2000);
+	const detail = await c.evaluate(`(() => {
+    const out = document.querySelector(".agd-out");
+    const keys = document.querySelector(".agd-keys").getBoundingClientRect();
+    const composer = document.getElementById("composer").getBoundingClientRect();
+    const agents = document.getElementById("agents");
+    return {
+      name: (document.querySelector(".agd-name") || {}).textContent,
+      machine: (document.querySelector(".agd-machine") || {}).textContent,
+      outLen: (out.textContent || "").length,
+      keys: [...document.querySelectorAll(".agd-keys button")].map(b => b.textContent),
+      composerVisible: !document.getElementById("composer").hidden,
+      placeholder: document.getElementById("input").placeholder,
+      keysInView: keys.top >= 0 && keys.bottom <= innerHeight && keys.bottom <= composer.top + 1,
+      outAtBottom: out.scrollTop + out.clientHeight >= out.scrollHeight - 4,
+      agentsNoScroll: agents.scrollHeight <= agents.clientHeight + 4,
+    };
+  })()`);
+	log("agent detail:", JSON.stringify(detail));
+	await c.shot("08-agent-detail");
+
+	// a key from the detail row and a prompt from the composer must reach herdr
+	await c.evaluate(`(() => {
+    const b = [...document.querySelectorAll(".agd-keys button")].find(x => x.textContent === "esc");
+    b.click(); return 1;
+  })()`);
+	await c.evaluate(`(() => {
+    const i = document.getElementById("input");
+    i.value = "please retry the flaky check";
+    i.dispatchEvent(new Event("input"));
+    document.getElementById("btn-send").click();
+    return 1;
+  })()`);
+	await wait(1500);
+	const herdrCalls = existsSync(herdrArgvLog)
+		? readFileSync(herdrArgvLog, "utf8").trim().split("\n").map((l) => JSON.parse(l).join(" "))
+		: [];
+	log("herdr calls:", JSON.stringify(herdrCalls));
+
+	// back to the list, then back to a terminal view for the remaining checks
+	await c.evaluate(`(() => { const b = document.querySelector(".agd-back"); if (b) b.click(); return 1; })()`);
+	await wait(800);
+
 	const GREEN = "rgb(126, 231, 135)";
 	const BLUE = "rgb(79, 127, 208)";
 
@@ -751,6 +836,28 @@ async function main() {
 		[
 			"a directory lists itself and its rows open files",
 			dirRows.includes("..") && dirRows.includes("peek-me.png") && fromRow.decoded && fromRow.path.endsWith("peek-me.png"),
+		],
+		[
+			"agents list renders every fleet agent in status order",
+			agentsList.cards === 5 && agentsList.sections.join("|") === "needs you · 1|working · 2|done · 1|idle · 1",
+		],
+		["agents badge shows the blocked count", agentsList.badge === "1" && !agentsList.badgeHidden && !agentsList.btnHidden],
+		["composer hides on the agents list", !agentsList.composerVisible],
+		["agents view has no horizontal overflow", agentsList.overflow <= 0],
+		[
+			"agent detail shows the pane tail and the key row",
+			detail.name === "rev-412" && detail.machine === "local" && detail.outLen > 200 && detail.keys.includes("esc") && detail.composerVisible,
+		],
+		[
+			"detail key row is fully on screen above the composer",
+			detail.keysInView,
+		],
+		["detail tail opens scrolled to the bottom", detail.outAtBottom],
+		["the agents view itself does not scroll in detail mode", detail.agentsNoScroll],
+		[
+			"composer prompt and key row reach herdr",
+			herdrCalls.some((x) => x.startsWith("agent send-keys wZZ:p41 esc")) &&
+				herdrCalls.some((x) => x.startsWith("agent prompt wZZ:p41 please retry the flaky check")),
 		],
 	];
 	let failed = 0;

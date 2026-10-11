@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { createAgents, type FleetTarget } from "./agents.js";
 import { authState, enrollPasskey, gate, loginWithPasskey, logout } from "./auth.js";
 import { createDictation } from "./dictate.js";
 import { createMeta } from "./meta.js";
@@ -34,6 +35,8 @@ const el = {
 	reader: $("reader"),
 	readerText: $("reader-text"),
 	meta: $("meta"),
+	agents: $("agents"),
+	agentsBadge: $("agents-badge"),
 	abort: $("btn-abort"),
 	call: $("call"),
 	callState: $("call-state"),
@@ -54,8 +57,10 @@ const el = {
 const state = {
 	ws: undefined as WebSocket | undefined,
 	windows: [] as WindowInfo[],
-	view: "raw" as "raw" | "reader" | "meta",
+	view: "raw" as "raw" | "reader" | "meta" | "agents",
 	lastTermView: "raw" as "raw" | "reader",
+	/** the agent a fleet detail is open on — the composer then prompts it, not the pane */
+	fleetTarget: undefined as FleetTarget | undefined,
 	sizeMode: (localStorage.getItem("sizeMode") as "ignore" | "claim" | null) ?? "claim",
 	fontSize: Number(localStorage.getItem("fontSize") ?? 13),
 	zoom: Number(localStorage.getItem("zoom") ?? 1),
@@ -104,7 +109,7 @@ function applyPendingReload(): void {
 
 /** The scroll container of whatever view is on screen — hidden ones must be left alone. */
 const activeScroller = (): HTMLElement =>
-	state.view === "reader" ? el.reader : state.view === "meta" ? el.meta : el.term;
+	state.view === "reader" ? el.reader : state.view === "meta" ? el.meta : state.view === "agents" ? el.agents : el.term;
 
 // ------------------------------------------------------------------ terminal
 
@@ -550,7 +555,7 @@ function selectWindow(id: string, opts: { show?: boolean } = {}): void {
 	state.clientShowPending = undefined;
 	resetTerminalInput();
 	send({ t: "select", window: id });
-	const leaveChat = opts.show && state.view === "meta";
+	const leaveChat = opts.show && (state.view === "meta" || state.view === "agents");
 	if (state.windows.some((w) => w.id === id)) {
 		for (const w of state.windows) w.active = w.id === id;
 		localStorage.setItem("lastWindow", id);
@@ -791,20 +796,23 @@ function cellText(row: number, col: number): { text: string; index: number } | u
 	return index < 0 ? undefined : { text, index };
 }
 
-function setView(view: "raw" | "reader" | "meta"): void {
+function setView(view: "raw" | "reader" | "meta" | "agents"): void {
 	state.clientShowPending = undefined;
 	state.view = view;
-	if (view !== "meta") state.lastTermView = view;
+	if (view !== "meta" && view !== "agents") state.lastTermView = view;
 	el.reader.hidden = view !== "reader";
 	el.meta.hidden = view !== "meta";
+	el.agents.hidden = view !== "agents";
 	el.term.style.visibility = view === "raw" ? "visible" : "hidden";
-	el.ribbon.hidden = view === "meta";
-	// the tab strip stays up in the chat view, but it is no longer what you are looking at:
-	// it drops to the secondary blue and super's button takes the green (see style.css)
+	el.ribbon.hidden = view !== "raw" && view !== "reader";
+	// the tab strip stays up in the chat/agents views, but it is no longer what you are
+	// looking at: it drops to the secondary blue and the view's button takes the green
+	// (see style.css)
 	document.body.classList.toggle("meta-view", view === "meta");
+	document.body.classList.toggle("agents-view", view === "agents");
 	el.abort.hidden = view !== "meta";
-	$("btn-insert").hidden = view === "meta"; // "insert without Enter" is a terminal thing
-	el.input.placeholder = view === "meta" ? "ask super…" : "prompt…";
+	$("btn-insert").hidden = view === "meta" || view === "agents"; // "insert without Enter" is a terminal thing
+	refreshAgentChrome();
 	$("btn-view").textContent = view === "reader" ? "▣" : "📖";
 	refreshCallButton();
 	refreshCallBar();
@@ -817,8 +825,18 @@ function setView(view: "raw" | "reader" | "meta"): void {
 		toBottom(el.term);
 	}
 	if (view === "meta") el.meta.scrollTop = el.meta.scrollHeight;
-	// the chat and the terminal are different conversations; so is every window
+	agents.setActive(view === "agents");
+	// the chat, the terminal and an agent detail are different conversations; so is every window
 	syncDraft();
+}
+
+/** The composer is only a prompt box when an agent detail is open; the list hides it. */
+function refreshAgentChrome(): void {
+	const onAgents = state.view === "agents";
+	$("composer").hidden = onAgents && !state.fleetTarget;
+	el.input.placeholder =
+		state.view === "meta" ? "ask super…" : onAgents && state.fleetTarget ? `prompt ${state.fleetTarget.name}…` : "prompt…";
+	$("btn-agents").classList.toggle("open", onAgents);
 }
 
 // ------------------------------------------------------------------- drafts
@@ -830,6 +848,9 @@ function setView(view: "raw" | "reader" | "meta"): void {
  */
 function draftKey(): string | undefined {
 	if (state.view === "meta") return "draft:meta";
+	if (state.view === "agents") {
+		return state.fleetTarget ? `draft:fleet:${state.fleetTarget.machine}|${state.fleetTarget.pane}` : undefined;
+	}
 	const w = activeWindow();
 	return w ? `draft:${w.id}` : undefined;
 }
@@ -873,6 +894,7 @@ function syncDraft(): void {
 function pruneDrafts(): void {
 	const live = new Set(state.windows.map((w) => `draft:${w.id}`));
 	live.add("draft:meta");
+	if (state.fleetTarget) live.add(`draft:fleet:${state.fleetTarget.machine}|${state.fleetTarget.pane}`);
 	for (const k of Object.keys(localStorage)) {
 		if (k.startsWith("draft:") && !live.has(k)) localStorage.removeItem(k);
 	}
@@ -887,6 +909,8 @@ function sendText(text: string, enter: boolean): void {
 	dictate.stop();
 	if (!text) return;
 	if (state.view === "meta") meta.send(text);
+	// the detail survives leaving the Agents view, so the view decides, not the target
+	else if (state.view === "agents" && state.fleetTarget) void agents.sendPrompt(text);
 	else {
 		resetTerminalInput();
 		send({ t: "paste", text, enter });
@@ -971,6 +995,43 @@ function refreshCallButton(): void {
 }
 
 const meta = createMeta(el.meta);
+
+// The Agents view: a fleet of herdr agents next to the tmux windows. The button
+// only appears when the server has herdr configured; the badge counts agents
+// waiting on a decision.
+const agents = createAgents(el.agents, {
+	onDetailChange: (target) => {
+		state.fleetTarget = target;
+		refreshAgentChrome();
+		syncDraft();
+	},
+	onAskSuper: (a) => {
+		setView("meta");
+		el.input.value = `About ${a.name ?? a.kind} (${a.paneId}) on ${a.machine}: `;
+		autogrow();
+		saveDraft();
+		el.input.focus();
+	},
+	onUnavailable: () => {
+		$("btn-agents").hidden = true;
+		if (state.view === "agents") setView(state.lastTermView);
+	},
+	onBadge: (n) => {
+		if (!agents.enabled()) return;
+		$("btn-agents").hidden = false;
+		el.agentsBadge.hidden = n === 0;
+		el.agentsBadge.textContent = String(n);
+	},
+	status,
+});
+$("btn-agents").onclick = () => {
+	if (state.view === "agents") {
+		setView(state.lastTermView);
+		return;
+	}
+	setView("agents");
+};
+
 meta.onState = (s) => {
 	metaBusy = s.busy;
 	refreshCallButton();
@@ -1309,7 +1370,7 @@ el.views.addEventListener(
 		const from = swipe;
 		swipe = undefined;
 		const t = e.changedTouches[0];
-		if (!from || !t || state.view === "meta" || Date.now() - from.at > SWIPE_MAX_MS) return;
+		if (!from || !t || state.view === "meta" || state.view === "agents" || Date.now() - from.at > SWIPE_MAX_MS) return;
 		const dx = t.clientX - from.x;
 		const dy = t.clientY - from.y;
 		if (Math.abs(dx) >= Math.abs(dy)) {

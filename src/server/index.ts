@@ -105,6 +105,7 @@ async function main(): Promise<void> {
 	const server = createServer(cfg, token);
 	server.http.listen(cfg.port, cfg.host, () => {
 		server.resumeMeta();
+		server.fleet?.start();
 		process.stdout.write(`pi-super listening on http://${cfg.host}:${cfg.port}\n`);
 		const store = new PasskeyStore(cfg.stateDir);
 		const tokenUsable = cfg.authMode === "token" || cfg.allowToken || (cfg.authMode === "auto" && !store.enrolled);
