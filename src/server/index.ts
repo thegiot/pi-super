@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureToken } from "./auth.js";
 import { defaultClientDir, defaultMetaDir, helpText, migrateLegacyStateDir, parseArgs } from "./config.js";
+import { LOCAL, herdrRun, savedMachines } from "./herdr.js";
 import { createServer } from "./server.js";
 import { Tmux } from "./tmux.js";
 import { PasskeyStore } from "./webauthn.js";
@@ -77,6 +78,30 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
+	// tmux is mandatory; herdr is opportunistic — probe it once here so the meta
+	// agent gets its fleet tools only when herdr can actually answer.
+	if (cfg.herdrEnabled) {
+		try {
+			await herdrRun(LOCAL, ["status"], { bin: cfg.herdrBin, timeoutMs: 8000 });
+		} catch {
+			process.stdout.write("pi-super: herdr not available — meta agent runs without fleet tools\n");
+			cfg.herdrEnabled = false;
+		}
+	}
+	if (cfg.herdrEnabled) {
+		if (cfg.herdrMachines === "auto") {
+			const saved = await savedMachines({ bin: cfg.herdrBin }).catch(() => [] as string[]);
+			cfg.herdrMachines = [LOCAL, ...saved].join(",");
+		} else {
+			cfg.herdrMachines = cfg.herdrMachines
+				.split(",")
+				.map((m) => m.trim())
+				.filter(Boolean)
+				.join(",");
+		}
+		if (!cfg.herdrMachines) cfg.herdrEnabled = false;
+	}
+
 	const server = createServer(cfg, token);
 	server.http.listen(cfg.port, cfg.host, () => {
 		server.resumeMeta();
@@ -94,6 +119,9 @@ async function main(): Promise<void> {
 			);
 		} else {
 			process.stdout.write("  no passkey enrolled yet — open the app and add one from the menu\n");
+		}
+		if (cfg.herdrEnabled) {
+			process.stdout.write(`  herdr machines: ${cfg.herdrMachines}\n`);
 		}
 		if (cfg.host !== "127.0.0.1" && cfg.host !== "localhost") {
 			process.stdout.write("  ! bound off-loopback: terminal access == shell access, use TLS/VPN\n");

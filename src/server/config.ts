@@ -16,6 +16,11 @@ export interface Config {
 	piBin: string | undefined;
 	metaEnabled: boolean;
 	metaInheritExtensions: boolean;
+	herdrEnabled: boolean;
+	/** "auto" (local + every saved machine) or a comma-separated label list */
+	herdrMachines: string;
+	/** explicit herdr binary (default: PI_SUPER_HERDR_BIN/HERDR_BIN_PATH/`herdr` from PATH) */
+	herdrBin: string | undefined;
 	/** auto = token until a passkey is enrolled, then passkey only */
 	authMode: "auto" | "token" | "passkey";
 	/** keep accepting the bearer token even once passkeys are enrolled (scripts, tests) */
@@ -49,6 +54,11 @@ Options:
       --no-meta           Disable the meta agent
       --meta-inherit-extensions
                           Load your globally installed pi packages into the meta agent
+      --herdr-machines <l>  herdr machines super can reach: 'auto' (default:
+                          this machine + every saved machine) or a comma list;
+                          'local' means this machine
+      --no-herdr          Disable herdr integration entirely
+      --herdr-bin <path>  herdr binary for the meta agent (default: herdr from PATH)
       --origin <url>      Extra allowed WebSocket Origin (repeatable)
       --auth <mode>       auto (default) | token | passkey
                           auto: the token works until you enrol a passkey, then it doesn't
@@ -76,6 +86,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		piBin: process.env.PI_SUPER_PI_BIN,
 		metaEnabled: true,
 		metaInheritExtensions: false,
+		herdrEnabled: true,
+		herdrMachines: process.env.PI_SUPER_HERDR_MACHINES ?? "auto",
+		herdrBin: process.env.PI_SUPER_HERDR_BIN,
 		authMode: "auto",
 		allowToken: false,
 		allowedOrigins: undefined,
@@ -132,6 +145,15 @@ export function parseArgs(argv: string[]): ParsedArgs {
 				break;
 			case "--meta-inherit-extensions":
 				cfg.metaInheritExtensions = true;
+				break;
+			case "--herdr-machines":
+				cfg.herdrMachines = next();
+				break;
+			case "--no-herdr":
+				cfg.herdrEnabled = false;
+				break;
+			case "--herdr-bin":
+				cfg.herdrBin = next();
 				break;
 			case "--auth": {
 				const mode = next();

@@ -15,6 +15,10 @@ export interface MetaOptions {
 	inheritExtensions?: boolean;
 	/** where the meta agent's pi sessions live; enables resume across pi-super restarts */
 	sessionDir?: string;
+	/** herdr machine labels super may act on; empty/undefined = no herdr tools */
+	herdrMachines?: string[];
+	/** explicit herdr binary handed to the extension (default: herdr from PATH) */
+	herdrBin?: string;
 	/** stall-watchdog tuning; defaults are the production values (tests drive it fast) */
 	stallMs?: number;
 	compactionStallMs?: number;
@@ -48,7 +52,7 @@ const WATCHDOG_MS = 30_000;
 /** never rescue more often than this — a provider outage must not become a restart loop */
 const RESCUE_COOLDOWN_MS = 600_000;
 
-const RESUME_NUDGE = `${INTERNAL_PROMPT} The pi-super server restarted and resumed your session. If you had unfinished business — a report you promised, an agent window you were waiting on — check those windows now, re-establish the waits (tmux_wait_idle) and speak a short status update. If everything was already wrapped up, just reply briefly without speaking.`;
+const RESUME_NUDGE = `${INTERNAL_PROMPT} The pi-super server restarted and resumed your session. If you had unfinished business — a report you promised, an agent window you were waiting on — check those windows now, re-establish the waits (tmux_wait_idle, herdr_wait) and speak a short status update. If everything was already wrapped up, just reply briefly without speaking.`;
 
 export type ChatItem =
 	| { kind: "user"; id: number; text: string }
@@ -152,11 +156,16 @@ export class MetaAgent extends EventEmitter {
 		// pi runs with cwd=$HOME, so these must be absolute.
 		const dir = resolve(this.opts.metaDir);
 		const ext = join(dir, "super-meta.ts");
+		const herdrExt = join(dir, "super-herdr.ts");
 		const prompt = join(dir, "meta-prompt.md");
 		if (!existsSync(ext)) throw new Error(`meta extension missing: ${ext}`);
 		// -ne keeps the meta agent predictable: only our tools, none of the user's
 		// globally installed packages (status widgets, side-agents, mood tags, ...).
 		const args = ["--mode", "rpc", "-n", "pi-super meta", "-e", ext];
+		if (this.opts.herdrMachines?.length) {
+			if (!existsSync(herdrExt)) throw new Error(`meta extension missing: ${herdrExt}`);
+			args.push("-e", herdrExt);
+		}
 		if (!this.opts.inheritExtensions) args.push("-ne");
 		if (existsSync(prompt)) args.push("--append-system-prompt", prompt);
 		if (this.opts.model) args.push("--model", this.opts.model);
@@ -180,8 +189,19 @@ export class MetaAgent extends EventEmitter {
 			PI_SUPER: "1",
 			PI_SUPER_TMUX_SOCKET: this.opts.socketArgs.join(" "),
 		};
+		if (this.opts.herdrMachines?.length) {
+			env.PI_SUPER_HERDR_MACHINES = this.opts.herdrMachines.join(",");
+			if (this.opts.herdrBin) env.PI_SUPER_HERDR_BIN = this.opts.herdrBin;
+		}
 		delete env.TMUX;
 		delete env.TMUX_PANE;
+		// Same rule as TMUX*: if pi-super itself runs inside a herdr pane, the meta
+		// agent must never inherit a "current pane" identity — it addresses panes
+		// explicitly. HERDR_SOCKET_PATH stays: it names the server, not a pane.
+		delete env.HERDR_PANE_ID;
+		delete env.HERDR_TAB_ID;
+		delete env.HERDR_WORKSPACE_ID;
+		delete env.HERDR_ENV;
 
 		const proc = spawn(this.opts.piBin ?? "pi", args, {
 			cwd: this.opts.cwd ?? homedir(),

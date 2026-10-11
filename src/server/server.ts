@@ -78,6 +78,13 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		piBin: cfg.piBin,
 		inheritExtensions: cfg.metaInheritExtensions,
 		sessionDir: join(cfg.stateDir, "meta-sessions"),
+		herdrMachines: cfg.herdrEnabled
+			? cfg.herdrMachines
+					.split(",")
+					.map((m) => m.trim())
+					.filter(Boolean)
+			: [],
+		herdrBin: cfg.herdrBin,
 	});
 
 	const prompts = new PromptLog(cfg.stateDir);
