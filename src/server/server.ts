@@ -90,6 +90,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		sessionDir: join(cfg.stateDir, "meta-sessions"),
 		herdrMachines,
 		herdrBin: cfg.herdrBin,
+		stateDir: cfg.stateDir,
 	});
 	// The fleet view is cached, not per-request: the Agents page polls it, and a page
 	// refresh must never turn into a burst of ssh sessions to every saved machine.

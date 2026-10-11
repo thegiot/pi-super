@@ -19,6 +19,8 @@ export interface MetaOptions {
 	herdrMachines?: string[];
 	/** explicit herdr binary handed to the extension (default: herdr from PATH) */
 	herdrBin?: string;
+	/** pi-super state dir, exported to the extension env as PI_SUPER_STATE_DIR */
+	stateDir?: string;
 	/** stall-watchdog tuning; defaults are the production values (tests drive it fast) */
 	stallMs?: number;
 	compactionStallMs?: number;
@@ -157,14 +159,17 @@ export class MetaAgent extends EventEmitter {
 		const dir = resolve(this.opts.metaDir);
 		const ext = join(dir, "super-meta.ts");
 		const herdrExt = join(dir, "super-herdr.ts");
+		const lanesExt = join(dir, "super-lanes.ts");
 		const prompt = join(dir, "meta-prompt.md");
 		if (!existsSync(ext)) throw new Error(`meta extension missing: ${ext}`);
 		// -ne keeps the meta agent predictable: only our tools, none of the user's
 		// globally installed packages (status widgets, side-agents, mood tags, ...).
 		const args = ["--mode", "rpc", "-n", "pi-super meta", "-e", ext];
 		if (this.opts.herdrMachines?.length) {
-			if (!existsSync(herdrExt)) throw new Error(`meta extension missing: ${herdrExt}`);
-			args.push("-e", herdrExt);
+			for (const e of [herdrExt, lanesExt]) {
+				if (!existsSync(e)) throw new Error(`meta extension missing: ${e}`);
+				args.push("-e", e);
+			}
 		}
 		if (!this.opts.inheritExtensions) args.push("-ne");
 		if (existsSync(prompt)) args.push("--append-system-prompt", prompt);
@@ -192,6 +197,7 @@ export class MetaAgent extends EventEmitter {
 		if (this.opts.herdrMachines?.length) {
 			env.PI_SUPER_HERDR_MACHINES = this.opts.herdrMachines.join(",");
 			if (this.opts.herdrBin) env.PI_SUPER_HERDR_BIN = this.opts.herdrBin;
+			if (this.opts.stateDir) env.PI_SUPER_STATE_DIR = this.opts.stateDir;
 		}
 		delete env.TMUX;
 		delete env.TMUX_PANE;
