@@ -25,6 +25,8 @@ export interface Config {
 	authMode: "auto" | "token" | "passkey";
 	/** keep accepting the bearer token even once passkeys are enrolled (scripts, tests) */
 	allowToken: boolean;
+	/** Advertised HTTPS origin for device pairing (does not change the bind address). */
+	pairOrigin?: string;
 	allowedOrigins: string[] | undefined; // undefined => same-host only
 	/** the unified inbox (src/server/inbox): view of a local Beeper Desktop plus controlled send */
 	inbox: boolean;
@@ -86,6 +88,8 @@ Options:
                           Remove an enrolled passkey and exit
       --logout            Revoke all passkey sessions and exit
       --reset-token       Generate a fresh access token and exit
+      --pair-url <origin> Advertise a reachable HTTPS origin and print a temporary pairing QR
+                          (HTTP allowed only for localhost; does not open a tunnel)
       --url               Print the access URL and exit
   -h, --help              Show this help
 `;
@@ -230,6 +234,15 @@ export function parseArgs(argv: string[]): ParsedArgs {
 			case "--reset-token":
 				cfg.resetToken = true;
 				break;
+			case "--pair-url": {
+				const u = new URL(next());
+				if (u.username || u.password || u.search || u.hash || u.pathname !== "/" ||
+					(u.protocol !== "https:" && !(u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)))) {
+					throw new Error("--pair-url requires an HTTPS origin (HTTP only on loopback)");
+				}
+				cfg.pairOrigin = u.origin;
+				break;
+			}
 			case "--url":
 				cfg.printUrl = true;
 				break;

@@ -537,6 +537,33 @@ async function main() {
 		["M4: push lockscreen disclosure", pushDisclosure],
 	];
 	for (const [name, ok] of m4Checks) { console.log(`${ok ? "PASS" : "FAIL"}  ${name}`); if (!ok) inboxFailed++; }
+	// Pairing uses a disposable ticket and a brand-new browser cookie jar. Never
+	// capture real credentials; this server's token and tickets are fixtures only.
+	phone();
+	await c.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/pair` });
+	await wait(500);
+	await clickText("button", "/^Genera QR$/");
+	await wait(400);
+	const pairLink = await c.evaluate(`document.querySelector('#pair-link').href`);
+	await c.shot("inbox-24-pair-qr-mobile");
+	const pairFits = await c.evaluate(`document.documentElement.scrollWidth <= innerWidth && document.querySelector('#qr').naturalWidth > 0`);
+	desktop(1440, 900);
+	await c.shot("inbox-25-pair-qr-desktop");
+	await c.send("Network.clearBrowserCookies");
+	await c.send("Page.navigate", { url: "about:blank" });
+	await wait(150);
+	phone();
+	await c.send("Page.navigate", { url: pairLink });
+	await wait(400);
+	const fragmentScrubbed = await c.evaluate(`location.pathname === '/pair' && location.hash === '' && !document.querySelector('#action').hidden`);
+	await c.shot("inbox-26-pair-confirm-mobile");
+	await clickText("button", "/^Collega questo dispositivo$/");
+	await wait(1800);
+	const pairAuthed = await c.evaluate(`location.pathname === '/inbox/' && !!document.querySelector('[aria-label="Inbox"]')`);
+	await c.shot("inbox-27-pair-complete-mobile");
+	for (const [name, ok] of [["Pair QR fits and image loads", pairFits], ["Pair fragment scrubbed before confirmation", fragmentScrubbed], ["Pair new browser cookie opens inbox", pairAuthed]]) {
+		console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`); if (!ok) inboxFailed++;
+	}
 	if (INBOX_ONLY) {
 		console.log(`Inbox screenshot checks: ${inboxFailed ? 'FAIL' : 'PASS'}`);
 		if (!KEEP) await cleanup();

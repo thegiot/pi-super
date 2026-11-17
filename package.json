@@ -51,11 +51,13 @@
     "@simplewebauthn/browser": "^13.3.0",
     "@simplewebauthn/server": "^13.3.2",
     "node-pty": "^1.0.0",
+    "qrcode": "^1.5.4",
     "web-push": "^4.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/qrcode": "^1.5.6",
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.5.13",
     "@xterm/addon-fit": "^0.10.0",

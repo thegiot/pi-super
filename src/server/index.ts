@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { networkInterfaces } from "node:os";
+import QRCode from "qrcode";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureToken } from "./auth.js";
@@ -108,7 +109,7 @@ async function main(): Promise<void> {
 	}
 
 	const server = createServer(cfg, token);
-	server.http.listen(cfg.port, cfg.host, () => {
+	server.http.listen(cfg.port, cfg.host, async () => {
 		server.resumeMeta();
 		server.fleet?.start();
 		server.inbox?.start();
@@ -116,10 +117,20 @@ async function main(): Promise<void> {
 		const store = new PasskeyStore(cfg.stateDir);
 		const tokenUsable = cfg.authMode === "token" || cfg.allowToken || (cfg.authMode === "auto" && !store.enrolled);
 		process.stdout.write(
-			tokenUsable
+			tokenUsable && process.stdout.isTTY
 				? `  open: http://${displayHost(cfg.host)}:${cfg.port}/?token=${token}\n`
-				: `  open: http://${displayHost(cfg.host)}:${cfg.port}/ (passkey unlock)\n`,
+				: `  open: http://${displayHost(cfg.host)}:${cfg.port}/ (${tokenUsable ? "pair from an authorized browser or interactive terminal" : "passkey unlock"})\n`,
 		);
+		// Do not write a shell grant into service logs. Interactive launches display it;
+		// a service's authenticated /pair page offers the same explicit action.
+		if (process.stdout.isTTY && tokenUsable) {
+			const origin = cfg.pairOrigin ?? `http://${cfg.host === "::1" ? "[::1]" : cfg.host}:${cfg.port}`;
+			const link = server.pairingUrl(origin);
+			if (link) {
+				process.stdout.write(`  Pair device (2 minutes, single use): ${link}\n`);
+				process.stdout.write(await QRCode.toString(link, { type: "terminal", small: true }));
+			} else process.stdout.write("  Pair QR: use --pair-url https://<reachable-host> (no tunnel is created)\n");
+		}
 		if (store.enrolled && cfg.authMode !== "token") {
 			process.stdout.write(
 				`  passkey required (${store.credentials.length} enrolled${cfg.allowToken ? ", token still accepted" : ""})\n`,

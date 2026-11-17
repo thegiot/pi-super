@@ -3,6 +3,8 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
+import QRCode from "qrcode";
+import { PairingTickets, pairingPage } from "./pairing.js";
 import { COOKIE_NAME, isAuthed, isSecureRequest, originAllowed, requestToken, tokenEquals } from "./auth.js";
 import type { Config } from "./config.js";
 import { buildVocabulary, dictationInstructions } from "./dictation.js";
@@ -57,6 +59,8 @@ export interface SuperServer {
 	fleet: FleetMonitor | undefined;
 	/** the unified inbox; undefined with --no-inbox. Started by the caller once the port is bound */
 	inbox: InboxService | undefined;
+	/** OS-owner launcher only; never promotes token authority to a passkey session. */
+	pairingUrl(origin: string): string | undefined;
 	close(): Promise<void>;
 }
 
@@ -64,6 +68,14 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	const tmux = new Tmux(cfg.socketArgs);
 	const live = new Set<TermConnection>();
 	const passkeys = new PasskeyStore(cfg.stateDir);
+	const pairing = new PairingTickets();
+	function pairingUrl(origin: string): string | undefined {
+		if (passkeyRequired() && !cfg.allowToken) return undefined;
+		const u = new URL(origin);
+		if (u.username || u.password || u.pathname !== "/" || u.search || u.hash ||
+			(u.protocol !== "https:" && !(u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname)))) return undefined;
+		return `${u.origin}/pair#pair=${pairing.issue().ticket}`;
+	}
 
 	/**
 	 * Reachability (Tailscale, LAN, tunnel) is not authorization. Once a passkey is
@@ -323,6 +335,21 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		}
 
 		const auth = authenticate(req, url);
+		if (auth.ok && url.searchParams.has("token")) {
+			const clean = new URL(url);
+			clean.searchParams.delete("token");
+			res.writeHead(302, { "cache-control": "no-store", "referrer-policy": "no-referrer",
+				"set-cookie": `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly;${isSecureRequest(req) ? " Secure;" : ""} SameSite=Lax; Path=/; Max-Age=31536000`,
+				location: `${clean.pathname}${clean.search}` }).end();
+			return;
+		}
+		if (url.pathname === "/pair" && req.method === "GET") {
+			res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+				"referrer-policy": "no-referrer", "x-frame-options": "DENY", "x-content-type-options": "nosniff",
+				"content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" });
+			res.end(pairingPage(auth.ok, cfg.pairOrigin));
+			return;
+		}
 		if (!auth.ok) {
 			// A login page has to be reachable by someone who cannot log in yet: when passkeys
 			// are the gate, serve the (secret-free) app bundle so it can run the ceremony.
@@ -337,28 +364,16 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				serveStatic(res, url.pathname);
 				return;
 			}
+			if (req.method === "GET" && ["/", "/inbox", "/inbox/"].includes(url.pathname)) {
+				res.writeHead(302, { location: "/pair", "cache-control": "no-store" }).end();
+				return;
+			}
 			res.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
 			res.end(
 				auth.reason === "passkey-required"
 					? "pi-super: a passkey is required (open the app and unlock with your phone)\n"
 					: "pi-super: unauthorized (append ?token=… once, or send Authorization: Bearer …)\n",
 			);
-			return;
-		}
-		// First visit with ?token= — pin it into an HttpOnly cookie and drop it from the URL.
-		// SameSite=Lax, not Strict: navigations initiated from another app (QR scanner, chat
-		// link) are cross-site in Chrome, and Strict would withhold the cookie on the very
-		// redirect we are about to issue, 401-ing the first visit. Lax still keeps the cookie
-		// off cross-site POSTs and WebSocket handshakes, which the Origin check covers anyway.
-		if (url.searchParams.has("token") && !req.headers.cookie?.includes(`${COOKIE_NAME}=`)) {
-			const clean = new URL(url);
-			clean.searchParams.delete("token");
-			const secure = isSecureRequest(req) ? " Secure;" : "";
-			res.writeHead(302, {
-				"set-cookie": `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=31536000`,
-				location: `${clean.pathname}${clean.search}`,
-			});
-			res.end();
 			return;
 		}
 
@@ -387,6 +402,32 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		const body = async () => JSON.parse((await readBody(req, 256 * 1024)).toString("utf8") || "{}");
 		const session = passkeys.sessionFor(req);
 		const tokenOk = isAuthed(req, url, token);
+		if (route === "POST /api/auth/pair/issue" || route === "POST /api/auth/pair/redeem") {
+			res.setHeader("cache-control", "no-store");
+			res.setHeader("referrer-policy", "no-referrer");
+			if (!rateLimit(req.socket.remoteAddress ?? "?", 15) || !originAllowed(req, undefined) ||
+				req.headers["sec-fetch-site"] === "cross-site") return sendJson(res, 403, { error: "pair_forbidden" });
+			// A local launch is not a biometric assertion. Recheck at redemption so an
+			// intervening first enrolment also kills outstanding token-grade tickets.
+			if (passkeyRequired() && !cfg.allowToken) return sendJson(res, 403, { error: "passkey_required" });
+			if (!secure && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return sendJson(res, 403, { error: "pair_https_required" });
+			if (route.endsWith("/issue")) {
+				if (!authenticate(req, url).ok) return sendJson(res, 401, { error: "unauthorized" });
+				const input = JSON.parse((await readBody(req, 2048)).toString("utf8") || "{}");
+				const requestOrigin = `${secure ? "https" : "http"}://${req.headers.host}`;
+				const expected = cfg.pairOrigin ?? requestOrigin;
+				if (input.origin !== requestOrigin) return sendJson(res, 400, { error: "pair_origin_invalid" });
+				const link = pairingUrl(expected);
+				if (!link) return sendJson(res, 400, { error: "pair_origin_invalid" });
+				const svg = await QRCode.toString(link, { type: "svg", errorCorrectionLevel: "M", margin: 2 });
+				return sendJson(res, 200, { url: link, svg, expiresAt: Date.now() + 120_000 });
+			}
+			const input = JSON.parse((await readBody(req, 2048)).toString("utf8") || "{}");
+			if (passkeyRequired() && !cfg.allowToken) return sendJson(res, 403, { error: "passkey_required" });
+			if (typeof input.ticket !== "string" || !pairing.redeem(input.ticket)) return sendJson(res, 403, { error: "pair_invalid" });
+			res.setHeader("set-cookie", `${COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly;${secure ? " Secure;" : ""} SameSite=Lax; Path=/; Max-Age=31536000`);
+			return sendJson(res, 200, { ok: true });
+		}
 		// In `auto` (the default) this still allows the first, bootstrap enrolment, because
 		// with no passkey on file no passkey is required yet. In `passkey` mode it does not:
 		// that mode is documented as locking you out, and a token that could enrol would
@@ -1151,6 +1192,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 
 	return {
 		http,
+		pairingUrl,
 		resumeMeta,
 		fleet,
 		inbox,

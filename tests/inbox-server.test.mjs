@@ -193,7 +193,9 @@ describe("inbox HTTP + WebSocket", () => {
 		const escape = await raw(env.port, "/inbox/%2e%2e%2f%2e%2e%2fetc%2fpasswd", { headers: auth });
 		assert.equal(escape.status, 403);
 
-		assert.equal((await raw(env.port, "/inbox")).status, 401, "the page is behind the same login");
+		const locked = await raw(env.port, "/inbox");
+		assert.equal(locked.status, 302, "no app content before login");
+		assert.equal(locked.headers.location, "/pair", "new browser gets pairing instructions");
 	});
 
 	test("the inbox WebSocket: refused without the token, and sends state, chats and pong with it", async () => {

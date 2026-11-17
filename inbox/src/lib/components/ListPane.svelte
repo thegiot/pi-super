@@ -52,6 +52,7 @@
 			<IconButton icon="terminal" label="Torna a pi-super" href="/" />
 		{/snippet}
 		{#snippet actions()}
+			<a href="/pair" aria-label="Associa un dispositivo con QR" title="Associa dispositivo">QR</a>
 			<IconButton
 				icon={searchOpen ? "x" : "search"}
 				label={searchOpen ? "Chiudi ricerca" : "Cerca"}
