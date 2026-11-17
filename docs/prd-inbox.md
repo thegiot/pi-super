@@ -469,8 +469,9 @@ L'issue chiede SvelteKit. Il client attuale è TypeScript senza framework; le al
 | C. SvelteKit con server proprio | Massima libertà | È il secondo prodotto permanente che l'issue esclude; duplica autenticazione e sessioni |
 
 **Proposta: A**, sviluppata in un worktree e integrata quando M1 è utilizzabile ([D4](#19-decisioni-per-il-proprietario)).
-Va tenuto conto che il fork diverge da upstream a ogni aggiunta di questo tipo, e che il repository
-usa npm mentre la preferenza del proprietario altrove è Bun ([D9](#19-decisioni-per-il-proprietario)).
+Va tenuto conto che il fork diverge da upstream a ogni aggiunta di questo tipo. Il progetto SvelteKit
+usa Bun, con dipendenze e lockfile nella propria cartella; il resto del repository resta su npm
+([D9](#19-decisioni-per-il-proprietario)).
 
 Punto d'ingresso: un pulsante nella barra superiore di pi-super, accanto a quello degli agenti, con
 il conteggio di *Da rispondere*.
@@ -501,7 +502,8 @@ l'invio a un agente che ha già una shell sulla macchina. Chiudere anche quel va
 isolare Beeper e i suoi token sotto un altro utente o in un contenitore ([D3](#19-decisioni-per-il-proprietario)).
 
 L'inoltro dell'API di Beeper sulla tailnet allarga la superficie senza che l'inbox ne abbia bisogno,
-dato che pi-super e Beeper stanno sulla stessa macchina ([D3](#19-decisioni-per-il-proprietario)).
+dato che pi-super e Beeper stanno sulla stessa macchina. Per decisione del proprietario resta attivo
+per ora ([D3](#19-decisioni-per-il-proprietario)); l'inbox non lo usa.
 
 ### 12.2 Controllo dell'invio
 
@@ -614,10 +616,10 @@ Tre punti escono dal perimetro di pi-super e vanno decisi:
 
 | | Contenuto | Si chiude quando |
 |---|---|---|
-| **M0 — Verifiche** | Ipotesi I1–I8. Prototipo SvelteKit servito dal server. Decisioni D1–D9 | Ogni ipotesi è confermata o smentita per iscritto; le decisioni sono prese |
+| **M0 — Verifiche** | Ipotesi I1–I8. Prototipo SvelteKit servito dal server. Applicazione di D1 e D2 su K29 | Ogni ipotesi è confermata o smentita per iscritto; D1 e D2 sono applicate |
 | **M1 — Inbox in sola lettura** | Lista, filtri deterministici, ricerca, cronologia, immagini, aggiornamenti in tempo reale, stati degradati, correzioni dell'utente | Il proprietario la usa per il triage quotidiano al posto dei contatori delle app |
 | **M2 — Assistente e bozze** | Ponte verso Hermes con strumenti ristretti, bozze, *Copia*; il testo si invia ancora dall'app nativa | Le bozze sono abbastanza buone da essere copiate più spesso che riscritte |
-| **M3 — Invio controllato** | Outbox, *Rivedi e invia*, esito, riconciliazione | Criteri CA9–CA14 soddisfatti su una chat di prova |
+| **M3 — Invio controllato** | Outbox, *Rivedi e invia*, esito, riconciliazione | Criteri CA9–CA14 soddisfatti sulla chat di prova (WeChat, Poesi) |
 | **M4 — Importanza e notifiche** | Valutazione dell'assistente con motivo; notifiche per le sole chat importanti | Da definire dopo M3 |
 | **Dopo** | Allegati in invio, nuova chat da contatto, reazioni, *Segna come letto*, etichette, bozze sincronizzate con Beeper, estensione dello stile al resto di pi-super | — |
 
@@ -710,19 +712,22 @@ di una mancata. Nell'MVP c'è il conteggio sul pulsante dell'inbox.
 
 ## 19. Decisioni per il proprietario
 
-| # | Decisione | Proposta |
-|---|---|---|
-| **D1** | Togliere `send_message` e il token di scrittura al profilo `chatassistant`. È una modifica a un servizio esistente, che l'issue non autorizza | Sì, prima di M3. Finché non avviene, il divieto di invio per quel profilo resta affidato al prompt |
-| **D2** | Togliere il toolset terminale e la scrittura in memoria senza approvazione al profilo che legge i messaggi | Sì: un profilo che legge testo di terzi non dovrebbe avere una shell |
-| **D3** | Inoltro dell'API di Beeper sulla tailnet: mantenerlo o chiuderlo. Isolare Beeper e i token sotto un altro utente | Chiudere l'inoltro se nessun altro lo usa. Isolamento: da valutare dopo l'MVP |
-| **D4** | Stack del client | Opzione A di §11.4: SvelteKit come SPA statica, sviluppata in worktree |
-| **D5** | Paperclip | Fuori dall'MVP. Non è installato su K29 e nessun flusso ne ha bisogno. Riaprire la questione quando sarà chiaro quale compito gli spetterebbe (per esempio i promemoria di *Rimanda*) |
-| **D6** | *Segna come letto* dall'inbox | Non nell'MVP. In seguito come azione esplicita, mai automatica |
-| **D7** | Quali chat possono essere inviate al fornitore del modello, e se è ammessa la valutazione in background (M4) | MVP: solo su richiesta, per la chat aperta. Possibilità di escludere singole chat o reti |
-| **D8** | Conservazione: testo dei messaggi inviati nel registro, conversazioni con l'assistente | Testo fino allo stato finale, poi solo impronta. Conversazioni non conservate |
-| **D9** | Gestore dei pacchetti per la parte nuova (il repository usa npm) | Restare su npm per non avere due gestori nello stesso repository |
-| **D10** | Finestra di attenzione di *Da rispondere* | 14 giorni, modificabile |
-| **D11** | Chat di prova per l'invio reale in M3 | Da indicare |
+Esito del riesame con il proprietario (17 novembre 2026): tutte le proposte accettate tranne D3 (rinviata) e D9
+(cambiata); D11 indicata.
+
+| # | Decisione | Proposta | Esito |
+|---|---|---|---|
+| **D1** | Togliere `send_message` e il token di scrittura al profilo `chatassistant`. È una modifica a un servizio esistente, che l'issue non autorizza | Sì, prima di M3. Finché non avviene, il divieto di invio per quel profilo resta affidato al prompt | Accettata |
+| **D2** | Togliere il toolset terminale e la scrittura in memoria senza approvazione al profilo che legge i messaggi | Sì: un profilo che legge testo di terzi non dovrebbe avere una shell | Accettata |
+| **D3** | Inoltro dell'API di Beeper sulla tailnet: mantenerlo o chiuderlo. Isolare Beeper e i token sotto un altro utente | Chiudere l'inoltro se nessun altro lo usa. Isolamento: da valutare dopo l'MVP | Rinviata: l'inoltro resta per ora, potrebbe servire ad altro. Il rischio di §12.1 resta aperto |
+| **D4** | Stack del client | Opzione A di §11.4: SvelteKit come SPA statica, sviluppata in worktree | Accettata |
+| **D5** | Paperclip | Fuori dall'MVP. Non è installato su K29 e nessun flusso ne ha bisogno. Riaprire la questione quando sarà chiaro quale compito gli spetterebbe (per esempio i promemoria di *Rimanda*) | Accettata |
+| **D6** | *Segna come letto* dall'inbox | Non nell'MVP. In seguito come azione esplicita, mai automatica | Accettata |
+| **D7** | Quali chat possono essere inviate al fornitore del modello, e se è ammessa la valutazione in background (M4) | MVP: solo su richiesta, per la chat aperta. Possibilità di escludere singole chat o reti | Accettata |
+| **D8** | Conservazione: testo dei messaggi inviati nel registro, conversazioni con l'assistente | Testo fino allo stato finale, poi solo impronta. Conversazioni non conservate | Accettata |
+| **D9** | Gestore dei pacchetti per la parte nuova (il repository usa npm) | Restare su npm per non avere due gestori nello stesso repository | Cambiata: la parte nuova (il progetto SvelteKit in una cartella propria) usa Bun; il resto del repository resta su npm |
+| **D10** | Finestra di attenzione di *Da rispondere* | 14 giorni, modificabile | Accettata |
+| **D11** | Chat di prova per l'invio reale in M3 | — | Chat WeChat con Poesi. WeChat non dichiara la lunghezza massima e non supporta modifica né reazioni: è anche il caso più severo per i controlli di capacità |
 
 ## 20. Appendice — superfici verificate
 
