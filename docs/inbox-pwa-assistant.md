@@ -36,6 +36,16 @@ Verifiche ripetute il 17 novembre 2026:
 
 ### Prova Android e distribuzione
 
-Installabilità CDP e viewport emulata non dimostrano l'installazione sul telefono fisico. Dopo autorizzazione e distribuzione su HTTPS, verificare in Chrome Android installazione dal pulsante/menu, apertura standalone dall'icona, sessione o pairing QR e risposta lunga con tastiera aperta, scorrendo fino alla fine. Verificare che una domanda informativa non mostri una bozza e che solo «Proponi risposta» ne richieda una. La prova di consegna Web Push resta un follow-up M4 separato.
+Installabilità CDP e viewport emulata non dimostrano l'installazione sul telefono fisico. Dopo il deploy autorizzato su HTTPS, resta da verificare in Chrome Android installazione dal pulsante/menu, apertura standalone dall'icona, sessione o pairing QR e risposta lunga con tastiera aperta, scorrendo fino alla fine. Verificare che una domanda informativa non mostri una bozza e che solo «Proponi risposta» ne richieda una. La prova di consegna Web Push resta un follow-up M4 separato.
 
-Nessun push, deploy su K29 o riavvio del servizio live eseguito per queste modifiche. Il commit viene creato con hook disabilitati per rispettare il vincolo di conferma prima della distribuzione. I server delle prove sono isolati e usano fixture, senza chiamate modello o invii in chat reali.
+La prima consegna locale `b8e7fac` è stata creata con hook disabilitati in attesa della conferma del proprietario. Le prove di conversazione usano fixture isolate.
+
+## Deploy autorizzato su K29
+
+Il proprietario ha confermato push e deploy. Il 17 novembre 2026 `b8e7fac` è stato pubblicato su `origin/inbox-m1` e applicato con fast-forward al checkout pulito `/workspace/pi-super` su K29, sempre su `inbox-m1`. Eseguiti `npm ci`, typecheck con Bun check a zero errori/warning, build completa e `timeout 300 npm test`, 254/254 PASS senza skip. La prima suite aveva letto il vecchio `dist/inbox/index.html` e Chromium aveva superato gli 8 secondi di startup. Dopo build aggiornata e verifica separata dell'avvio Chromium, la suite completa è passata. Per questa procedura eseguire la build prima dei test che consumano `dist/inbox`.
+
+`pi-super.service` è stato riavviato esplicitamente alle **20:06:07 CET**, con stato `active/running`. Lo smoke su [super.thegiot.com](https://super.thegiot.com/inbox/) ha verificato manifest pubblico e contenuto delle icone 192/512 con GET/HEAD, CSP della pagina pairing, accesso autenticato a inbox/bundle/worker e blocco senza credenziali di API, app e worker. Il worker mantiene il solo comportamento notifiche. Beeper e assistente risultano `ok`, con cinque account. Una richiesta con intento non valido riceve 400 prima di raggiungere il modello. Nessuna domanda valida è stata inviata al provider e nessun messaggio è stato inviato.
+
+Chromium headless, con profilo temporaneo e senza cookie, ha verificato sul vero HTTPS `/pair` manifest e installabilità senza errori. L'installazione e la tastiera del telefono fisico restano da provare.
+
+La verifica ha rilevato che il proxy HTTPS normalizza `/inbox/%6danifest.webmanifest` al manifest pubblico. Il server diretto rifiuta quell'alias senza autenticazione come previsto dalla propria allowlist raw. Il contenuto pubblico coincide con il manifest previsto e gli endpoint protetti restano bloccati, anche attraverso un alias codificato della API.
