@@ -41,3 +41,13 @@ Le prove di invio del browser usano Beeper e modelli sintetici. Risultati finali
 - Review indipendente completata senza rilievi aperti.
 
 Catalogo del runtime K29 verificato in lettura con 74 modelli Pi su 8 provider autenticati e 11 modelli Hermes su 4 provider configurati. La compatibilità del costruttore SDK Hermes, del database sessioni e della chiusura è stata provata con un profilo sintetico e inferenza sostituita da fixture. La verifica del provider reale usa un contesto tecnico sintetico separato dalle chat.
+
+## Registro di distribuzione
+
+Il 17 novembre 2026 `e9cb817` è stato pubblicato su `origin/inbox-m1` e applicato con fast-forward al checkout pulito `/workspace/pi-super` su K29. Eseguiti dipendenze, typecheck/Bun check, build completa, 278 test Node sotto timeout e 6 test Python della policy, tutti PASS.
+
+Il servizio utente `pi-super.service` è stato riavviato esplicitamente alle **21:08:22 CET** ed è `active/running`. Lo smoke su [Inbox live](https://super.thegiot.com/inbox/) ha verificato autenticazione per catalogo/settings/API/bundle/worker, catalogo con tre motori disponibili, impostazione predefinita Flash, rifiuto di scelte e intenti non validi e corrispondenza del bundle servito con quello appena costruito. Beeper e assistente risultano `ok`, con cinque account.
+
+Una prova con contesto esclusivamente sintetico e directory di lavoro temporanea ha eseguito inferenza reale attraverso tutti e tre i motori. Flash ha usato `open.bigmodel.cn / glm-5.3-flash`, Pi `deepseek / deepseek-flash`, Hermes `zai-coding-cn / glm-5.3-flash`. Ogni risposta ha confermato il testo tecnico atteso e l'identità del motore/modello selezionato. Le prove hanno usato i runtime reali e le credenziali configurate, separatamente dalle chat. L'invocazione Hermes conserva una sessione tecnica sintetica nel proprio profilo, coerentemente con il comportamento dichiarato in interfaccia.
+
+L'invio è stato esercitato end-to-end con Beeper sintetico nel browser. Restano da provare sulla tastiera Android fisica Invio/Maiusc+Invio e l'apertura PWA installata, già tracciati nella card dedicata.

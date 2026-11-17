@@ -33,7 +33,7 @@
 - [x] Server engines, safe catalog, persisted per-chat settings, HTTP integration, targeted regression tests.
 - [x] Client selectors and model identity, natural draft request mode and composer handoff, direct Enter/button sending and targeted tests.
 - [x] Integrate fixtures and mobile harness, review security/correctness, typecheck, timeout tests, build, screenshots.
-- [ ] Update local KANBAN and report, scoped commit with Devin trailer, push inbox-m1, fast-forward K29, build/test/restart and live smoke.
+- [x] Update local KANBAN and report, scoped commit with Devin trailer, push inbox-m1, fast-forward K29, build/test/restart and live smoke.
 
 ## Shared HTTP contract
 
@@ -48,3 +48,7 @@ Ruling: Hermes invocations from the inbox allow raw skill reads and read-only kn
 The new assistant close method reads thread state, so navigation effects call it inside `untrack` while explicitly tracking route/chat changes. A real mobile run caught and verified this dependency issue.
 
 Direct sending retains the same submission key across socket delivery plus a lost HTTP confirmation. A fresh key becomes available after definite delivery and successful composer handoff. Fifteen focused client tests and scoped review cover that race and stale HTTP snapshots.
+
+## Delivery
+
+Implementation `e9cb817` pushed to inbox-m1 and deployed on K29. Server typecheck/build, 278 Node tests under timeout and 6 policy tests passed. Explicit restart at 21:08:22 CET on 17 November 2026. Live HTTPS and synthetic-context real inference passed for Flash, Pi DeepSeek Flash and Hermes chatassistant GLM-5.3-Flash. Physical Android keyboard remains a separate owner smoke.
