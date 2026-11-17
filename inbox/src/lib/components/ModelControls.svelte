@@ -1,4 +1,5 @@
 <script lang="ts">
+	import AssistantSettings from "./AssistantSettings.svelte";
 	import { onDestroy } from "svelte";
 	import { api, ApiError, type ChatSummary } from "$lib/api";
 	import { inbox } from "$lib/inbox.svelte";
@@ -60,6 +61,7 @@
 <details class="model-controls">
 	<summary>Modello e privacy</summary>
 	<div class="content">
+		<AssistantSettings chatId={chat.id} />
 		<label>
 			<input type="checkbox" checked={chat.modelPrivacy?.chatExcluded ?? false} disabled={inbox.modelPrivacyBusy}
 				onchange={(e) => { const on = e.currentTarget.checked; e.currentTarget.checked = chat.modelPrivacy?.chatExcluded ?? false; void exclude("chat", on); }} />

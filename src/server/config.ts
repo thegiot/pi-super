@@ -35,6 +35,8 @@ export interface Config {
 	inboxDir: string;
 	/** test-only: shrunken outbox timings (import type, never a CLI flag) */
 	inboxOutbox?: import("./inbox/outbox.js").OutboxTunables;
+	/** Runtime paths and synthetic acceptance fixtures, never supplied by a browser. */
+	inboxAssistantRuntime?: import("./inbox/assistant-engines.js").InboxAssistantRuntime;
 	/** OpenAI-compatible Responses API base URL of the assistant's model provider */
 	llmUrl: string;
 	llmModel: string;

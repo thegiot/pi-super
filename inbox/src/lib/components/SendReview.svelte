@@ -7,9 +7,8 @@
 	import Icon from "./Icon.svelte";
 
 	/*
-	 * «Rivedi e invia» (F5–F6, CA9): the only door to a send. Shows what the server
-	 * resolved — sender account, recipient, exact text — and the confirm button is
-	 * the single point that can reach Beeper. Bottom sheet on phone, modal on desktop.
+	 * Optional review and shared send outcomes. Direct composer sends also use this
+	 * sheet for delivery status, reconciliation and deliberate retries.
 	 */
 
 	const session = $derived(outbox.review);
@@ -36,10 +35,10 @@
 	}
 
 	async function confirm() {
+		const s = outbox.review;
 		if (await outbox.confirm()) {
 			// the text went out for review and send: the composer hands it to the intent
-			const s = outbox.review;
-			if (s) composer.clear(s.intent.chatID);
+			if (s) composer.clearIfRevision(s.intent.chatID, s.composerRevision);
 		}
 	}
 
@@ -120,12 +119,12 @@
 		role="dialog"
 		tabindex="-1"
 		aria-modal="true"
-		aria-label="Rivedi e invia"
+		aria-label={session.outcome ? "Esito invio" : "Rivedi e invia"}
 		bind:this={panel}
 	>
 		{#if !inbox.wide}<span class="handle" aria-hidden="true"></span>{/if}
 		<header class="head">
-			<span class="title"><Icon name="check" size={20} /> Rivedi e invia</span>
+			<span class="title"><Icon name="check" size={20} /> {session.outcome ? "Esito invio" : "Rivedi e invia"}</span>
 			<IconButton icon="x" label="Chiudi senza inviare" onclick={close} />
 		</header>
 

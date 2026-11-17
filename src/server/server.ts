@@ -13,6 +13,7 @@ import { FleetMonitor, validateFleetRequest } from "./fleet.js";
 import { HerdrError, herdrRun } from "./herdr.js";
 import { handleInboxApi, isInboxPath, serveInboxSocket, serveInboxStatic } from "./inbox/http.js";
 import { Assistant } from "./inbox/assistant.js";
+import { AssistantEngines } from "./inbox/assistant-engines.js";
 import { InboxService } from "./inbox/service.js";
 import { ImportanceBridge } from "./inbox/importance.js";
 import { InboxNotifications } from "./inbox/notifications.js";
@@ -139,7 +140,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		return fwd || req.socket.remoteAddress || "?";
 	};
 	const assistant = cfg.inbox
-		? new Assistant({ url: cfg.llmUrl, model: cfg.llmModel, keyFile: cfg.llmKeyFile, log })
+		? new AssistantEngines(new Assistant({ url: cfg.llmUrl, model: cfg.llmModel, keyFile: cfg.llmKeyFile, log }), { stateDir: cfg.stateDir, log, runtime: cfg.inboxAssistantRuntime })
 		: undefined;
 	const importance = cfg.inbox ? new ImportanceBridge({ url: cfg.llmUrl, model: cfg.llmModel, keyFile: cfg.llmKeyFile, log }) : undefined;
 	const pushTokenOwner = `token:${createHash("sha256").update(token).digest("hex")}`;

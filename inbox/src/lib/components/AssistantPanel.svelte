@@ -1,9 +1,8 @@
 <script lang="ts">
-	import { tick } from "svelte";
+	import { onDestroy, tick, untrack } from "svelte";
 	import { assistant, assistantErrorText } from "$lib/assistant.svelte";
 	import type { AssistantIntent } from "$lib/api";
 	import { inbox } from "$lib/inbox.svelte";
-	import { composer } from "$lib/composer.svelte";
 	import IconButton from "./IconButton.svelte";
 	import Icon from "./Icon.svelte";
 	import ModelControls from "./ModelControls.svelte";
@@ -21,43 +20,21 @@
 	let question = $state("");
 	let copied = $state(false);
 	let panel: HTMLElement | undefined = $state();
-	/** a draft waiting on "Sostituire o accodare?" before entering the composer */
-	let pendingUse = $state<string | null>(null);
 	let thread = $derived(assistant.thread(chatId));
 	const excluded = $derived(inbox.chat?.id === chatId && Boolean(inbox.chat.modelPrivacy?.chatExcluded || inbox.chat.modelPrivacy?.networkExcluded));
-	const available = $derived(inbox.chat?.id === chatId && inbox.state?.assistant.status === "ok" && !excluded && !inbox.modelPrivacyBusy && !inbox.degraded);
+	const available = $derived(inbox.chat?.id === chatId && assistant.available(chatId) && !excluded && !inbox.modelPrivacyBusy && !inbox.degraded && !assistant.settingsBusy[chatId]);
 
 	function languageName(code: string): string {
 		return code.toLowerCase().startsWith("it") ? "italiano" : code;
 	}
 
-	function send(text: string, intent: AssistantIntent = "answer") {
+	function send(text: string, intent: AssistantIntent = "auto") {
 		if (!available || thread.busy || !text.trim()) return;
 		question = "";
 		void assistant.ask(chatId, text, intent);
 	}
 
-	/**
-	 * RF14/F4: the only path besides typing that writes into the composer. With a
-	 * non-empty field the user picks replace or append; then the assistant closes.
-	 */
-	function useAsDraft(text: string) {
-		if (composer.draft(chatId).text.trim() === "") {
-			composer.setText(chatId, text);
-			pendingUse = null;
-			assistant.close();
-		} else {
-			pendingUse = text;
-		}
-	}
-
-	function applyDraft(mode: "replace" | "append") {
-		if (pendingUse === null) return;
-		const current = composer.draft(chatId).text;
-		composer.setText(chatId, mode === "replace" ? pendingUse : `${current}${current.endsWith("\n") ? "" : "\n"}${pendingUse}`);
-		pendingUse = null;
-		assistant.close();
-	}
+	onDestroy(() => assistant.deactivate(chatId));
 
 	async function copy(text: string) {
 		try {
@@ -78,7 +55,7 @@
 			return;
 		}
 		if (e.key !== "Tab") return;
-		const items = [...panel.querySelectorAll<HTMLElement>("button, input, textarea, a[href]")].filter((el) => !el.hasAttribute("disabled"));
+		const items = [...panel.querySelectorAll<HTMLElement>("button, input, textarea, select, a[href]")].filter((el) => !el.hasAttribute("disabled"));
 		if (items.length === 0) return;
 		const first = items[0]!;
 		const last = items.at(-1)!;
@@ -92,7 +69,7 @@
 	}
 
 	$effect(() => {
-		if (excluded) assistant.clear();
+		if (excluded) untrack(() => assistant.clear());
 	});
 
 	$effect(() => {
@@ -128,17 +105,18 @@
 	</header>
 
 	<div class="content">
+		{#if assistant.identity(chatId)}<p class="identity">{assistant.identity(chatId)}</p>{/if}
 		<p class="scope">
 			{#if thread.contextMessages === null}
-				Conoscerà gli ultimi messaggi di questa chat. Nient'altro.
+				Legge gli ultimi messaggi di questa chat.
 			{:else}
-				Conosce gli ultimi {thread.contextMessages} messaggi di questa chat. Nient'altro.
+				Ha letto gli ultimi {thread.contextMessages} messaggi di questa chat.
 			{/if}
 		</p>
 
 		<div class="thread" aria-live="polite" aria-busy={thread.busy}>
 			{#if thread.turns.length === 0}
-				<p class="intro">Puoi chiedere di cosa hanno parlato ultimamente nel gruppo, un riassunto o un chiarimento, senza preparare né inviare risposte. Per una bozza scegli «Proponi risposta».</p>
+				<p class="intro">Chiedi un riassunto o un chiarimento. Per preparare un messaggio, chiedi di scriverlo o scegli «Proponi risposta».</p>
 			{/if}
 			{#each thread.turns as t, i (i)}
 				{#if t.role === "user"}
@@ -147,31 +125,31 @@
 					<p class="error" role="alert">{assistantErrorText(t.error)}</p>
 				{:else}
 					<p class="bubble them">{t.text}</p>
+					{#if t.identity}<p class="identity">{t.identity}</p>{/if}
 					{#if t.draft}
 						<section class="draft" aria-label="Bozza">
 							<p class="draft-head"><Icon name="sparkles" size={14} /> Bozza · {languageName(t.draft.language)}</p>
 							<p class="draft-text">{t.draft.text}</p>
-							<p class="draft-note">Non viene inviata da qui. Passa dal campo di scrittura e da «Rivedi e invia».</p>
-							{#if pendingUse !== null}
-								<div class="draft-confirm" role="group" aria-label="Il campo non è vuoto">
-									<p>Il campo di scrittura non è vuoto.</p>
-									<div class="draft-actions">
-										<button type="button" class="btn" onclick={() => applyDraft("replace")}>Sostituire</button>
-										<button type="button" class="btn ghost" onclick={() => applyDraft("append")}>Accodare</button>
-										<button type="button" class="btn ghost" onclick={() => (pendingUse = null)}>Annulla</button>
-									</div>
-								</div>
-							{:else}
-								<div class="draft-actions">
-									<button type="button" class="btn" onclick={() => useAsDraft(t.draft?.text ?? "")}>Usa come bozza</button>
-									<button type="button" class="btn ghost" onclick={() => copy(t.draft?.text ?? "")}>{copied ? "Copiata" : "Copia"}</button>
-									<button type="button" class="btn ghost" disabled={thread.busy} onclick={() => assistant.reformulate(chatId)}>Riformula</button>
-								</div>
-							{/if}
+							<p class="draft-note">Modifica il messaggio nel campo di scrittura e premi «Invia».</p>
+							<div class="draft-actions">
+								<button type="button" class="btn" onclick={() => assistant.useDraft(chatId, t.draft?.text ?? "")}>Usa come bozza</button>
+								<button type="button" class="btn ghost" onclick={() => copy(t.draft?.text ?? "")}>{copied ? "Copiata" : "Copia"}</button>
+								<button type="button" class="btn ghost" disabled={thread.busy} onclick={() => assistant.reformulate(chatId)}>Riformula</button>
+							</div>
 						</section>
 					{/if}
 				{/if}
 			{/each}
+			{#if thread.pendingDraft !== null}
+				<div class="draft-confirm" role="group" aria-label="Il campo non è vuoto">
+					<p>Il campo di scrittura non è vuoto.</p>
+					<div class="draft-actions">
+						<button type="button" class="btn" onclick={() => assistant.applyDraft(chatId, "replace")}>Sostituire</button>
+						<button type="button" class="btn ghost" onclick={() => assistant.applyDraft(chatId, "append")}>Accodare</button>
+						<button type="button" class="btn ghost" onclick={() => assistant.applyDraft(chatId, "cancel")}>Annulla</button>
+					</div>
+				</div>
+			{/if}
 			{#if thread.busy}
 				<p class="thinking">Sto leggendo la chat…</p>
 			{/if}
@@ -275,6 +253,12 @@
 		gap: var(--space-2);
 		font: var(--text-title-17-medium);
 		color: var(--info);
+	}
+	.identity {
+		margin: 0 0 var(--space-2);
+		font: var(--text-caption-12-regular);
+		color: var(--text-secondary);
+		overflow-wrap: anywhere;
 	}
 	.scope {
 		margin: 0;

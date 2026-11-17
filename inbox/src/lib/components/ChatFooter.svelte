@@ -1,8 +1,9 @@
 <script lang="ts">
+	import { tick } from "svelte";
 	import { api, type ChatSummary } from "$lib/api";
 	import { inbox } from "$lib/inbox.svelte";
 	import { assistant } from "$lib/assistant.svelte";
-	import { composer } from "$lib/composer.svelte";
+	import { composer, sendsOnEnter } from "$lib/composer.svelte";
 	import { outbox, outboxErrorText } from "$lib/outbox.svelte";
 	import { snoozeOptions, snoozeText } from "$lib/format";
 	import IconButton from "./IconButton.svelte";
@@ -11,6 +12,7 @@
 	let { chat }: { chat: ChatSummary } = $props();
 
 	let menuOpen = $state(false);
+	let reviewBusy = $state(false);
 	let area: HTMLTextAreaElement | undefined = $state();
 	const noReply = $derived(Boolean(chat.corrections.noReplyAt));
 	const snoozed = $derived(
@@ -21,11 +23,13 @@
 
 	const options = $derived(menuOpen ? snoozeOptions(new Date(inbox.now)) : []);
 
-	// ---- composer (F4–F5): nothing sends from here; «Rivedi» opens the sheet
+	// Direct sending uses the same server intent and confirmation as the optional review sheet.
 	const draft = $derived(composer.draft(chat.id));
 	const sendable = $derived(!chat.readOnly && !chat.archived);
+	const overLimit = $derived(chat.maxTextLength !== undefined && draft.text.length > chat.maxTextLength);
 	const canReview = $derived(
-		sendable && draft.text.trim() !== "" && !inbox.degraded && chat.accountStatus === "connected",
+		sendable && draft.text.trim() !== "" && !inbox.degraded && chat.accountStatus === "connected"
+			&& !overLimit && !outbox.directBusy[chat.id] && !reviewBusy,
 	);
 	const counter = $derived.by(() => {
 		const n = draft.text.length.toLocaleString("it");
@@ -33,7 +37,6 @@
 			? `${n} / limite ${chat.maxTextLength.toLocaleString("it")}`
 			: `${n} caratteri · nessun limite dichiarato`;
 	});
-	const overLimit = $derived(chat.maxTextLength !== undefined && draft.text.length > chat.maxTextLength);
 
 	function pickSnooze(iso: string) {
 		menuOpen = false;
@@ -48,10 +51,39 @@
 
 	async function review() {
 		if (!canReview) return;
-		if (!(await outbox.openReview(chat.id, draft.text, draft.replyTo?.id))) {
-			inbox.actionError = outboxErrorText(outbox.lastError ?? "network");
+		const id = chat.id;
+		reviewBusy = true;
+		try {
+			if (!(await outbox.openReview(id, draft.text, draft.replyTo?.id)) && inbox.chat?.id === id) {
+				inbox.actionError = outboxErrorText(outbox.lastError ?? "network");
+			}
+		} finally {
+			reviewBusy = false;
 		}
 	}
+	async function send() {
+		if (!canReview) return;
+		const id = chat.id;
+		if (!(await outbox.sendDirect(id, draft.text, draft.replyTo?.id)) && outbox.lastError && inbox.chat?.id === id) {
+			inbox.actionError = outboxErrorText(outbox.lastError);
+		}
+	}
+	function keydown(event: KeyboardEvent) {
+		if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+		event.preventDefault();
+		if (sendsOnEnter(event)) void send();
+	}
+	$effect(() => {
+		const request = composer.focusRequest;
+		const id = chat.id;
+		if (request?.chatID === id) {
+			void tick().then(() => {
+				if (composer.focusRequest !== request || inbox.chat?.id !== id) return;
+				grow();
+				area?.focus();
+			});
+		}
+	});
 </script>
 
 <footer class="footer">
@@ -104,7 +136,7 @@
 			</p>
 		{/if}
 		<div class="composer">
-			{#if inbox.state?.assistant.status === "ok"}
+			{#if assistant.available(chat.id)}
 				<IconButton icon="sparkles" label="Assistente" pressed={assistant.open} disabled={inbox.degraded} onclick={() => assistant.toggle()} />
 			{/if}
 			<label class="sr-only" for="composer-input">Scrivi un messaggio</label>
@@ -114,12 +146,14 @@
 				placeholder="Scrivi un messaggio"
 				value={draft.text}
 				bind:this={area}
+				onkeydown={keydown}
 				oninput={(e) => {
 					composer.setText(chat.id, e.currentTarget.value);
 					grow();
 				}}
 			></textarea>
-			<button type="button" class="btn review" disabled={!canReview} onclick={review}>Rivedi</button>
+			<button type="button" class="link" disabled={!canReview} onclick={review}>Rivedi</button>
+			<button type="button" class="btn review" disabled={!canReview} onclick={send}>{outbox.directBusy[chat.id] ? "Invio…" : "Invia"}</button>
 		</div>
 		<p class="counter" class:over={overLimit}>{counter}</p>
 	{:else}

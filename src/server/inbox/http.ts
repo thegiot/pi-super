@@ -7,7 +7,9 @@ import { WebSocket } from "ws";
 import { BeeperError } from "./beeper.js";
 import { type ChatFilter, type ChatsUpdate, type InboxService, type InboxState, InboxError, type MessageView } from "./service.js";
 import { readBody } from "../uploads.js";
-import { type Assistant, AssistantError, buildContext, type HistoryTurn } from "./assistant.js";
+import { AssistantError, buildContext, type HistoryTurn } from "./assistant.js";
+import type { AssistantEngines } from "./assistant-engines.js";
+import { isAssistantSelection } from "./assistant-settings.js";
 import type { Outbox, OutboxIntentView } from "./outbox.js";
 import { ImportanceError } from "./importance.js";
 import { InboxNotificationsError, type InboxNotifications } from "./notifications.js";
@@ -20,7 +22,7 @@ import { InboxNotificationsError, type InboxNotifications } from "./notification
 export interface InboxHttpDeps {
 	inbox: InboxService;
 	/** undefined when the assistant is not wired; the route then answers assistant_unconfigured */
-	assistant?: Assistant;
+	assistant?: AssistantEngines;
 	/** the controlled-send journal; the /outbox routes 404 when it is not wired */
 	outbox?: Outbox;
 	notifications?: InboxNotifications;
@@ -56,6 +58,11 @@ export async function handleInboxApi(
 	try {
 		if (method === "GET" && path === "/state") {
 			json(res, 200, inbox.state());
+			return;
+		}
+		if (method === "GET" && path === "/assistant/options") {
+			if (!deps.assistant) throw new InboxError(503, "assistant_unconfigured");
+			json(res, 200, await deps.assistant.options());
 			return;
 		}
 		if (method === "POST" && path === "/refresh") {
@@ -119,6 +126,18 @@ async function chatRoute(
 ): Promise<void> {
 	const { inbox, json } = deps;
 	switch (route.replace(/\/$/, "")) {
+		case "GET assistant-settings":
+		case "PATCH assistant-settings": {
+			if (!inbox.chat(chatID)) throw new InboxError(404, "chat not found");
+			if (!deps.assistant) throw new InboxError(503, "assistant_unconfigured");
+			if (req.method === "PATCH") {
+				const selection = await jsonBody(req);
+				if (Object.keys(selection).length !== 3 || !isAssistantSelection(selection) || !await deps.assistant.accepts(selection)) throw new InboxError(400, "assistant_selection_invalid");
+				deps.assistant.settings.set(chatID, selection);
+			}
+			json(res, 200, await deps.assistant.selection(chatID));
+			return;
+		}
 		case "GET": {
 			const chat = inbox.chat(chatID);
 			json(res, chat ? 200 : 404, chat ?? { error: "chat not found" });
@@ -291,7 +310,7 @@ async function jsonBody(req: IncomingMessage, limit = JSON_BODY_LIMIT): Promise<
  */
 async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: InboxHttpDeps, chatID: string): Promise<void> {
 	const { inbox, json, assistant } = deps;
-	if (!assistant || !assistant.configured()) {
+	if (!assistant) {
 		json(res, 503, { error: "assistant_unconfigured" });
 		return;
 	}
@@ -303,8 +322,8 @@ async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: Inb
 		return;
 	}
 	const intent = body.intent ?? "answer";
-	if (intent !== "answer" && intent !== "draft") {
-		json(res, 400, { error: "intent must be answer or draft" });
+	if (intent !== "answer" && intent !== "draft" && intent !== "auto") {
+		json(res, 400, { error: "intent must be answer, draft or auto" });
 		return;
 	}
 	const history = parseHistory(body.history);
@@ -317,6 +336,14 @@ async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: Inb
 		return;
 	}
 	const revision = inbox.modelRevision(chatID);
+	const selectionRevision = assistant.settings.revision(chatID);
+	const selection = await assistant.selection(chatID);
+	const assertCurrent = () => {
+		inbox.assertModelAllowed(chatID);
+		if (revision !== inbox.modelRevision(chatID)) throw new InboxError(409, "model_context_changed");
+		if (selectionRevision !== assistant.settings.revision(chatID)) throw new InboxError(409, "assistant_settings_changed");
+	};
+	assertCurrent();
 	let source;
 	try {
 		source = await inbox.assistantSource(chatID);
@@ -325,18 +352,18 @@ async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: Inb
 		json(res, 503, { error: "beeper_unavailable" });
 		return;
 	}
-	inbox.assertModelAllowed(chatID);
-	if (revision !== inbox.modelRevision(chatID)) throw new InboxError(409, "model_context_changed");
+	assertCurrent();
 	const context = buildContext(source);
 	try {
-		const answer = await assistant.ask({ prompt, history, context, intent });
-		inbox.assertModelAllowed(chatID);
-		if (revision !== inbox.modelRevision(chatID)) throw new InboxError(409, "model_context_changed");
+		const answer = await assistant.ask(selection, { prompt, history, context, intent }, assertCurrent);
+		assertCurrent();
 		json(res, 200, {
 			reply: answer.reply,
 			draft: answer.draftText.trim() === "" ? null : { text: answer.draftText, language: answer.draftLanguage },
 			context: { messages: context.messages, from: context.from, to: context.to },
 			model: answer.model,
+			engine: answer.engine,
+			provider: answer.provider,
 		});
 	} catch (err) {
 		if (err instanceof AssistantError) {

@@ -87,7 +87,7 @@
 			</a>
 		{/snippet}
 		{#snippet actions()}
-			{#if chat && inbox.state?.assistant.status === "ok"}
+			{#if chat && assistant.available(chat.id)}
 				<IconButton
 					icon="sparkles"
 					label="Assistente"

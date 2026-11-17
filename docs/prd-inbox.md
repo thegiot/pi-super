@@ -8,6 +8,8 @@
 Convenzione usata in tutto il documento: **[V]** = fatto verificato direttamente, **[I]** = ipotesi
 o proposta da validare, **[D]** = decisione che spetta al proprietario (raccolte in [§19](#19-decisioni-per-il-proprietario)).
 
+> Aggiornamento approvato dal proprietario il 17 novembre 2026. Il flusso corrente aggiunge selezione Flash/Pi/Hermes per chat, conoscenza gestita dal profilo Hermes `chatassistant`, bozza richiesta nel composer e invio diretto con Invio. La revisione prima dell'invio diventa facoltativa. Il dettaglio e i limiti degli strumenti Hermes sono in [Assistente per chat e invio diretto](inbox-assistant-engines.md). Queste decisioni aggiornano i vincoli MVP sotto riportati per M2/M3 e D12.
+
 ## 1. Sintesi
 
 Un'inbox dentro pi-super che riunisce le conversazioni di WhatsApp, WeChat, Telegram (e le altre

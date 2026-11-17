@@ -121,9 +121,27 @@ export interface Counts {
 	all: number;
 }
 
-export type AssistantIntent = "answer" | "draft";
+export type AssistantIntent = "answer" | "draft" | "auto";
+export interface AssistantSettings {
+	engine: "flash" | "pi" | "hermes";
+	provider: string;
+	model: string;
+}
+export interface AssistantOptions {
+	engines: {
+		id: AssistantSettings["engine"];
+		label: string;
+		available: boolean;
+		profile?: string;
+		models: { provider: string; id: string; label: string }[];
+		default: { provider: string; model: string };
+	}[];
+	default: AssistantSettings;
+}
 
 export interface AssistantAnswer {
+	engine?: AssistantSettings["engine"];
+	provider?: string;
 	reply: string;
 	draft: { text: string; language: string } | null;
 	context: { messages: number; from: string | null; to: string | null };
@@ -260,6 +278,9 @@ export const api = {
 		call<unknown>("POST", "/api/inbox/notifications/subscriptions", subscription),
 	unsubscribe: (endpoint: string) =>
 		call<unknown>("DELETE", "/api/inbox/notifications/subscriptions", { endpoint }),
+	assistantOptions: () => call<AssistantOptions>("GET", "/api/inbox/assistant/options"),
+	assistantSettings: (id: string) => call<AssistantSettings>("GET", `${chatPath(id)}/assistant-settings`),
+	setAssistantSettings: (id: string, settings: AssistantSettings) => call<AssistantSettings>("PATCH", `${chatPath(id)}/assistant-settings`, settings),
 	assistant: (id: string, body: { prompt: string; intent?: AssistantIntent; history: { role: "user" | "assistant"; text: string }[] }) =>
 		call<AssistantAnswer>("POST", `${chatPath(id)}/assistant`, body),
 	createIntent: (body: { key: string; chatID: string; text: string; replyToMessageID?: string }) =>

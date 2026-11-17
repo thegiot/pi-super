@@ -325,10 +325,10 @@ async function main() {
 		["inbox: the all view lists every chat but the merged duplicate", listAll.tabs[2].selected && listAll.rows === 12],
 		["inbox: phone layouts have no horizontal overflow", [listReply, listUnread, listAll, chatDm, chatGroup].every(f => f.overflow <= 0)],
 		["inbox: every touch target is at least 48px", [listReply, listUnread, chatDm, chatGroup, snoozeMenu].every(f => f.smallTargets.length === 0)],
-		["inbox: the composer sits on chat pages, the list has none, and nothing sends directly",
+		["inbox: the composer offers direct send on chat pages and the list has none",
 			listReply.textareas === 0 && listReply.sendLike.length === 0 &&
-			[chatDm, chatGroup, snoozeMenu].every(f => f.textareas === 1 && f.sendLike.includes("Rivedi") &&
-				!f.sendLike.some(t => /invia|send|segna come letto|mark as read/i.test(t)))],
+			[chatDm, chatGroup, snoozeMenu].every(f => f.textareas === 1 && f.sendLike.includes("Invia") &&
+				!f.sendLike.some(t => /segna come letto|mark as read/i.test(t)))],
 		["inbox: a DM shows messages and the read-without-confirmation notice", chatDm.messages > 0 && chatDm.banners.some(b => /senza conferma/.test(b))],
 		["inbox: the group shows an image and a labelled placeholder for the PDF", chatGroup.images >= 1 && chatGroup.placeholders.some(p => /ricetta\.pdf/.test(p))],
 		["inbox: the snooze menu offers the four fixed times", snoozeMenu.menuItems.length === 4],
@@ -343,12 +343,21 @@ async function main() {
 		console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
 		if (!ok) inboxFailed++;
 	}
+	const typeComposer = (text) =>
+		c.evaluate(`(() => {
+      const t = document.querySelector(".composer textarea");
+      const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      set.call(t, ${JSON.stringify(text)});
+      t.dispatchEvent(new Event("input", { bubbles: true }));
+      return t.value;
+    })()`);
 	// ---- assistant (M2): the phone sheet with a draft, the desktop column, and a provider error
 	const assistantOpen = async () => {
 		await c.evaluate(`document.querySelector('button[aria-label="Assistente"]').click(); 1`);
 		await wait(500);
 	};
 	await inboxPage(chatId("!wc-reply:wc.test"));
+	await typeComposer("Testo già presente da preservare");
 	await assistantOpen();
 	await clickText("button", "/^Proponi risposta$/");
 	await wait(1800);
@@ -360,8 +369,8 @@ async function main() {
       dialog: !!d && !!(d.offsetWidth || d.offsetHeight),
       draftText: draft ? draft.querySelector('.draft-text').textContent : null,
       draftHead: draft ? draft.querySelector('.draft-head').textContent.trim() : null,
-      copy: !!draft && [...draft.querySelectorAll('button')].some(b => b.textContent.trim() === 'Copia'),
-      useAsDraft: [...document.querySelectorAll('button')].some(b => /usa come bozza/i.test(b.textContent)),
+      choice: !!d && [...d.querySelectorAll('button')].some(b => b.textContent.trim() === 'Sostituire'),
+      composerPreserved: document.querySelector(".composer textarea")?.value === "Testo già presente da preservare",
       scope: (document.querySelector('.sheet .scope') || {}).textContent ?? null,
     };
   })()`);
@@ -395,9 +404,9 @@ async function main() {
 
 	const llmBody = fakeLlm.requests.at(-1)?.body ?? {};
 	const assistantChecks = [
-		["assistant sheet: dialog opens with a draft card and a Copia action", sheetInfo.dialog && /Bozza · italiano/.test(sheetInfo.draftHead ?? "") && sheetInfo.draftText?.includes("Ciao, sì") && sheetInfo.copy],
-		["assistant sheet: Usa come bozza exists, but no send control anywhere", sheetInfo.useAsDraft && !sheet.sendLike.some(t => /invia|send|segna come letto/i.test(t))],
-		["assistant sheet: discloses how many messages it sees", /Conosce gli ultimi \d+ messaggi/.test(sheetInfo.scope ?? "")],
+		["assistant sheet: existing composer gets explicit replace/append choice", sheetInfo.dialog && /Bozza · italiano/.test(sheetInfo.draftHead ?? "") && sheetInfo.draftText?.includes("Ciao, sì") && sheetInfo.choice && sheetInfo.composerPreserved],
+		["assistant sheet: draft stays separate until owner resolves existing composer", sheetInfo.choice && sheetInfo.composerPreserved],
+		["assistant sheet: discloses how many messages it sees", /(?:Conosce|Ha letto) gli ultimi \d+ messaggi/.test(sheetInfo.scope ?? "")],
 		["assistant sheet: fits the phone viewport without overflow", sheet.overflow <= 0],
 		["assistant desktop 1440: chat and assistant side by side", columns.column && columns.chatStillThere && columns.overflow <= 0 && columns.answer >= 1],
 		["assistant error: the reason is shown and the chat stays readable", errorInfo.alert.some(t => /non valido/.test(t)) && errorInfo.chatStillReadable],
@@ -411,7 +420,7 @@ async function main() {
 	// Long informational replies must scroll behind a separate footer, never paint underneath it.
 	await inboxPage(chatId("!wc-reply:wc.test"));
 	await assistantOpen();
-	fakeLlm.respondWithAnswer({ reply: Array.from({ length: 35 }, (_, i) => `${i + 1}. Nel gruppo si è parlato di organizzare l'incontro: alcuni preferiscono sabato, altri devono confermare. Questa è una sintesi del solo contesto disponibile.`).join("\n\n"), draft_text: "QUESTA BOZZA NON DEVE COMPARIRE", draft_language: "it" });
+	fakeLlm.respondWithAnswer({ reply: Array.from({ length: 35 }, (_, i) => `${i + 1}. Nel gruppo si è parlato di organizzare l'incontro: alcuni preferiscono sabato, altri devono confermare. Questa è una sintesi del solo contesto disponibile.`).join("\n\n"), draft_text: "", draft_language: "" });
 	await c.evaluate(`(() => { const input = document.querySelector('.sheet form input, .sheet form textarea'); const set = Object.getOwnPropertyDescriptor(input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set; set.call(input, 'Di cosa hanno parlato ultimamente nel gruppo?'); input.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()`);
 	await clickText("button", "/^Chiedi$/");
 	await wait(1800);
@@ -428,17 +437,21 @@ async function main() {
 	if (!shortFacts) inboxFailed++;
 	phone();
 
+	await inboxPage(chatId("!wc-reply:wc.test"));
+	await assistantOpen();
+	fakeLlm.respondWithAnswer({ reply: "Ecco il messaggio in inglese.", draft_text: "Hi, Thursday evening works for me.", draft_language: "en" });
+	await c.evaluate(`(() => { const input = document.querySelector('.sheet form input'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; set.call(input, 'Scrivigli un messaggio in inglese per confermare giovedì sera'); input.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()`);
+	await clickText("button", "/^Chiedi$/");
+	await wait(1800);
+	const automaticDraft = await c.evaluate(`(() => ({ text: document.querySelector('.composer textarea')?.value, closed: !document.querySelector('.sheet[aria-label="Assistente"]'), focused: document.activeElement === document.querySelector('.composer textarea') }))()`);
+	await c.shot("inbox-31-natural-draft-composer");
+	const draftHandoff = automaticDraft.text === "Hi, Thursday evening works for me." && automaticDraft.closed && automaticDraft.focused;
+	console.log(`${draftHandoff ? 'PASS' : 'FAIL'}  natural-language draft fills and focuses composer ${JSON.stringify(automaticDraft)}`);
+	if (!draftHandoff) inboxFailed++;
+
 	// ---- controlled send (M3): composer, review sheet, outcome, desktop modal
-	const typeComposer = (text) =>
-		c.evaluate(`(() => {
-      const t = document.querySelector(".composer textarea");
-      const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-      set.call(t, ${JSON.stringify(text)});
-      t.dispatchEvent(new Event("input", { bubbles: true }));
-      return t.value;
-    })()`);
 	const REVIEW_FACTS = `(() => {
-    const d = document.querySelector('[role=dialog][aria-label="Rivedi e invia"]');
+    const d = document.querySelector('[role=dialog][aria-label="Rivedi e invia"], [role=dialog][aria-label="Esito invio"]');
     if (!d) return { dialog: false };
     const label = (dt) => [...d.querySelectorAll(".field")].find(f => f.querySelector("dt")?.textContent.trim() === dt)?.querySelector("dd")?.textContent.replace(/\\s+/g, " ").trim() ?? null;
     return {
@@ -497,7 +510,7 @@ async function main() {
 		["send: the sheet shows sender, recipient, exact text and the single-shot note",
 			reviewPhone.dialog && /WhatsApp/.test(reviewPhone.da ?? "") && /Ana Test/.test(reviewPhone.a ?? "") &&
 			reviewPhone.exact === "Ci vediamo giovedì alle 18, va bene?" && /Parte una sola volta/.test(reviewPhone.note[0] ?? "")],
-		["send: the confirm button is «Invia a …», no other send path", reviewPhone.buttons.some(b => /^Invia a /.test(b)) && reviewPhone.buttons.includes("Modifica")],
+		["send: optional review keeps its explicit recipient confirmation", reviewPhone.buttons.some(b => /^Invia a /.test(b)) && reviewPhone.buttons.includes("Modifica")],
 		["send: phone sheet fits the viewport", reviewPhone.overflow <= 0],
 		["send: confirming went through in invio… then inviato, one POST to Beeper",
 			/In invio|Inviato/.test(sendingInfo.note.join(" ") + sentInfo.note.join(" ")) && fakeBeeper.sends.length === sendsBefore + 1 &&
@@ -509,6 +522,27 @@ async function main() {
 		console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
 		if (!ok) inboxFailed++;
 	}
+
+	await inboxPage(chatId("!tg-bob:tg.test"));
+	await typeComposer("Direct keyboard fixture");
+	const directSendsBefore = fakeBeeper.sends.length;
+	await c.evaluate(`(() => { const t = document.querySelector('.composer textarea'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, isComposing: true })); t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, repeat: true })); return 1; })()`);
+	await wait(150);
+	const guardedEnter = fakeBeeper.sends.length === directSendsBefore;
+	await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, modifiers: 8, text: "\r", unmodifiedText: "\r" });
+	await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, modifiers: 8 });
+	await wait(150);
+	const shiftValue = await c.evaluate(`document.querySelector('.composer textarea').value`);
+	const shiftEnter = shiftValue.endsWith('\n');
+	await typeComposer("Direct keyboard fixture");
+	await c.evaluate(`document.querySelector('.composer textarea').focus(); 1`);
+	await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+	await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+	await wait(1800);
+	await c.shot("inbox-32-direct-enter-send");
+	const directEnter = guardedEnter && shiftEnter && fakeBeeper.sends.length === directSendsBefore + 1;
+	console.log(`${directEnter ? 'PASS' : 'FAIL'}  Enter sends once, Shift+Enter inserts newline, IME/repeat do not send ${JSON.stringify({ guardedEnter, shiftEnter, shiftValue, sends: fakeBeeper.sends.length - directSendsBefore })}`);
+	if (!directEnter) inboxFailed++;
 
 	// ---- M4: only explicit evaluation may read chat content; privacy and notifications fit.
 	await inboxPage(chatId("!wc-reply:wc.test"));
@@ -524,7 +558,12 @@ async function main() {
 	await c.shot("inbox-19-importance-mobile");
 	await c.evaluate(`document.querySelector('.sheet .model-controls').open = true; 1`);
 	await wait(150);
+	const selectionFacts = await c.evaluate(`(() => { const p = document.querySelector('.sheet'); const engine = p.querySelector('select[aria-label="Motore assistente"]'); const provider = p.querySelector('select[aria-label="Provider"]'); const model = p.querySelector('select[aria-label="Modello"]'); return { engines: engine ? [...engine.options].map(o => o.value) : [], selected: engine?.value, provider: provider?.value, model: model?.value, identity: p.querySelector('.identity')?.textContent ?? '', overflow: document.documentElement.scrollWidth > innerWidth }; })()`);
+	const selectorsOk = ['flash', 'pi', 'hermes'].every(id => selectionFacts.engines.includes(id)) && selectionFacts.selected === 'flash' && !!selectionFacts.provider && !!selectionFacts.model && !selectionFacts.overflow;
+	console.log(`${selectorsOk ? 'PASS' : 'FAIL'}  assistant engine/provider/model controls ${JSON.stringify(selectionFacts)}`);
+	if (!selectorsOk) inboxFailed++;
 	await c.shot("inbox-20-model-privacy-mobile");
+	await c.shot("inbox-33-engine-settings-mobile");
 	await c.evaluate(`document.querySelector('.sheet .model-controls input').click(); 1`);
 	await wait(500);
 	const privacyPhone = await c.evaluate(`(() => ({ disabled: !document.querySelector('.sheet') && !!document.querySelector('button[aria-label="Assistente"]:disabled'), notice: document.querySelector('.pane .model-controls')?.textContent.includes('Modello escluso') }))()`);

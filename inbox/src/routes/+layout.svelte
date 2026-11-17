@@ -1,6 +1,6 @@
 <script lang="ts">
 	import "$lib/tokens.css";
-	import { onMount } from "svelte";
+	import { onMount, untrack } from "svelte";
 	import { page } from "$app/state";
 	import { inbox } from "$lib/inbox.svelte";
 	import ListPane from "$lib/components/ListPane.svelte";
@@ -21,14 +21,13 @@
 
 	$effect(() => {
 		if (!chatRoute) {
-			inbox.closeChat();
-			assistant.close();
+			untrack(() => { inbox.closeChat(); assistant.close(); });
 		}
 	});
 
 	$effect(() => {
 		void selectedId;
-		assistant.close();
+		untrack(() => assistant.close());
 	});
 </script>
 
