@@ -454,9 +454,10 @@ Del profilo `chatassistant` si riusano prompt, memoria in lettura e modello. Il 
 (I4) e di restringerne gli strumenti per questa via va deciso nello spike; la modalità one-shot è
 esclusa perché scavalca le approvazioni.
 
-L'uso attuale del profilo dalla riga di comando, con accesso a Beeper via MCP, può restare; ma
-finché quel profilo ha `send_message`, un token di scrittura e una shell, il controllo sull'invio
-dipende dal prompt ([D1, D2](#19-decisioni-per-il-proprietario)).
+L'uso attuale del profilo dalla riga di comando, con accesso a Beeper via MCP e `send_message`,
+resta com'è per decisione del proprietario ([D1](#19-decisioni-per-il-proprietario)): in quel
+percorso il controllo sull'invio dipende dal prompt. Il percorso dell'inbox è separato: l'invocazione
+usata da pi-super non riceve né lo strumento di invio né il token di scrittura.
 
 ### 11.4 Client
 
@@ -616,7 +617,7 @@ Tre punti escono dal perimetro di pi-super e vanno decisi:
 
 | | Contenuto | Si chiude quando |
 |---|---|---|
-| **M0 — Verifiche** | Ipotesi I1–I8. Prototipo SvelteKit servito dal server. Applicazione di D1 e D2 su K29 | Ogni ipotesi è confermata o smentita per iscritto; D1 e D2 sono applicate |
+| **M0 — Verifiche** | Ipotesi I1–I8. Prototipo SvelteKit servito dal server. Applicazione di D2 su K29 | Ogni ipotesi è confermata o smentita per iscritto; D2 è applicata |
 | **M1 — Inbox in sola lettura** | Lista, filtri deterministici, ricerca, cronologia, immagini, aggiornamenti in tempo reale, stati degradati, correzioni dell'utente | Il proprietario la usa per il triage quotidiano al posto dei contatori delle app |
 | **M2 — Assistente e bozze** | Ponte verso Hermes con strumenti ristretti, bozze, *Copia*; il testo si invia ancora dall'app nativa | Le bozze sono abbastanza buone da essere copiate più spesso che riscritte |
 | **M3 — Invio controllato** | Outbox, *Rivedi e invia*, esito, riconciliazione | Criteri CA9–CA14 soddisfatti sulla chat di prova (WeChat, Poesi) |
@@ -712,12 +713,12 @@ di una mancata. Nell'MVP c'è il conteggio sul pulsante dell'inbox.
 
 ## 19. Decisioni per il proprietario
 
-Esito del riesame con il proprietario (17 novembre 2026): tutte le proposte accettate tranne D3 (rinviata) e D9
-(cambiata); D11 indicata.
+Esito del riesame con il proprietario (17 novembre 2026): tutte le proposte accettate tranne D1 (rifiutata), D3
+(rinviata) e D9 (cambiata); D11 indicata.
 
 | # | Decisione | Proposta | Esito |
 |---|---|---|---|
-| **D1** | Togliere `send_message` e il token di scrittura al profilo `chatassistant`. È una modifica a un servizio esistente, che l'issue non autorizza | Sì, prima di M3. Finché non avviene, il divieto di invio per quel profilo resta affidato al prompt | Accettata |
+| **D1** | Togliere `send_message` e il token di scrittura al profilo `chatassistant`. È una modifica a un servizio esistente, che l'issue non autorizza | Sì, prima di M3. Finché non avviene, il divieto di invio per quel profilo resta affidato al prompt | Rifiutata: `chatassistant` mantiene `send_message` e il token di scrittura. L'assistente dell'inbox (M2) usa un'invocazione separata senza strumenti di invio, e CA13 vale per quella |
 | **D2** | Togliere il toolset terminale e la scrittura in memoria senza approvazione al profilo che legge i messaggi | Sì: un profilo che legge testo di terzi non dovrebbe avere una shell | Accettata |
 | **D3** | Inoltro dell'API di Beeper sulla tailnet: mantenerlo o chiuderlo. Isolare Beeper e i token sotto un altro utente | Chiudere l'inoltro se nessun altro lo usa. Isolamento: da valutare dopo l'MVP | Rinviata: l'inoltro resta per ora, potrebbe servire ad altro. Il rischio di §12.1 resta aperto |
 | **D4** | Stack del client | Opzione A di §11.4: SvelteKit come SPA statica, sviluppata in worktree | Accettata |
