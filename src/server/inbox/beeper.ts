@@ -6,8 +6,10 @@ import { WebSocket } from "ws";
  * Field names follow that spec; the spec's `GetAccountsOutput` is a bare array and its
  * message list is "sorted by timestamp" without a stated direction, so callers sort.
  *
- * Read-only by construction: the only non-GET calls are the token introspection, which
- * never changes Beeper state. There is deliberately no method for writes here.
+ * The only non-GET calls in the whole codebase are the token introspection (which
+ * never changes Beeper state) and `sendMessage`, which exists solely for the outbox's
+ * confirm path (PRD §12.2). There is deliberately no method for edit, delete,
+ * archive, mark-as-read or any other write.
  */
 
 export type BeeperErrorKind = "unreachable" | "unauthorized" | "failed";
@@ -69,6 +71,13 @@ export interface BMessage {
 	text?: string;
 	editedTimestamp?: string;
 	isSender?: boolean;
+	/** present while a send is in flight and once it settles */
+	sendStatus?: {
+		status: "SUCCESS" | "PENDING" | "FAIL_RETRIABLE" | "FAIL_PERMANENT";
+		reason?: string;
+		message?: string;
+		timestamp?: string;
+	};
 	isHidden?: boolean;
 	isDeleted?: boolean;
 	attachments?: BAttachment[];
@@ -164,6 +173,27 @@ export class BeeperClient {
 		}
 		const suffix = qs.size > 0 ? `?${qs}` : "";
 		return this.json<BPage<BMessage>>(`/v1/chats/${encodeURIComponent(chatID)}/messages${suffix}`, {});
+	}
+
+	async getMessage(chatID: string, messageID: string): Promise<BMessage> {
+		return this.json<BMessage>(`/v1/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(messageID)}`, {});
+	}
+
+	/**
+	 * The single write this client can perform, called only from the outbox after the
+	 * user's confirm token checks out. Beeper may reroute the send (merged chats), so
+	 * the returned chatID is the *resolved* one. Same timeout as reads, no retries —
+	 * a retry would risk a duplicate, which is exactly what the outbox exists to avoid.
+	 */
+	async sendMessage(
+		chatID: string,
+		body: { text: string; replyToMessageID?: string },
+	): Promise<{ chatID: string; pendingMessageID: string }> {
+		return this.json<{ chatID: string; pendingMessageID: string }>(`/v1/chats/${encodeURIComponent(chatID)}/messages`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
 	}
 
 	/** Token scope words, e.g. `read`. Logged by the caller, never the token itself. */

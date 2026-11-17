@@ -132,6 +132,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				stateDir: cfg.stateDir,
 				log,
 				assistantConfigured: () => assistant?.configured() === true,
+				outbox: cfg.inboxOutbox,
 			})
 		: undefined;
 	const metaClients = new Set<WebSocket>();
@@ -743,7 +744,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			}
 			default:
 				if (inbox && url.pathname.startsWith("/api/inbox/")) {
-					await handleInboxApi(req, res, url, { inbox, assistant, json: sendJson, securityHeaders: SECURITY_HEADERS });
+					await handleInboxApi(req, res, url, { inbox, assistant, outbox: inbox.outbox, json: sendJson, securityHeaders: SECURITY_HEADERS });
 					return;
 				}
 				sendJson(res, 404, { error: "not found" });
@@ -847,7 +848,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			}
 			wss.handleUpgrade(req, socket, head, (ws) => {
 				if (who) socketAuth.set(ws, who);
-				serveInboxSocket(ws, inbox);
+				serveInboxSocket(ws, inbox, inbox.outbox);
 			});
 			return;
 		}

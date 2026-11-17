@@ -9,10 +9,13 @@
 	import EmptyState from "./EmptyState.svelte";
 	import MessageBubble from "./MessageBubble.svelte";
 	import ChatFooter from "./ChatFooter.svelte";
+	import SendReview from "./SendReview.svelte";
 	import OverflowMenu from "./OverflowMenu.svelte";
 	import IconButton from "./IconButton.svelte";
 	import Icon from "./Icon.svelte";
 	import { assistant } from "$lib/assistant.svelte";
+	import { composer, quoteOf } from "$lib/composer.svelte";
+	import { outbox } from "$lib/outbox.svelte";
 
 	let { id }: { id: string } = $props();
 
@@ -22,6 +25,20 @@
 
 	const chat = $derived(inbox.chat);
 	const replyLookup = $derived(new Map(inbox.messages.map((m) => [m.id, m])));
+	const sendable = $derived(chat !== null && chat !== undefined && !chat.readOnly && !chat.archived);
+	const outboxPending = $derived(chat ? outbox.pendingFor(chat.id) : []);
+
+	function reply(m: import("$lib/api").MessageView) {
+		if (!chat) return;
+		composer.setReply(chat.id, quoteOf(m));
+	}
+
+	const outboxChip = (state: string) =>
+		state === "sending" || state === "pending"
+			? "in invio…"
+			: state === "uncertain"
+				? "esito incerto"
+				: "non inviato";
 	const subtitle = $derived(
 		chat
 			? `${chat.network} · ${chat.type === "single" ? "chat a due" : `gruppo, ${chat.participantCount} partecipanti`} · ${accountStatusText(chat.accountStatus)}`
@@ -55,7 +72,7 @@
 	});
 
 	function onkeydown(e: KeyboardEvent) {
-		if (e.key === "Escape" && !inbox.wide && !assistant.open) void goto(`${base}/`);
+		if (e.key === "Escape" && !inbox.wide && !assistant.open && !outbox.review) void goto(`${base}/`);
 	}
 </script>
 
@@ -117,7 +134,14 @@
 					message={m}
 					group={chat?.type === "group"}
 					replyTo={m.linkedMessageID ? replyLookup.get(m.linkedMessageID) : undefined}
+					onReply={sendable ? reply : undefined}
 				/>
+			{/each}
+			{#each outboxPending as p (p.intent.id)}
+				<article class="bubble outbox" aria-label="Messaggio in uscita">
+					<p class="text">{p.text}</p>
+					<p class="meta"><span class="chip-{p.intent.state === 'uncertain' || p.intent.state === 'failed' || p.intent.state === 'not_found' ? 'warn' : 'info'}">{outboxChip(p.intent.state)}</span></p>
+				</article>
 			{/each}
 			{#if inbox.messagesLoaded && inbox.messages.length === 0 && !inbox.chatError}
 				<p class="muted">Nessun messaggio in questa chat.</p>
@@ -125,6 +149,7 @@
 		</div>
 		{#if chat}<ChatFooter {chat} />{/if}
 	{/if}
+	<SendReview />
 </section>
 
 <style>
@@ -173,6 +198,31 @@
 	.muted {
 		align-self: center;
 		color: var(--text-secondary);
+	}
+	.bubble.outbox {
+		align-self: flex-end;
+		max-width: min(80%, 520px);
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius-16);
+		background: var(--accent-subtle);
+		outline: 1px dashed var(--border-strong);
+	}
+	.bubble.outbox .text {
+		margin: 0;
+		font: var(--text-body-15-regular);
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.bubble.outbox .meta {
+		margin: 0;
+		align-self: flex-end;
+		font: var(--text-caption-12-regular);
+	}
+	.chip-info {
+		color: var(--info);
+	}
+	.chip-warn {
+		color: var(--warn);
 	}
 	.btn {
 		display: inline-flex;

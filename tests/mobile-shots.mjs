@@ -323,7 +323,10 @@ async function main() {
 		["inbox: the all view lists every chat but the merged duplicate", listAll.tabs[2].selected && listAll.rows === 12],
 		["inbox: phone layouts have no horizontal overflow", [listReply, listUnread, listAll, chatDm, chatGroup].every(f => f.overflow <= 0)],
 		["inbox: every touch target is at least 48px", [listReply, listUnread, chatDm, chatGroup, snoozeMenu].every(f => f.smallTargets.length === 0)],
-		["inbox: no composer and no send or mark-as-read control", [listReply, chatDm, chatGroup, snoozeMenu].every(f => f.textareas === 0 && f.sendLike.length === 0)],
+		["inbox: the composer sits on chat pages, the list has none, and nothing sends directly",
+			listReply.textareas === 0 && listReply.sendLike.length === 0 &&
+			[chatDm, chatGroup, snoozeMenu].every(f => f.textareas === 1 && f.sendLike.includes("Rivedi") &&
+				!f.sendLike.some(t => /invia|send|segna come letto|mark as read/i.test(t)))],
 		["inbox: a DM shows messages and the read-without-confirmation notice", chatDm.messages > 0 && chatDm.banners.some(b => /senza conferma/.test(b))],
 		["inbox: the group shows an image and a labelled placeholder for the PDF", chatGroup.images >= 1 && chatGroup.placeholders.some(p => /ricetta\.pdf/.test(p))],
 		["inbox: the snooze menu offers the four fixed times", snoozeMenu.menuItems.length === 4],
@@ -391,7 +394,7 @@ async function main() {
 	const llmBody = fakeLlm.requests.at(-1)?.body ?? {};
 	const assistantChecks = [
 		["assistant sheet: dialog opens with a draft card and a Copia action", sheetInfo.dialog && /Bozza · italiano/.test(sheetInfo.draftHead ?? "") && sheetInfo.draftText?.includes("Ciao, sì") && sheetInfo.copy],
-		["assistant sheet: no send and no use-as-draft control, no composer", !sheetInfo.useAsDraft && sheet.textareas === 0 && sheet.sendLike.length === 0],
+		["assistant sheet: Usa come bozza exists, but no send control anywhere", sheetInfo.useAsDraft && !sheet.sendLike.some(t => /invia|send|segna come letto/i.test(t))],
 		["assistant sheet: discloses how many messages it sees", /Conosce gli ultimi \d+ messaggi/.test(sheetInfo.scope ?? "")],
 		["assistant sheet: fits the phone viewport without overflow", sheet.overflow <= 0],
 		["assistant desktop 1440: chat and assistant side by side", columns.column && columns.chatStillThere && columns.overflow <= 0 && columns.answer >= 1],
@@ -399,6 +402,88 @@ async function main() {
 		["assistant: the provider got store:false, no tools, the schema", llmBody.store === false && !("tools" in llmBody) && llmBody.text?.format?.type === "json_schema"],
 	];
 	for (const [name, ok] of assistantChecks) {
+		console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
+		if (!ok) inboxFailed++;
+	}
+
+	// ---- controlled send (M3): composer, review sheet, outcome, desktop modal
+	const typeComposer = (text) =>
+		c.evaluate(`(() => {
+      const t = document.querySelector(".composer textarea");
+      const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      set.call(t, ${JSON.stringify(text)});
+      t.dispatchEvent(new Event("input", { bubbles: true }));
+      return t.value;
+    })()`);
+	const REVIEW_FACTS = `(() => {
+    const d = document.querySelector('[role=dialog][aria-label="Rivedi e invia"]');
+    if (!d) return { dialog: false };
+    const label = (dt) => [...d.querySelectorAll(".field")].find(f => f.querySelector("dt")?.textContent.trim() === dt)?.querySelector("dd")?.textContent.replace(/\\s+/g, " ").trim() ?? null;
+    return {
+      dialog: !!(d.offsetWidth || d.offsetHeight),
+      da: label("Da"),
+      a: label("A"),
+      quote: label("In risposta a"),
+      exact: d.querySelector(".exact")?.textContent ?? null,
+      count: d.querySelector(".count")?.textContent.trim() ?? null,
+      buttons: [...d.querySelectorAll("button")].map(b => b.textContent.replace(/\\s+/g, " ").trim()),
+      note: [...d.querySelectorAll(".note")].map(n => n.textContent.replace(/\\s+/g, " ").trim()),
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      modalWidth: Math.round(d.getBoundingClientRect().width),
+    };
+  })()`;
+
+	await inboxPage(chatId("!wa-ana:wa.test"));
+	await typeComposer("Ci vediamo giovedì alle 18, va bene?");
+	await wait(500);
+	const composerShot = await c.evaluate(`(() => ({
+    counter: document.querySelector(".counter")?.textContent.trim() ?? null,
+    reviewEnabled: !document.querySelector(".composer .btn.review")?.disabled,
+  }))()`);
+	await c.shot("inbox-15-composer");
+
+	await clickText("button", "/^Rivedi$/");
+	await wait(1500);
+	const reviewPhone = await c.evaluate(REVIEW_FACTS);
+	await c.shot("inbox-16-review");
+
+	const sendsBefore = fakeBeeper.sends.length;
+	await clickText("button", "/^Invia a/");
+	await wait(700);
+	const sendingInfo = await c.evaluate(REVIEW_FACTS);
+	await c.shot("inbox-17-sent-or-uncertain");
+	await wait(6000);
+	const sentInfo = await c.evaluate(REVIEW_FACTS);
+	const threadState = await c.evaluate(`(() => ({
+    outboxBubbles: document.querySelectorAll("article.bubble.outbox").length,
+    composerEmpty: document.querySelector(".composer textarea")?.value === "",
+  }))()`);
+
+	// desktop: the same sheet as a centered modal at 1440
+	desktop(1440, 900);
+	await inboxPage(chatId("!tg-bob:tg.test"), 2000);
+	await typeComposer("Ti mando il riepilogo domani mattina.");
+	await wait(500);
+	await clickText("button", "/^Rivedi$/");
+	await wait(1500);
+	const reviewDesk = await c.evaluate(REVIEW_FACTS);
+	await c.shot("inbox-18-desktop-review");
+	phone();
+
+	const sendChecks = [
+		["send: the composer counts characters against the network limit", /36 \/ limite 65\.536/.test(composerShot.counter ?? "") && composerShot.reviewEnabled],
+		["send: the sheet shows sender, recipient, exact text and the single-shot note",
+			reviewPhone.dialog && /WhatsApp/.test(reviewPhone.da ?? "") && /Ana Test/.test(reviewPhone.a ?? "") &&
+			reviewPhone.exact === "Ci vediamo giovedì alle 18, va bene?" && /Parte una sola volta/.test(reviewPhone.note[0] ?? "")],
+		["send: the confirm button is «Invia a …», no other send path", reviewPhone.buttons.some(b => /^Invia a /.test(b)) && reviewPhone.buttons.includes("Modifica")],
+		["send: phone sheet fits the viewport", reviewPhone.overflow <= 0],
+		["send: confirming went through in invio… then inviato, one POST to Beeper",
+			/In invio|Inviato/.test(sendingInfo.note.join(" ") + sentInfo.note.join(" ")) && fakeBeeper.sends.length === sendsBefore + 1 &&
+			/Inviato/.test(sentInfo.note.join(" "))],
+		["send: the composer is handed to the intent after confirm", threadState.composerEmpty],
+		["send: desktop modal is centered and complete", reviewDesk.dialog && reviewDesk.modalWidth > 400 && reviewDesk.modalWidth < 700 && reviewDesk.exact === "Ti mando il riepilogo domani mattina." && reviewDesk.overflow <= 0],
+	];
+	for (const [name, ok] of sendChecks) {
 		console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
 		if (!ok) inboxFailed++;
 	}

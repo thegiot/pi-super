@@ -1,4 +1,5 @@
-import { api, ApiError, type ChatDetail, type ChatFilter, type ChatSummary, type InboxState, type MessageView } from "./api";
+import { api, ApiError, type ChatDetail, type ChatFilter, type ChatSummary, type InboxState, type MessageView, type OutboxIntent } from "./api";
+import { outbox } from "./outbox.svelte";
 
 /*
  * The one client-side model: the server's list and open chat, kept current by /ws/inbox.
@@ -250,6 +251,12 @@ class InboxStore {
 			}
 			case "messages": {
 				if (msg.chatID === this.openId) this.mergeMessages(msg.messages as MessageView[]);
+				return;
+			}
+			case "outbox": {
+				outbox.apply(msg.intent as OutboxIntent);
+				// a sent message can lift the chat out of "Da rispondere": keep the list fresh
+				this.scheduleList();
 				return;
 			}
 		}

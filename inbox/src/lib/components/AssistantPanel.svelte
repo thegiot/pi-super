@@ -2,6 +2,7 @@
 	import { tick } from "svelte";
 	import { assistant, assistantErrorText, type Turn } from "$lib/assistant.svelte";
 	import { inbox } from "$lib/inbox.svelte";
+	import { composer } from "$lib/composer.svelte";
 	import IconButton from "./IconButton.svelte";
 	import Icon from "./Icon.svelte";
 
@@ -12,6 +13,8 @@
 	let question = $state("");
 	let copied = $state(false);
 	let panel: HTMLElement | undefined = $state();
+	/** a draft waiting on "Sostituire o accodare?" before entering the composer */
+	let pendingUse = $state<string | null>(null);
 	let thread = $derived(assistant.thread(chatId));
 	const lastDraft = $derived(findDraft(thread.turns));
 	const available = $derived(inbox.state?.assistant.status === "ok");
@@ -31,6 +34,28 @@
 	function send(text: string) {
 		question = "";
 		void assistant.ask(chatId, text);
+	}
+
+	/**
+	 * RF14/F4: the only path besides typing that writes into the composer. With a
+	 * non-empty field the user picks replace or append; then the assistant closes.
+	 */
+	function useAsDraft(text: string) {
+		if (composer.draft(chatId).text.trim() === "") {
+			composer.setText(chatId, text);
+			pendingUse = null;
+			assistant.close();
+		} else {
+			pendingUse = text;
+		}
+	}
+
+	function applyDraft(mode: "replace" | "append") {
+		if (pendingUse === null) return;
+		const current = composer.draft(chatId).text;
+		composer.setText(chatId, mode === "replace" ? pendingUse : `${current}${current.endsWith("\n") ? "" : "\n"}${pendingUse}`);
+		pendingUse = null;
+		assistant.close();
 	}
 
 	async function copy(text: string) {
@@ -96,11 +121,23 @@
 					<section class="draft" aria-label="Bozza">
 						<p class="draft-head"><Icon name="sparkles" size={14} /> Bozza · {languageName(t.draft.language)}</p>
 						<p class="draft-text">{t.draft.text}</p>
-						<p class="draft-note">Non viene inviata da qui. Copiala e inviala dall'app.</p>
-						<div class="draft-actions">
-							<button type="button" class="btn" onclick={() => copy(t.draft?.text ?? "")}>{copied ? "Copiata" : "Copia"}</button>
-							<button type="button" class="btn ghost" disabled={thread.busy} onclick={() => assistant.reformulate(chatId)}>Riformula</button>
-						</div>
+						<p class="draft-note">Non viene inviata da qui. Passa dal campo di scrittura e da «Rivedi e invia».</p>
+						{#if pendingUse !== null}
+							<div class="draft-confirm" role="group" aria-label="Il campo non è vuoto">
+								<p>Il campo di scrittura non è vuoto.</p>
+								<div class="draft-actions">
+									<button type="button" class="btn" onclick={() => applyDraft("replace")}>Sostituire</button>
+									<button type="button" class="btn ghost" onclick={() => applyDraft("append")}>Accodare</button>
+									<button type="button" class="btn ghost" onclick={() => (pendingUse = null)}>Annulla</button>
+								</div>
+							</div>
+						{:else}
+							<div class="draft-actions">
+								<button type="button" class="btn" onclick={() => useAsDraft(t.draft?.text ?? "")}>Usa come bozza</button>
+								<button type="button" class="btn ghost" onclick={() => copy(t.draft?.text ?? "")}>{copied ? "Copiata" : "Copia"}</button>
+								<button type="button" class="btn ghost" disabled={thread.busy} onclick={() => assistant.reformulate(chatId)}>Riformula</button>
+							</div>
+						{/if}
 					</section>
 				{/if}
 			{/if}
@@ -263,6 +300,11 @@
 		display: flex;
 		gap: var(--space-2);
 		flex-wrap: wrap;
+	}
+	.draft-confirm p {
+		margin: 0 0 var(--space-1);
+		font: var(--text-caption-12-medium);
+		color: var(--warn);
 	}
 	.btn {
 		min-height: var(--touch-min);

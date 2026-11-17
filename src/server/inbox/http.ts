@@ -8,6 +8,7 @@ import { BeeperError } from "./beeper.js";
 import { type ChatFilter, type ChatsUpdate, type InboxService, type InboxState, InboxError, type MessageView } from "./service.js";
 import { readBody } from "../uploads.js";
 import { type Assistant, AssistantError, buildContext, type HistoryTurn } from "./assistant.js";
+import type { Outbox, OutboxIntentView } from "./outbox.js";
 
 /*
  * HTTP and WebSocket surface of the inbox. Mounted by server.ts behind the same auth,
@@ -18,6 +19,8 @@ export interface InboxHttpDeps {
 	inbox: InboxService;
 	/** undefined when the assistant is not wired; the route then answers assistant_unconfigured */
 	assistant?: Assistant;
+	/** the controlled-send journal; the /outbox routes 404 when it is not wired */
+	outbox?: Outbox;
 	json: (res: ServerResponse, status: number, body: unknown) => void;
 	securityHeaders: Record<string, string>;
 }
@@ -25,6 +28,8 @@ export interface InboxHttpDeps {
 const FILTERS = new Set<string>(["reply", "unread", "all"]);
 const JSON_BODY_LIMIT = 4096;
 const ASSISTANT_BODY_LIMIT = 64 * 1024;
+/** draft text can be 20 000 chars plus envelope */
+const OUTBOX_BODY_LIMIT = 48 * 1024;
 const PROMPT_MAX = 2000;
 const HISTORY_MAX = 10;
 const TURN_MAX = 4000;
@@ -69,6 +74,10 @@ export async function handleInboxApi(
 					q: url.searchParams.get("q") ?? undefined,
 				}),
 			);
+			return;
+		}
+		if (path === "/outbox" || path.startsWith("/outbox/")) {
+			await outboxRoute(req, res, deps, path, method);
 			return;
 		}
 		const attachment = /^\/attachments\/([^/]+)\/([^/]+)\/(\d+)$/.exec(path);
@@ -145,6 +154,73 @@ async function chatRoute(
 		}
 		default:
 			json(res, 404, { error: "not found" });
+	}
+}
+
+/**
+ * The outbox endpoints (PRD §12.2). Only `confirm` can reach Beeper; every other
+ * route works on the journal. Public views never carry the message text — the
+ * client typed it and holds it, and after a final state the server no longer does.
+ */
+async function outboxRoute(
+	req: IncomingMessage,
+	res: ServerResponse,
+	deps: InboxHttpDeps,
+	path: string,
+	method: string,
+): Promise<void> {
+	const { outbox, json } = deps;
+	if (!outbox) {
+		json(res, 404, { error: "not found" });
+		return;
+	}
+	if (method === "POST" && path === "/outbox") {
+		const body = await jsonBody(req, OUTBOX_BODY_LIMIT);
+		json(
+			res,
+			200,
+			await outbox.create({
+				key: body.key,
+				chatID: body.chatID,
+				text: body.text,
+				replyToMessageID: body.replyToMessageID,
+			}),
+		);
+		return;
+	}
+	const m = /^\/outbox\/([^/]+)(?:\/(confirm|cancel|reissue|reconcile))?$/.exec(path);
+	if (!m) {
+		json(res, 404, { error: "not found" });
+		return;
+	}
+	const id = decodeSegment(m[1]!);
+	const action = m[2];
+	if (!action) {
+		if (method !== "GET") {
+			json(res, 404, { error: "not found" });
+			return;
+		}
+		json(res, 200, outbox.get(id));
+		return;
+	}
+	if (method !== "POST") {
+		json(res, 404, { error: "not found" });
+		return;
+	}
+	const body = action === "confirm" || action === "reissue" ? await jsonBody(req, OUTBOX_BODY_LIMIT) : {};
+	switch (action) {
+		case "confirm":
+			json(res, 200, await outbox.confirm(id, body.confirmToken));
+			return;
+		case "cancel":
+			json(res, 200, outbox.cancel(id));
+			return;
+		case "reissue":
+			json(res, 200, outbox.reissue(id, body.text));
+			return;
+		case "reconcile":
+			json(res, 200, await outbox.reconcile(id));
+			return;
 	}
 }
 
@@ -352,17 +428,19 @@ function isFile(path: string): boolean {
 
 // ---------------------------------------------------------------- websocket
 
-/** Server → client: `state` and `chats` on connect and on every change, `messages` for upserts. */
-export function serveInboxSocket(ws: WebSocket, inbox: InboxService): void {
+/** Server → client: `state` and `chats` on connect and on every change, `messages` for upserts, `outbox` on intent transitions. */
+export function serveInboxSocket(ws: WebSocket, inbox: InboxService, outbox?: Outbox): void {
 	const send = (msg: unknown) => {
 		if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 	};
 	const onState = (state: InboxState) => send({ t: "state", state });
 	const onChats = (update: ChatsUpdate) => send({ t: "chats", ...update });
 	const onMessages = (update: { chatID: string; messages: MessageView[] }) => send({ t: "messages", ...update });
+	const onOutbox = (intent: OutboxIntentView) => send({ t: "outbox", intent });
 	inbox.on("state", onState);
 	inbox.on("chats", onChats);
 	inbox.on("messages", onMessages);
+	outbox?.on("intent", onOutbox);
 	send({ t: "state", state: inbox.state() });
 	send({ t: "chats", ...inbox.snapshot() });
 	ws.on("message", (data) => {
@@ -379,5 +457,6 @@ export function serveInboxSocket(ws: WebSocket, inbox: InboxService): void {
 		inbox.off("state", onState);
 		inbox.off("chats", onChats);
 		inbox.off("messages", onMessages);
+		outbox?.off("intent", onOutbox);
 	});
 }

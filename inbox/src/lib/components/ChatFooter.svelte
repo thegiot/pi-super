@@ -1,11 +1,17 @@
 <script lang="ts">
 	import { api, type ChatSummary } from "$lib/api";
 	import { inbox } from "$lib/inbox.svelte";
+	import { assistant } from "$lib/assistant.svelte";
+	import { composer } from "$lib/composer.svelte";
+	import { outbox, outboxErrorText } from "$lib/outbox.svelte";
 	import { snoozeOptions, snoozeText } from "$lib/format";
+	import IconButton from "./IconButton.svelte";
+	import Icon from "./Icon.svelte";
 
 	let { chat }: { chat: ChatSummary } = $props();
 
 	let menuOpen = $state(false);
+	let area: HTMLTextAreaElement | undefined = $state();
 	const noReply = $derived(Boolean(chat.corrections.noReplyAt));
 	const snoozed = $derived(
 		chat.corrections.snoozeUntil && Date.parse(chat.corrections.snoozeUntil) > inbox.now
@@ -15,9 +21,36 @@
 
 	const options = $derived(menuOpen ? snoozeOptions(new Date(inbox.now)) : []);
 
+	// ---- composer (F4–F5): nothing sends from here; «Rivedi» opens the sheet
+	const draft = $derived(composer.draft(chat.id));
+	const sendable = $derived(!chat.readOnly && !chat.archived);
+	const canReview = $derived(
+		sendable && draft.text.trim() !== "" && !inbox.degraded && chat.accountStatus === "connected",
+	);
+	const counter = $derived.by(() => {
+		const n = draft.text.length.toLocaleString("it");
+		return chat.maxTextLength
+			? `${n} / limite ${chat.maxTextLength.toLocaleString("it")}`
+			: `${n} caratteri · nessun limite dichiarato`;
+	});
+	const overLimit = $derived(chat.maxTextLength !== undefined && draft.text.length > chat.maxTextLength);
+
 	function pickSnooze(iso: string) {
 		menuOpen = false;
 		void inbox.correct(() => api.snooze(chat.id, iso));
+	}
+
+	function grow() {
+		if (!area) return;
+		area.style.height = "auto";
+		area.style.height = `${Math.min(area.scrollHeight, 160)}px`;
+	}
+
+	async function review() {
+		if (!canReview) return;
+		if (!(await outbox.openReview(chat.id, draft.text, draft.replyTo?.id))) {
+			inbox.actionError = outboxErrorText(outbox.lastError ?? "network");
+		}
 	}
 </script>
 
@@ -60,6 +93,38 @@
 			{/if}
 		</div>
 	</div>
+	{#if sendable}
+		{#if draft.replyTo}
+			<p class="quote">
+				<Icon name="corner-up-left" size={14} />
+				<span class="quote-text">Rispondi a {draft.replyTo.author ?? "messaggio"}: {draft.replyTo.snippet}</span>
+				<button type="button" class="quote-clear" aria-label="Annulla citazione" onclick={() => composer.setReply(chat.id, undefined)}>
+					<Icon name="x" size={14} />
+				</button>
+			</p>
+		{/if}
+		<div class="composer">
+			{#if inbox.state?.assistant.status === "ok"}
+				<IconButton icon="sparkles" label="Assistente" pressed={assistant.open} disabled={inbox.degraded} onclick={() => assistant.toggle()} />
+			{/if}
+			<label class="sr-only" for="composer-input">Scrivi un messaggio</label>
+			<textarea
+				id="composer-input"
+				rows="1"
+				placeholder="Scrivi un messaggio"
+				value={draft.text}
+				bind:this={area}
+				oninput={(e) => {
+					composer.setText(chat.id, e.currentTarget.value);
+					grow();
+				}}
+			></textarea>
+			<button type="button" class="btn review" disabled={!canReview} onclick={review}>Rivedi</button>
+		</div>
+		<p class="counter" class:over={overLimit}>{counter}</p>
+	{:else}
+		<p class="counter">In questa chat non puoi scrivere.</p>
+	{/if}
 </footer>
 
 <style>
@@ -127,5 +192,75 @@
 	.item:hover,
 	.item:focus-visible {
 		background: var(--bg-surface);
+	}
+	.quote {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin: 0;
+		padding: var(--space-1) var(--space-2);
+		border-radius: var(--radius-8);
+		background: var(--bg-raised);
+		color: var(--text-secondary);
+		font: var(--text-caption-12-regular);
+	}
+	.quote-text {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.quote-clear {
+		display: inline-grid;
+		place-items: center;
+		width: var(--touch-min);
+		height: var(--touch-min);
+		flex: 0 0 var(--touch-min);
+		border-radius: var(--radius-full);
+		color: var(--text-secondary);
+	}
+	.composer {
+		display: flex;
+		align-items: flex-end;
+		gap: var(--space-2);
+	}
+	.composer textarea {
+		flex: 1;
+		min-width: 0;
+		min-height: var(--touch-min);
+		max-height: 160px;
+		padding: 12px var(--space-4);
+		border-radius: var(--radius-16);
+		border: 1px solid var(--border-strong);
+		background: var(--bg-base);
+		color: var(--text-primary);
+		font: var(--text-body-15-regular);
+		resize: none;
+	}
+	.btn.review {
+		background: var(--accent);
+		color: var(--text-on-accent);
+		padding: 0 var(--space-4);
+	}
+	.btn.review:disabled {
+		opacity: 0.5;
+	}
+	.counter {
+		margin: 0;
+		align-self: flex-end;
+		font: var(--text-caption-12-regular);
+		color: var(--text-secondary);
+	}
+	.counter.over {
+		color: var(--warn);
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
 	}
 </style>

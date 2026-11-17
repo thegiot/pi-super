@@ -5,6 +5,7 @@ import { type BAccount, type BAttachment, type BChat, BeeperClient, BeeperError,
 import { type ClassifyMessage, type Corrections, classify, DEFAULT_WINDOW_DAYS, isMeaningful, type Labels } from "./classify.js";
 import { CorrectionsStore } from "./corrections.js";
 import { ASSISTANT_MESSAGES, type AssistantSource } from "./assistant.js";
+import { Outbox, type OutboxChatContext, type OutboxTunables } from "./outbox.js";
 
 export type MessageKind =
 	| "text"
@@ -119,6 +120,8 @@ export interface InboxServiceOptions {
 	now?: () => Date;
 	/** presence of the assistant's key; read on every state build, never cached */
 	assistantConfigured?: () => boolean;
+	/** injectable outbox timings for tests */
+	outbox?: OutboxTunables;
 }
 
 /** A refresh slower than this is reported as `slow`; the cache keeps serving meanwhile. */
@@ -151,6 +154,12 @@ interface History {
 export class InboxService extends EventEmitter {
 	private readonly client: BeeperClient;
 	private readonly corrections: CorrectionsStore;
+	/**
+	 * Controlled send (PRD §12.2): owned here so it shares the Beeper client, the chat
+	 * cache and the service lifecycle. It is the only writer to Beeper, and only on
+	 * the confirm path.
+	 */
+	readonly outbox: Outbox;
 	private readonly clock: () => Date;
 	private readonly refreshMs: number;
 	private readonly windowDays: number;
@@ -185,6 +194,14 @@ export class InboxService extends EventEmitter {
 		this.clock = opts.now ?? (() => new Date());
 		this.refreshMs = opts.refreshMs ?? REFRESH_MS;
 		this.windowDays = opts.windowDays ?? DEFAULT_WINDOW_DAYS;
+		this.outbox = new Outbox({
+			beeper: this.client,
+			chats: this,
+			stateDir: opts.stateDir,
+			log: opts.log,
+			now: this.clock,
+			...opts.outbox,
+		});
 	}
 
 	start(): void {
@@ -203,6 +220,7 @@ export class InboxService extends EventEmitter {
 		this.events.on("serverError", (code: string) => this.log(`inbox: events server error: ${code}`));
 		this.events.on("event", (ev: BeeperDomainEvent) => this.onEvent(ev));
 		this.events.start();
+		this.outbox.start();
 		void this.refresh("start");
 	}
 
@@ -213,6 +231,7 @@ export class InboxService extends EventEmitter {
 		this.flushTimer = undefined;
 		this.events?.stop();
 		this.events = undefined;
+		this.outbox.stop();
 	}
 
 	/** Re-reads Beeper now; scheduled refreshes are rearmed from the outcome. */
@@ -614,6 +633,20 @@ export class InboxService extends EventEmitter {
 		const c = this.chats.get(chatID);
 		if (!c) throw new InboxError(404, "chat not found");
 		return c;
+	}
+
+	// ---------------------------------------------------------------- outbox reads
+	// What the outbox resolves recipients and reconciles sends from: the same cache
+	// the UI sees (RF19), no extra read path.
+
+	sendContext(chatID: string): OutboxChatContext | undefined {
+		const chat = this.chats.get(chatID);
+		if (!chat) return undefined;
+		return { chat, account: this.accounts.get(chat.accountID), selfIDs: this.selfIDs };
+	}
+
+	peekMessage(chatID: string, messageID: string): BMessage | undefined {
+		return this.histories.get(chatID)?.byId.get(messageID);
 	}
 
 	private toClassify(m: BMessage): ClassifyMessage {

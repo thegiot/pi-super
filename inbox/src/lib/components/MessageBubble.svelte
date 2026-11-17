@@ -2,12 +2,20 @@
 	import type { MessageView } from "$lib/api";
 	import { clock, kindLabel } from "$lib/format";
 	import Attachment from "./Attachment.svelte";
+	import Icon from "./Icon.svelte";
 
 	let {
 		message,
 		group,
 		replyTo,
-	}: { message: MessageView; group: boolean; replyTo?: MessageView | undefined } = $props();
+		onReply,
+	}: {
+		message: MessageView;
+		group: boolean;
+		replyTo?: MessageView | undefined;
+		/** «Rispondi»: sets the quote above the composer; absent when the chat is not sendable */
+		onReply?: ((m: MessageView) => void) | undefined;
+	} = $props();
 
 	const snippet = $derived.by(() => {
 		if (!replyTo) return undefined;
@@ -18,6 +26,11 @@
 </script>
 
 <article class="bubble" class:sent={message.isSender} class:received={!message.isSender} aria-label={message.isSender ? "Tuo messaggio" : undefined}>
+	{#if onReply}
+		<button type="button" class="reply-btn" aria-label="Rispondi a questo messaggio" onclick={() => onReply(message)}>
+			<Icon name="corner-up-left" size={16} />
+		</button>
+	{/if}
 	{#if group && !message.isSender && message.senderName}
 		<p class="sender">{message.senderName}</p>
 	{/if}
@@ -46,12 +59,40 @@
 
 <style>
 	.bubble {
+		position: relative;
 		max-width: min(80%, 520px);
 		padding: var(--space-2) var(--space-3);
 		border-radius: var(--radius-16);
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-1);
+	}
+	.reply-btn {
+		position: absolute;
+		top: 2px;
+		inset-inline-end: -8px;
+		display: inline-grid;
+		place-items: center;
+		width: var(--touch-min);
+		height: var(--touch-min);
+		border-radius: var(--radius-full);
+		color: var(--text-secondary);
+		opacity: 0.35;
+	}
+	@media (hover: hover) {
+		.reply-btn {
+			opacity: 0;
+		}
+		.bubble:hover .reply-btn,
+		.bubble:focus-within .reply-btn,
+		.reply-btn:focus-visible {
+			opacity: 1;
+		}
+	}
+	.reply-btn:hover,
+	.reply-btn:focus-visible {
+		background: var(--bg-raised);
+		color: var(--text-primary);
 	}
 	.received {
 		align-self: flex-start;

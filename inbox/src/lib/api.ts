@@ -125,6 +125,56 @@ export interface InboxState {
 
 export type ChatFilter = "reply" | "unread" | "all";
 
+// ---------------------------------------------------------------- outbox (M3)
+
+export type OutboxState =
+	| "pending_confirm"
+	| "sending"
+	| "pending"
+	| "uncertain"
+	| "sent"
+	| "failed"
+	| "not_found"
+	| "cancelled"
+	| "expired";
+
+export interface OutboxRecipient {
+	network: string;
+	accountID: string;
+	accountLabel: string;
+	title: string;
+	type: "single" | "group";
+	participantCount: number;
+	peerLabel?: string;
+	/** null means "nessun limite dichiarato" */
+	maxLength: number | null;
+}
+
+/** The public view: state, recipient, hashes — never the text (the composer holds it). */
+export interface OutboxIntent {
+	id: string;
+	key: string;
+	chatID: string;
+	state: OutboxState;
+	finalState?: OutboxState;
+	reason?: string;
+	sendAttempts: number;
+	charCount: number;
+	textHash: string;
+	createdAt: string;
+	sentAt?: string;
+	expiresAt?: string;
+	resolvedChatID?: string;
+	recipient: OutboxRecipient;
+	replyTo?: { author?: string; text?: string };
+}
+
+export interface OutboxCreated {
+	intent: OutboxIntent;
+	confirmToken?: string;
+	expiresAt?: string;
+}
+
 export interface ChatList {
 	chats: ChatSummary[];
 	counts: Counts;
@@ -187,4 +237,12 @@ export const api = {
 	priority: (id: string, on: boolean) => call<ChatSummary>("POST", `${chatPath(id)}/priority`, { on }),
 	assistant: (id: string, body: { prompt: string; history: { role: "user" | "assistant"; text: string }[] }) =>
 		call<AssistantAnswer>("POST", `${chatPath(id)}/assistant`, body),
+	createIntent: (body: { key: string; chatID: string; text: string; replyToMessageID?: string }) =>
+		call<OutboxCreated>("POST", "/api/inbox/outbox", body),
+	intent: (id: string) => call<OutboxIntent>("GET", `/api/inbox/outbox/${encodeURIComponent(id)}`),
+	confirm: (id: string, confirmToken: string) =>
+		call<OutboxIntent>("POST", `/api/inbox/outbox/${encodeURIComponent(id)}/confirm`, { confirmToken }),
+	cancelIntent: (id: string) => call<OutboxIntent>("POST", `/api/inbox/outbox/${encodeURIComponent(id)}/cancel`),
+	reissue: (id: string, text: string) => call<OutboxCreated>("POST", `/api/inbox/outbox/${encodeURIComponent(id)}/reissue`, { text }),
+	reconcile: (id: string) => call<OutboxIntent>("POST", `/api/inbox/outbox/${encodeURIComponent(id)}/reconcile`),
 };

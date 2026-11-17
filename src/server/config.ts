@@ -26,11 +26,13 @@ export interface Config {
 	/** keep accepting the bearer token even once passkeys are enrolled (scripts, tests) */
 	allowToken: boolean;
 	allowedOrigins: string[] | undefined; // undefined => same-host only
-	/** the unified inbox (src/server/inbox): read-only view of a local Beeper Desktop */
+	/** the unified inbox (src/server/inbox): view of a local Beeper Desktop plus controlled send */
 	inbox: boolean;
 	beeperUrl: string;
 	beeperTokenFile: string;
 	inboxDir: string;
+	/** test-only: shrunken outbox timings (import type, never a CLI flag) */
+	inboxOutbox?: import("./inbox/outbox.js").OutboxTunables;
 	/** OpenAI-compatible Responses API base URL of the assistant's model provider */
 	llmUrl: string;
 	llmModel: string;

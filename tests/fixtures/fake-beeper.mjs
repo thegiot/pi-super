@@ -275,6 +275,10 @@ export async function startFakeBeeper(opts = {}) {
 		calls: [],
 		sockets: new Set(),
 		seq: 0,
+		// POST /messages scripting: sendStatus cycles once per GET of the pending message
+		sendPlan: { http: 200, statuses: ["PENDING", "SUCCESS"], hang: false, deliver: true },
+		sends: [],
+		pendingSends: new Map(),
 	};
 	let port = opts.port ?? 0;
 	let server;
@@ -292,6 +296,16 @@ export async function startFakeBeeper(opts = {}) {
 
 	const authorized = (req) => req.headers.authorization === `Bearer ${state.token}`;
 
+	const emitDomain = (type, chatID, ids) => {
+		if (state.lostEvents > 0) {
+			state.lostEvents--;
+			return;
+		}
+		for (const ws of state.sockets) {
+			if (ws.readyState === ws.OPEN) ws.emitDomain({ type, chatID, ids });
+		}
+	};
+
 	const handle = async (req, res) => {
 		const url = new URL(req.url, "http://fake");
 		state.calls.push({ method: req.method, path: url.pathname });
@@ -304,12 +318,32 @@ export async function startFakeBeeper(opts = {}) {
 			return reply(res, 200, { active: token === state.token, scope: state.scope, token_type: "Bearer" });
 		}
 		if (state.rejectAll || !authorized(req)) return reply(res, 401, { error: "unauthorized" });
-		if (req.method !== "GET") return reply(res, 405, { error: "fake: write endpoints are not implemented" });
+		if (req.method !== "GET") {
+			// the one and only write the fake honours; anything else must stay a 405 so a
+			// suite notices if the inbox learns a new write
+			const sendMatch = req.method === "POST" ? /^\/v1\/chats\/([^/]+)\/messages$/.exec(url.pathname) : null;
+			if (!sendMatch) return reply(res, 405, { error: "fake: write endpoints other than POST /messages are not implemented" });
+			return sendMessage(res, decodeURIComponent(sendMatch[1]), await readJson(req));
+		}
 
 		if (url.pathname === "/v1/info") return reply(res, 200, { app: { version: "5.0.0-fake" } });
 		if (url.pathname === "/v1/accounts") return reply(res, 200, ACCOUNTS);
 		if (url.pathname === "/v1/chats") return reply(res, 200, listChats(url));
 		if (url.pathname === "/v1/assets/serve") return serveAsset(url, res);
+		const msgMatch = /^\/v1\/chats\/([^/]+)\/messages\/([^/]+)$/.exec(url.pathname);
+		if (msgMatch) {
+			const chatID = decodeURIComponent(msgMatch[1]);
+			const messageID = decodeURIComponent(msgMatch[2]);
+			const msg = (state.world.messages[chatID] ?? []).find((m) => m.id === messageID);
+			if (!msg) return reply(res, 404, { error: "not found" });
+			const ps = state.pendingSends.get(messageID);
+			// each poll advances the scripted sendStatus one step, then sticks on the last
+			if (ps) {
+				msg.sendStatus = { status: ps.statuses[Math.min(ps.i, ps.statuses.length - 1)], timestamp: new Date().toISOString() };
+				if (ps.i < ps.statuses.length) ps.i++;
+			}
+			return reply(res, 200, msg);
+		}
 		const chatMatch = /^\/v1\/chats\/([^/]+)(\/messages)?$/.exec(url.pathname);
 		if (chatMatch) {
 			const id = decodeURIComponent(chatMatch[1]);
@@ -354,6 +388,65 @@ export async function startFakeBeeper(opts = {}) {
 			oldestCursor: start > 0 ? `m:${start}` : null,
 			newestCursor: end < all.length ? `m:${end}` : null,
 		};
+	};
+
+	const readJson = async (req) => {
+		let body = "";
+		for await (const c of req) body += c;
+		try {
+			return JSON.parse(body || "{}");
+		} catch {
+			return {};
+		}
+	};
+
+	/**
+	 * POST /v1/chats/{id}/messages — the only write the fake performs, scripted by
+	 * `sendPlan`: `http` fails the call itself, `hang` never answers (deliver decides
+	 * whether the network still got it), `statuses` is the sendStatus cycle each poll
+	 * steps through.
+	 */
+	const sendMessage = (res, chatID, body) => {
+		const chat = state.world.chats.find((c) => c.id === chatID);
+		if (!chat) return reply(res, 404, { error: "not found" });
+		const plan = state.sendPlan;
+		const resolved = chat.mergedIntoChatID ?? chatID;
+		const id = `pm-${state.sends.length + 1}`;
+		state.sends.push({ chatID, resolvedChatID: resolved, body });
+		const deliver = () => {
+			const msg = {
+				id,
+				chatID: resolved,
+				accountID: chat.accountID,
+				senderID: ME[chat.accountID],
+				senderName: "Me",
+				timestamp: new Date().toISOString(),
+				sortKey: String(Date.now()).padStart(15, "0"),
+				type: "TEXT",
+				text: body.text,
+				isSender: true,
+				isHidden: false,
+				isDeleted: false,
+				attachments: [],
+				mentions: null,
+				reactions: [],
+				sendStatus: { status: plan.statuses[0] ?? "PENDING", timestamp: new Date().toISOString() },
+				...(body.replyToMessageID ? { linkedMessageID: body.replyToMessageID } : {}),
+			};
+			state.world.messages[resolved].push(msg);
+			state.pendingSends.set(id, { statuses: plan.statuses, i: 0 });
+			const target = state.world.chats.find((c) => c.id === resolved);
+			target.lastActivity = msg.timestamp;
+			emitDomain("message.upserted", resolved, [id]);
+		};
+		if (plan.hang) {
+			// the request leaves and the response never comes: deliver decides the truth
+			if (plan.deliver !== false) deliver();
+			return;
+		}
+		if (plan.http !== 200) return reply(res, plan.http, { error: "scripted send failure" });
+		if (plan.deliver !== false) deliver();
+		return reply(res, 200, { chatID: resolved, pendingMessageID: id });
 	};
 
 	const serveAsset = (url, res) => {
@@ -411,13 +504,7 @@ export async function startFakeBeeper(opts = {}) {
 		calls: state.calls,
 		/** the payloads the server would send for a change: `ids` are chat ids for chat.*, message ids for message.* */
 		emit(type, chatID, ids) {
-			if (state.lostEvents > 0) {
-				state.lostEvents--;
-				return;
-			}
-			for (const ws of state.sockets) {
-				if (ws.readyState === ws.OPEN) ws.emitDomain({ type, chatID, ids });
-			}
+			emitDomain(type, chatID, ids);
 		},
 		/** the next n events are dropped on the floor, as at-most-once delivery allows */
 		loseEvents(n) {
@@ -447,6 +534,14 @@ export async function startFakeBeeper(opts = {}) {
 		setLatency(ms, pathPrefix = "") {
 			if (ms) state.latency.set(pathPrefix, ms);
 			else state.latency.delete(pathPrefix);
+		},
+		/** every POST /messages body, in order */
+		get sends() {
+			return state.sends;
+		},
+		/** see sendMessage: http, statuses, hang, deliver */
+		setSendPlan(plan) {
+			state.sendPlan = { statuses: ["PENDING", "SUCCESS"], hang: false, deliver: true, http: 200, ...plan };
 		},
 		async down() {
 			for (const ws of state.sockets) ws.terminate();
