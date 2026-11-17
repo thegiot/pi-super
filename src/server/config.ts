@@ -26,6 +26,11 @@ export interface Config {
 	/** keep accepting the bearer token even once passkeys are enrolled (scripts, tests) */
 	allowToken: boolean;
 	allowedOrigins: string[] | undefined; // undefined => same-host only
+	/** the unified inbox (src/server/inbox): read-only view of a local Beeper Desktop */
+	inbox: boolean;
+	beeperUrl: string;
+	beeperTokenFile: string;
+	inboxDir: string;
 }
 
 export interface ParsedArgs extends Config {
@@ -60,6 +65,10 @@ Options:
       --no-herdr          Disable herdr integration entirely
       --herdr-bin <path>  herdr binary for the meta agent (default: herdr from PATH)
       --origin <url>      Extra allowed WebSocket Origin (repeatable)
+      --beeper-url <url>  Beeper Desktop local API (default http://127.0.0.1:23373)
+      --beeper-token-file <path>
+                          Beeper access token (default <state-dir>/beeper-token)
+      --no-inbox          Disable the unified inbox
       --auth <mode>       auto (default) | token | passkey
                           auto: the token works until you enrol a passkey, then it doesn't
       --allow-token       Keep accepting the bearer token alongside passkeys
@@ -92,6 +101,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		authMode: "auto",
 		allowToken: false,
 		allowedOrigins: undefined,
+		inbox: true,
+		beeperUrl: process.env.PI_SUPER_BEEPER_URL ?? "http://127.0.0.1:23373",
+		beeperTokenFile: process.env.PI_SUPER_BEEPER_TOKEN_FILE ?? "",
+		inboxDir: "",
 		listPasskeys: false,
 		removePasskey: undefined,
 		logout: false,
@@ -178,6 +191,18 @@ export function parseArgs(argv: string[]): ParsedArgs {
 			case "--origin":
 				origins.push(next());
 				break;
+			case "--beeper-url": {
+				const value = next();
+				if (!/^https?:\/\//.test(value)) throw new Error("--beeper-url must be an http(s) URL");
+				cfg.beeperUrl = value;
+				break;
+			}
+			case "--beeper-token-file":
+				cfg.beeperTokenFile = next();
+				break;
+			case "--no-inbox":
+				cfg.inbox = false;
+				break;
 			case "--reset-token":
 				cfg.resetToken = true;
 				break;
@@ -193,6 +218,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		}
 	}
 	if (origins.length > 0) cfg.allowedOrigins = origins;
+	if (!cfg.beeperTokenFile) cfg.beeperTokenFile = join(cfg.stateDir, "beeper-token");
 	if (!Number.isFinite(cfg.port) || cfg.port <= 0 || cfg.port > 65535) throw new Error("invalid --port");
 	return cfg;
 }
@@ -225,6 +251,13 @@ export function migrateLegacyStateDir(stateDir: string): void {
 /** dist/server/config.js -> dist/client */
 export function defaultClientDir(moduleDir: string): string {
 	const candidates = [join(moduleDir, "..", "client"), join(moduleDir, "..", "..", "dist", "client")];
+	for (const c of candidates) if (existsSync(join(c, "index.html"))) return c;
+	return candidates[0]!;
+}
+
+/** dist/server/config.js -> dist/inbox */
+export function defaultInboxDir(moduleDir: string): string {
+	const candidates = [join(moduleDir, "..", "inbox"), join(moduleDir, "..", "..", "dist", "inbox")];
 	for (const c of candidates) if (existsSync(join(c, "index.html"))) return c;
 	return candidates[0]!;
 }

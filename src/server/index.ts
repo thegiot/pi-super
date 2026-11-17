@@ -3,7 +3,7 @@ import { networkInterfaces } from "node:os";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureToken } from "./auth.js";
-import { defaultClientDir, defaultMetaDir, helpText, migrateLegacyStateDir, parseArgs } from "./config.js";
+import { defaultClientDir, defaultInboxDir, defaultMetaDir, helpText, migrateLegacyStateDir, parseArgs } from "./config.js";
 import { LOCAL, herdrRun, savedMachines } from "./herdr.js";
 import { createServer } from "./server.js";
 import { Tmux } from "./tmux.js";
@@ -64,7 +64,12 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	const cfg = { ...args, clientDir: defaultClientDir(moduleDir), metaDir: defaultMetaDir(moduleDir) };
+	const cfg = {
+		...args,
+		clientDir: defaultClientDir(moduleDir),
+		metaDir: defaultMetaDir(moduleDir),
+		inboxDir: defaultInboxDir(moduleDir),
+	};
 	const tmux = new Tmux(cfg.socketArgs);
 	try {
 		await tmux.version();
@@ -106,6 +111,7 @@ async function main(): Promise<void> {
 	server.http.listen(cfg.port, cfg.host, () => {
 		server.resumeMeta();
 		server.fleet?.start();
+		server.inbox?.start();
 		process.stdout.write(`pi-super listening on http://${cfg.host}:${cfg.port}\n`);
 		const store = new PasskeyStore(cfg.stateDir);
 		const tokenUsable = cfg.authMode === "token" || cfg.allowToken || (cfg.authMode === "auto" && !store.enrolled);

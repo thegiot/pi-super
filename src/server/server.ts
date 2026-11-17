@@ -8,6 +8,8 @@ import { buildVocabulary, dictationInstructions } from "./dictation.js";
 import { readPeek } from "./files.js";
 import { FleetMonitor, validateFleetRequest } from "./fleet.js";
 import { HerdrError, herdrRun } from "./herdr.js";
+import { handleInboxApi, isInboxPath, serveInboxSocket, serveInboxStatic } from "./inbox/http.js";
+import { InboxService } from "./inbox/service.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
 import { scrollBottomKey } from "./pi-keybindings.js";
 import { PromptLog } from "./prompts.js";
@@ -49,6 +51,8 @@ export interface SuperServer {
 	resumeMeta(): void;
 	/** the cached view of the herdr fleet; undefined when herdr is disabled */
 	fleet: FleetMonitor | undefined;
+	/** the unified inbox; undefined with --no-inbox. Started by the caller once the port is bound */
+	inbox: InboxService | undefined;
 	close(): Promise<void>;
 }
 
@@ -117,6 +121,9 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			?.trim();
 		return fwd || req.socket.remoteAddress || "?";
 	};
+	const inbox = cfg.inbox
+		? new InboxService({ baseUrl: cfg.beeperUrl, tokenFile: cfg.beeperTokenFile, stateDir: cfg.stateDir, log })
+		: undefined;
 	const metaClients = new Set<WebSocket>();
 	const inactiveMetaClients = new Set<WebSocket>();
 	/** Last foreground/interacting browser; meta UI commands must never move every client. */
@@ -298,6 +305,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			// A login page has to be reachable by someone who cannot log in yet: when passkeys
 			// are the gate, serve the (secret-free) app bundle so it can run the ceremony.
 			// Every API and WebSocket route stays shut.
+			// The inbox is behind the same login: send the browser to the app's unlock screen
+			// rather than serving a page that would only fail its API calls.
+			if (passkeyRequired() && isInboxPath(url.pathname)) {
+				res.writeHead(302, { location: "/" }).end();
+				return;
+			}
 			if (passkeyRequired() && !url.pathname.startsWith("/api/")) {
 				serveStatic(res, url.pathname);
 				return;
@@ -329,6 +342,10 @@ export function createServer(cfg: Config, token: string): SuperServer {
 
 		if (url.pathname.startsWith("/api/")) {
 			await handleApi(req, res, url);
+			return;
+		}
+		if (isInboxPath(url.pathname)) {
+			serveInboxStatic(res, url.pathname, cfg.inboxDir, SECURITY_HEADERS);
 			return;
 		}
 		serveStatic(res, url.pathname);
@@ -715,6 +732,10 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				return;
 			}
 			default:
+				if (inbox && url.pathname.startsWith("/api/inbox/")) {
+					await handleInboxApi(req, res, url, { inbox, json: sendJson, securityHeaders: SECURITY_HEADERS });
+					return;
+				}
 				sendJson(res, 404, { error: "not found" });
 		}
 	}
@@ -805,6 +826,18 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			wss.handleUpgrade(req, socket, head, (ws) => {
 				if (who) socketAuth.set(ws, who);
 				onMetaConnection(ws, clientIp(req));
+			});
+			return;
+		}
+		if (url.pathname === "/ws/inbox") {
+			if (!inbox) {
+				socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n");
+				socket.destroy();
+				return;
+			}
+			wss.handleUpgrade(req, socket, head, (ws) => {
+				if (who) socketAuth.set(ws, who);
+				serveInboxSocket(ws, inbox);
 			});
 			return;
 		}
@@ -1093,7 +1126,9 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		http,
 		resumeMeta,
 		fleet,
+		inbox,
 		async close() {
+			inbox?.stop();
 			fleet?.stop();
 			clearInterval(revalidate);
 			socketAuth.clear();
