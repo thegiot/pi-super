@@ -9,7 +9,7 @@
 	];
 
 	const count = (id: ChatFilter): string => {
-		if (inbox.unreachable) return "–";
+		if (inbox.degraded) return "–";
 		return String(inbox.state?.counts[id] ?? 0);
 	};
 
@@ -32,7 +32,7 @@
 			role="tab"
 			class="tab"
 			class:selected={inbox.filter === t.id}
-			class:dim={inbox.unreachable}
+			class:dim={inbox.degraded}
 			aria-selected={inbox.filter === t.id}
 			tabindex={inbox.filter === t.id ? 0 : -1}
 			onclick={() => inbox.setFilter(t.id)}

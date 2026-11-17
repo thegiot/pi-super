@@ -123,8 +123,8 @@
 			</p>
 		</EmptyState>
 	{:else}
-		<NetworkFilter />
 		<FilterTabs />
+		<NetworkFilter />
 		{#if inbox.listLoaded && inbox.chats.length === 0}
 			<EmptyState icon={inbox.filter === "reply" ? "check" : "search"} title={emptyTitle}>
 				<p>Le conversazioni compaiono qui quando cambiano stato.</p>
