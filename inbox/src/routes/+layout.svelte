@@ -4,16 +4,31 @@
 	import { page } from "$app/state";
 	import { inbox } from "$lib/inbox.svelte";
 	import ListPane from "$lib/components/ListPane.svelte";
+	import AssistantPanel from "$lib/components/AssistantPanel.svelte";
+	import { assistant } from "$lib/assistant.svelte";
 
 	let { children } = $props();
 
 	const chatRoute = $derived(page.route.id?.startsWith("/chat/") ?? false);
 	const selectedId = $derived(page.params.id);
 
-	onMount(() => inbox.start());
+	onMount(() => {
+		const columns = window.matchMedia("(min-width: 1024px)");
+		assistant.columns = columns.matches;
+		columns.addEventListener("change", (e) => (assistant.columns = e.matches));
+		inbox.start();
+	});
 
 	$effect(() => {
-		if (!chatRoute) inbox.closeChat();
+		if (!chatRoute) {
+			inbox.closeChat();
+			assistant.close();
+		}
+	});
+
+	$effect(() => {
+		void selectedId;
+		assistant.close();
 	});
 </script>
 
@@ -29,6 +44,7 @@
 	{/if}
 	{#if chatRoute}
 		<div class="detail-col">{@render children()}</div>
+		{#if selectedId}<AssistantPanel chatId={selectedId} />{/if}
 	{:else if inbox.wide}
 		<div class="detail-col empty-detail">
 			<p>Seleziona una chat per leggerla.</p>

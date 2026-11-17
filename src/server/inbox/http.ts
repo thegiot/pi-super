@@ -7,6 +7,7 @@ import { WebSocket } from "ws";
 import { BeeperError } from "./beeper.js";
 import { type ChatFilter, type ChatsUpdate, type InboxService, type InboxState, InboxError, type MessageView } from "./service.js";
 import { readBody } from "../uploads.js";
+import { type Assistant, AssistantError, buildContext, type HistoryTurn } from "./assistant.js";
 
 /*
  * HTTP and WebSocket surface of the inbox. Mounted by server.ts behind the same auth,
@@ -15,12 +16,24 @@ import { readBody } from "../uploads.js";
 
 export interface InboxHttpDeps {
 	inbox: InboxService;
+	/** undefined when the assistant is not wired; the route then answers assistant_unconfigured */
+	assistant?: Assistant;
 	json: (res: ServerResponse, status: number, body: unknown) => void;
 	securityHeaders: Record<string, string>;
 }
 
 const FILTERS = new Set<string>(["reply", "unread", "all"]);
 const JSON_BODY_LIMIT = 4096;
+const ASSISTANT_BODY_LIMIT = 64 * 1024;
+const PROMPT_MAX = 2000;
+const HISTORY_MAX = 10;
+const TURN_MAX = 4000;
+const ASSISTANT_STATUS: Record<string, number> = {
+	assistant_unconfigured: 503,
+	assistant_busy: 429,
+	assistant_timeout: 504,
+	assistant_failed: 502,
+};
 
 export async function handleInboxApi(
 	req: IncomingMessage,
@@ -116,6 +129,9 @@ async function chatRoute(
 		case "DELETE snooze":
 			json(res, 200, inbox.snooze(chatID, null));
 			return;
+		case "POST assistant":
+			await askAssistant(req, res, deps, chatID);
+			return;
 		case "POST mark":
 		case "POST priority": {
 			const body = await jsonBody(req);
@@ -165,10 +181,75 @@ function safeContentType(raw: string | null): string {
 	return raw && ok.test(raw) ? raw : "application/octet-stream";
 }
 
-async function jsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-	const parsed = JSON.parse((await readBody(req, JSON_BODY_LIMIT)).toString("utf8") || "{}") as unknown;
+async function jsonBody(req: IncomingMessage, limit = JSON_BODY_LIMIT): Promise<Record<string, unknown>> {
+	const parsed = JSON.parse((await readBody(req, limit)).toString("utf8") || "{}") as unknown;
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new SyntaxError("body must be an object");
 	return parsed as Record<string, unknown>;
+}
+
+/**
+ * The model sees only the chat named in the path, built here from what the service has read;
+ * the browser contributes its own question and earlier turns, nothing else.
+ */
+async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: InboxHttpDeps, chatID: string): Promise<void> {
+	const { inbox, json, assistant } = deps;
+	if (!assistant || !assistant.configured()) {
+		json(res, 503, { error: "assistant_unconfigured" });
+		return;
+	}
+	const body = await jsonBody(req, ASSISTANT_BODY_LIMIT);
+	const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+	if (prompt.length < 1 || prompt.length > PROMPT_MAX) {
+		json(res, 400, { error: "prompt must be 1 to 2000 characters" });
+		return;
+	}
+	const history = parseHistory(body.history);
+	if (history === undefined) {
+		json(res, 400, { error: "history must be at most 10 turns of user or assistant text" });
+		return;
+	}
+	if (!inbox.chat(chatID)) {
+		json(res, 404, { error: "chat not found" });
+		return;
+	}
+	let source;
+	try {
+		source = await inbox.assistantSource(chatID);
+	} catch (err) {
+		if (err instanceof InboxError) throw err;
+		json(res, 503, { error: "beeper_unavailable" });
+		return;
+	}
+	const context = buildContext(source);
+	try {
+		const answer = await assistant.ask({ prompt, history, context });
+		json(res, 200, {
+			reply: answer.reply,
+			draft: answer.draftText.trim() === "" ? null : { text: answer.draftText, language: answer.draftLanguage },
+			context: { messages: context.messages, from: context.from, to: context.to },
+			model: answer.model,
+		});
+	} catch (err) {
+		if (err instanceof AssistantError) {
+			json(res, ASSISTANT_STATUS[err.code] ?? 502, { error: err.code });
+			return;
+		}
+		throw err;
+	}
+}
+
+function parseHistory(raw: unknown): HistoryTurn[] | undefined {
+	if (raw === undefined) return [];
+	if (!Array.isArray(raw) || raw.length > HISTORY_MAX) return undefined;
+	const out: HistoryTurn[] = [];
+	for (const t of raw) {
+		const turn = t as { role?: unknown; text?: unknown } | null;
+		if (!turn || typeof turn !== "object") return undefined;
+		if (turn.role !== "user" && turn.role !== "assistant") return undefined;
+		if (typeof turn.text !== "string" || turn.text.length > TURN_MAX) return undefined;
+		out.push({ role: turn.role, text: turn.text });
+	}
+	return out;
 }
 
 function decodeSegment(raw: string): string {

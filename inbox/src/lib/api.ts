@@ -107,7 +107,15 @@ export interface Counts {
 	all: number;
 }
 
+export interface AssistantAnswer {
+	reply: string;
+	draft: { text: string; language: string } | null;
+	context: { messages: number; from: string | null; to: string | null };
+	model: string;
+}
+
 export interface InboxState {
+	assistant: { status: "ok" | "unconfigured" };
 	beeper: { status: BeeperStatus; lastOkAt?: string; scope?: string[] };
 	accounts: { id: string; network: string; status: string }[];
 	updatedAt?: string;
@@ -177,4 +185,6 @@ export const api = {
 			: call<ChatSummary>("POST", `${chatPath(id)}/snooze`, { until }),
 	mark: (id: string, on: boolean) => call<ChatSummary>("POST", `${chatPath(id)}/mark`, { on }),
 	priority: (id: string, on: boolean) => call<ChatSummary>("POST", `${chatPath(id)}/priority`, { on }),
+	assistant: (id: string, body: { prompt: string; history: { role: "user" | "assistant"; text: string }[] }) =>
+		call<AssistantAnswer>("POST", `${chatPath(id)}/assistant`, body),
 };

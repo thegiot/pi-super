@@ -15,4 +15,5 @@ export type IconName =
 	| "users"
 	| "star"
 	| "pin"
-	| "corner-up-left";
+	| "corner-up-left"
+	| "sparkles";

@@ -31,6 +31,10 @@ export interface Config {
 	beeperUrl: string;
 	beeperTokenFile: string;
 	inboxDir: string;
+	/** OpenAI-compatible Responses API base URL of the assistant's model provider */
+	llmUrl: string;
+	llmModel: string;
+	llmKeyFile: string;
 }
 
 export interface ParsedArgs extends Config {
@@ -69,6 +73,9 @@ Options:
       --beeper-token-file <path>
                           Beeper access token (default <state-dir>/beeper-token)
       --no-inbox          Disable the unified inbox
+      --llm-url <url>     Assistant model provider, Responses API base (default https://open.bigmodel.cn/api/v1)
+      --llm-model <m>     Assistant model (default glm-5.3-flash)
+      --llm-key-file <p>  Assistant API key (default <state-dir>/llm-key)
       --auth <mode>       auto (default) | token | passkey
                           auto: the token works until you enrol a passkey, then it doesn't
       --allow-token       Keep accepting the bearer token alongside passkeys
@@ -105,6 +112,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
 		beeperUrl: process.env.PI_SUPER_BEEPER_URL ?? "http://127.0.0.1:23373",
 		beeperTokenFile: process.env.PI_SUPER_BEEPER_TOKEN_FILE ?? "",
 		inboxDir: "",
+		llmUrl: process.env.PI_SUPER_LLM_URL ?? "https://open.bigmodel.cn/api/v1",
+		llmModel: process.env.PI_SUPER_LLM_MODEL ?? "glm-5.3-flash",
+		llmKeyFile: process.env.PI_SUPER_LLM_KEY_FILE ?? "",
 		listPasskeys: false,
 		removePasskey: undefined,
 		logout: false,
@@ -203,6 +213,18 @@ export function parseArgs(argv: string[]): ParsedArgs {
 			case "--no-inbox":
 				cfg.inbox = false;
 				break;
+			case "--llm-url": {
+				const value = next();
+				if (!/^https?:\/\//.test(value)) throw new Error("--llm-url must be an http(s) URL");
+				cfg.llmUrl = value;
+				break;
+			}
+			case "--llm-model":
+				cfg.llmModel = next();
+				break;
+			case "--llm-key-file":
+				cfg.llmKeyFile = next();
+				break;
 			case "--reset-token":
 				cfg.resetToken = true;
 				break;
@@ -219,6 +241,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 	}
 	if (origins.length > 0) cfg.allowedOrigins = origins;
 	if (!cfg.beeperTokenFile) cfg.beeperTokenFile = join(cfg.stateDir, "beeper-token");
+	if (!cfg.llmKeyFile) cfg.llmKeyFile = join(cfg.stateDir, "llm-key");
 	if (!Number.isFinite(cfg.port) || cfg.port <= 0 || cfg.port > 65535) throw new Error("invalid --port");
 	return cfg;
 }

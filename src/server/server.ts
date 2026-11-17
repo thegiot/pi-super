@@ -9,6 +9,7 @@ import { readPeek } from "./files.js";
 import { FleetMonitor, validateFleetRequest } from "./fleet.js";
 import { HerdrError, herdrRun } from "./herdr.js";
 import { handleInboxApi, isInboxPath, serveInboxSocket, serveInboxStatic } from "./inbox/http.js";
+import { Assistant } from "./inbox/assistant.js";
 import { InboxService } from "./inbox/service.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
 import { scrollBottomKey } from "./pi-keybindings.js";
@@ -121,8 +122,17 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			?.trim();
 		return fwd || req.socket.remoteAddress || "?";
 	};
+	const assistant = cfg.inbox
+		? new Assistant({ url: cfg.llmUrl, model: cfg.llmModel, keyFile: cfg.llmKeyFile, log })
+		: undefined;
 	const inbox = cfg.inbox
-		? new InboxService({ baseUrl: cfg.beeperUrl, tokenFile: cfg.beeperTokenFile, stateDir: cfg.stateDir, log })
+		? new InboxService({
+				baseUrl: cfg.beeperUrl,
+				tokenFile: cfg.beeperTokenFile,
+				stateDir: cfg.stateDir,
+				log,
+				assistantConfigured: () => assistant?.configured() === true,
+			})
 		: undefined;
 	const metaClients = new Set<WebSocket>();
 	const inactiveMetaClients = new Set<WebSocket>();
@@ -733,7 +743,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			}
 			default:
 				if (inbox && url.pathname.startsWith("/api/inbox/")) {
-					await handleInboxApi(req, res, url, { inbox, json: sendJson, securityHeaders: SECURITY_HEADERS });
+					await handleInboxApi(req, res, url, { inbox, assistant, json: sendJson, securityHeaders: SECURITY_HEADERS });
 					return;
 				}
 				sendJson(res, 404, { error: "not found" });

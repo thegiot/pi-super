@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { type BAccount, type BAttachment, type BChat, BeeperClient, BeeperError, BeeperEvents, type BeeperDomainEvent, type BMessage } from "./beeper.js";
 import { type ClassifyMessage, type Corrections, classify, DEFAULT_WINDOW_DAYS, isMeaningful, type Labels } from "./classify.js";
 import { CorrectionsStore } from "./corrections.js";
+import { ASSISTANT_MESSAGES, type AssistantSource } from "./assistant.js";
 
 export type MessageKind =
 	| "text"
@@ -77,6 +78,7 @@ export interface InboxState {
 	loading: boolean;
 	/** the same numbers /api/inbox/chats reports, so the app's top bar needs one call */
 	counts: ChatCounts;
+	assistant: { status: "ok" | "unconfigured" };
 }
 
 export type BeeperStatus = "ok" | "slow" | "unreachable" | "unauthorized" | "unconfigured";
@@ -115,6 +117,8 @@ export interface InboxServiceOptions {
 	eventsMaxDelayMs?: number;
 	windowDays?: number;
 	now?: () => Date;
+	/** presence of the assistant's key; read on every state build, never cached */
+	assistantConfigured?: () => boolean;
 }
 
 /** A refresh slower than this is reported as `slow`; the cache keeps serving meanwhile. */
@@ -233,6 +237,7 @@ export class InboxService extends EventEmitter {
 			updatedAt: this.lastOkAt,
 			loading: this.inflight !== undefined,
 			counts,
+			assistant: { status: this.opts.assistantConfigured?.() ? "ok" : "unconfigured" },
 		};
 	}
 
@@ -279,6 +284,43 @@ export class InboxService extends EventEmitter {
 		const now = this.clock();
 		const rows = [...this.chats.values()].map((c) => ({ c, s: this.summarize(c, now) }));
 		return { changed: rows.map((r) => r.s), removed: [], counts: countsOf(rows) };
+	}
+
+	/**
+	 * The open chat as the assistant may see it: its own meaningful messages, the newest
+	 * ASSISTANT_MESSAGES of them, and the classifier's verdict in plain codes. Nothing from other chats.
+	 */
+	async assistantSource(chatID: string): Promise<AssistantSource> {
+		const c = this.requireChat(chatID);
+		const h = this.freshHistory(c) ?? (await this.fetchNewest(c));
+		let items = h.newest;
+		let cursor = h.hasMore ? h.oldestCursor : undefined;
+		for (let page = 0; cursor && page < 2 && items.filter((m) => isMeaningful(this.toClassify(m))).length < ASSISTANT_MESSAGES; page++) {
+			const older = await this.client.listMessages(chatID, { cursor });
+			items = [...sortMessages(older.items), ...items];
+			cursor = older.hasMore ? (older.oldestCursor ?? undefined) : undefined;
+		}
+		const summary = this.summarize(c, this.clock());
+		const meaningful = items.filter((m) => isMeaningful(this.toClassify(m))).slice(-ASSISTANT_MESSAGES);
+		return {
+			meta: {
+				title: c.title,
+				network: summary.network,
+				type: c.type,
+				participantCount: summary.participantCount,
+				needsReply: summary.labels.needsReply,
+				reasons: summary.labels.reasons.map((r) => (r.code === "dm_waiting" ? { code: r.code, since: r.since } : { code: r.code })),
+				...(summary.labels.excludedBy ? { excludedBy: summary.labels.excludedBy } : {}),
+				incomplete: summary.labels.incomplete,
+			},
+			messages: meaningful.map((m) => ({
+				timestamp: m.timestamp,
+				isSender: m.isSender === true || this.selfIDs.has(m.senderID),
+				...(m.senderName ? { from: m.senderName } : {}),
+				...(m.text !== undefined ? { text: m.text } : {}),
+				attachments: (m.attachments ?? []).map((a) => ({ kind: attachmentKind(a), name: a.fileName })),
+			})),
+		};
 	}
 
 	async messages(chatID: string, cursor?: string): Promise<{ messages: MessageView[]; nextCursor: string | null }> {

@@ -10,11 +10,12 @@
  * Bluetooth audio routing, and background lifecycle.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { startFakeBeeper } from "./fixtures/fake-beeper.mjs";
+import { startFakeLlm } from "./fixtures/fake-llm.mjs";
 
 const KEEP = process.argv.includes("--keep");
 const CHROME = process.env.CHROME_BIN ?? "google-chrome";
@@ -124,6 +125,11 @@ async function main() {
 	cleanups.push(() => fakeBeeper.close());
 	const beeperTokenFile = join(STATE_DIR, "beeper-token");
 	writeFileSync(beeperTokenFile, `${fakeBeeper.token}\n`, { mode: 0o600 });
+	// the assistant's model provider is faked too: no request leaves the machine
+	const fakeLlm = await startFakeLlm();
+	cleanups.push(() => fakeLlm.close());
+	const llmKeyFile = join(STATE_DIR, "llm-key");
+	writeFileSync(llmKeyFile, "fake-llm-key\n", { mode: 0o600 });
 	const server = spawn(
 		"node",
 		[
@@ -140,6 +146,10 @@ async function main() {
 			fakeBeeper.url,
 			"--beeper-token-file",
 			beeperTokenFile,
+			"--llm-url",
+			fakeLlm.url,
+			"--llm-key-file",
+			llmKeyFile,
 		],
 		{
 			cwd: new URL("..", import.meta.url).pathname,
@@ -149,7 +159,7 @@ async function main() {
 				PI_SUPER_HERDR_BIN: fakeHerdr,
 				FAKE_HERDR_ARGV_LOG: herdrArgvLog,
 			},
-			stdio: ["ignore", "pipe", "pipe"],
+			stdio: ["ignore", openSync(join(STATE_DIR, "server.log"), "w"), openSync(join(STATE_DIR, "server.log"), "a")],
 		},
 	);
 	cleanups.push(() => server.kill());
@@ -328,6 +338,71 @@ async function main() {
 		console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
 		if (!ok) inboxFailed++;
 	}
+	// ---- assistant (M2): the phone sheet with a draft, the desktop column, and a provider error
+	const assistantOpen = async () => {
+		await c.evaluate(`document.querySelector('button[aria-label="Assistente"]').click(); 1`);
+		await wait(500);
+	};
+	await inboxPage(chatId("!wc-reply:wc.test"));
+	await assistantOpen();
+	await clickText("button", "/^Proponi risposta$/");
+	await wait(1800);
+	const sheet = await c.evaluate(FACTS);
+	const sheetInfo = await c.evaluate(`(() => {
+    const d = document.querySelector('[role=dialog][aria-label=Assistente]');
+    const draft = document.querySelector('section.draft');
+    return {
+      dialog: !!d && !!(d.offsetWidth || d.offsetHeight),
+      draftText: draft ? draft.querySelector('.draft-text').textContent : null,
+      draftHead: draft ? draft.querySelector('.draft-head').textContent.trim() : null,
+      copy: !!draft && [...draft.querySelectorAll('button')].some(b => b.textContent.trim() === 'Copia'),
+      useAsDraft: [...document.querySelectorAll('button')].some(b => /usa come bozza/i.test(b.textContent)),
+      scope: (document.querySelector('.sheet .scope') || {}).textContent ?? null,
+    };
+  })()`);
+	await c.shot("inbox-12-assistant-sheet");
+
+	desktop(1440, 900);
+	await inboxPage(chatId("!wc-reply:wc.test"), 2000);
+	await assistantOpen();
+	await clickText("button", "/^Cosa mi chiede\\?$/");
+	await wait(1800);
+	const columns = await c.evaluate(`(() => {
+    const a = document.querySelector("aside.column");
+    const d = document.querySelector(".detail-col");
+    return {
+      column: !!a && a.getBoundingClientRect().width > 300,
+      chatStillThere: !!d && d.getBoundingClientRect().width > 300,
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      answer: [...document.querySelectorAll("aside.column .bubble.them")].length,
+    };
+  })()`);
+	await c.shot("inbox-13-assistant-desktop-1440");
+	phone();
+
+	await inboxPage(chatId("!wc-reply:wc.test"));
+	await assistantOpen();
+	fakeLlm.respondOnce({ status: 500, body: "{}" });
+	await clickText("button", "/^Riassumi$/");
+	await wait(1500);
+	const errorInfo = await c.evaluate(`(() => ({ alert: [...document.querySelectorAll(".sheet .error")].map(e => e.textContent.trim()), chatStillReadable: document.querySelectorAll("article.bubble").length > 0 }))()`);
+	await c.shot("inbox-14-assistant-error");
+
+	const llmBody = fakeLlm.requests.at(-1)?.body ?? {};
+	const assistantChecks = [
+		["assistant sheet: dialog opens with a draft card and a Copia action", sheetInfo.dialog && /Bozza · italiano/.test(sheetInfo.draftHead ?? "") && sheetInfo.draftText?.includes("Ciao, sì") && sheetInfo.copy],
+		["assistant sheet: no send and no use-as-draft control, no composer", !sheetInfo.useAsDraft && sheet.textareas === 0 && sheet.sendLike.length === 0],
+		["assistant sheet: discloses how many messages it sees", /Conosce gli ultimi \d+ messaggi/.test(sheetInfo.scope ?? "")],
+		["assistant sheet: fits the phone viewport without overflow", sheet.overflow <= 0],
+		["assistant desktop 1440: chat and assistant side by side", columns.column && columns.chatStillThere && columns.overflow <= 0 && columns.answer >= 1],
+		["assistant error: the reason is shown and the chat stays readable", errorInfo.alert.some(t => /non valido/.test(t)) && errorInfo.chatStillReadable],
+		["assistant: the provider got store:false, no tools, the schema", llmBody.store === false && !("tools" in llmBody) && llmBody.text?.format?.type === "json_schema"],
+	];
+	for (const [name, ok] of assistantChecks) {
+		console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
+		if (!ok) inboxFailed++;
+	}
+
 	// back to the terminal app, from the same place the rest of the harness expects
 	phone();
 	await c.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?token=${token}&debug=1` });

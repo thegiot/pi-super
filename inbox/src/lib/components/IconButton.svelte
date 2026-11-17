@@ -11,6 +11,7 @@
 		pressed,
 		haspopup,
 		href,
+		disabled = false,
 	}: {
 		icon: IconName;
 		label: string;
@@ -19,6 +20,7 @@
 		pressed?: boolean;
 		haspopup?: boolean;
 		href?: string;
+		disabled?: boolean;
 	} = $props();
 </script>
 
@@ -36,6 +38,7 @@
 		aria-expanded={expanded}
 		aria-pressed={pressed}
 		aria-haspopup={haspopup ? "menu" : undefined}
+		{disabled}
 	>
 		<Icon name={icon} />
 	</button>

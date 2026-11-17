@@ -10,7 +10,9 @@
 	import MessageBubble from "./MessageBubble.svelte";
 	import ChatFooter from "./ChatFooter.svelte";
 	import OverflowMenu from "./OverflowMenu.svelte";
+	import IconButton from "./IconButton.svelte";
 	import Icon from "./Icon.svelte";
+	import { assistant } from "$lib/assistant.svelte";
 
 	let { id }: { id: string } = $props();
 
@@ -53,7 +55,7 @@
 	});
 
 	function onkeydown(e: KeyboardEvent) {
-		if (e.key === "Escape" && !inbox.wide) void goto(`${base}/`);
+		if (e.key === "Escape" && !inbox.wide && !assistant.open) void goto(`${base}/`);
 	}
 </script>
 
@@ -67,6 +69,15 @@
 			</a>
 		{/snippet}
 		{#snippet actions()}
+			{#if chat && inbox.state?.assistant.status === "ok"}
+				<IconButton
+					icon="sparkles"
+					label="Assistente"
+					pressed={assistant.open}
+					disabled={inbox.degraded}
+					onclick={() => assistant.toggle()}
+				/>
+			{/if}
 			{#if chat}<OverflowMenu {chat} />{/if}
 		{/snippet}
 	</TopBar>
