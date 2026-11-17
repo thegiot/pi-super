@@ -302,6 +302,11 @@ async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: Inb
 		json(res, 400, { error: "prompt must be 1 to 2000 characters" });
 		return;
 	}
+	const intent = body.intent ?? "answer";
+	if (intent !== "answer" && intent !== "draft") {
+		json(res, 400, { error: "intent must be answer or draft" });
+		return;
+	}
 	const history = parseHistory(body.history);
 	if (history === undefined) {
 		json(res, 400, { error: "history must be at most 10 turns of user or assistant text" });
@@ -324,7 +329,7 @@ async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: Inb
 	if (revision !== inbox.modelRevision(chatID)) throw new InboxError(409, "model_context_changed");
 	const context = buildContext(source);
 	try {
-		const answer = await assistant.ask({ prompt, history, context });
+		const answer = await assistant.ask({ prompt, history, context, intent });
 		inbox.assertModelAllowed(chatID);
 		if (revision !== inbox.modelRevision(chatID)) throw new InboxError(409, "model_context_changed");
 		json(res, 200, {

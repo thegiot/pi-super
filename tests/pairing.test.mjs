@@ -125,7 +125,8 @@ test("pairing pages are self-contained, Italian and free of credential interpola
 		assert.match(html, /name="viewport"/);
 		assert.match(html, /color-scheme: dark/);
 		assert.match(html, /pi-super --pair-url https:\/\/&lt;host&gt;/);
-		assert.doesNotMatch(html, /<(?:script|link|iframe)\b[^>]*(?:src|href)=/i);
+		assert.doesNotMatch(html, /<(?:script|iframe)\b[^>]*(?:src|href)=/i);
+		assert.deepEqual([...html.matchAll(/<link\b[^>]*href="([^"]+)"/gi)].map(m => m[1]), ["/inbox/manifest.webmanifest"]);
 		assert.doesNotMatch(html, /\b(?:innerHTML|outerHTML|insertAdjacentHTML|document\.write|localStorage|sessionStorage|console\.|prefetch|prerender)\b/);
 		assert.doesNotMatch(html, /\?token=|Bearer |pi_super|<input\b|<form\b/);
 		assert.equal((html.match(/fetch\(/g) || []).length, 2);

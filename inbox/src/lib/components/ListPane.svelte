@@ -10,6 +10,7 @@
 	import NetworkFilter from "./NetworkFilter.svelte";
 	import ConversationRow from "./ConversationRow.svelte";
 	import NotificationControls from "./NotificationControls.svelte";
+	import InstallApp from "./InstallApp.svelte";
 
 	let { selectedId }: { selectedId?: string } = $props();
 
@@ -52,6 +53,7 @@
 			<IconButton icon="terminal" label="Torna a pi-super" href="/" />
 		{/snippet}
 		{#snippet actions()}
+			<InstallApp />
 			<a href="/pair" aria-label="Associa un dispositivo con QR" title="Associa dispositivo">QR</a>
 			<IconButton
 				icon={searchOpen ? "x" : "search"}

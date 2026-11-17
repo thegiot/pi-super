@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { tick } from "svelte";
-	import { assistant, assistantErrorText, type Turn } from "$lib/assistant.svelte";
+	import { assistant, assistantErrorText } from "$lib/assistant.svelte";
+	import type { AssistantIntent } from "$lib/api";
 	import { inbox } from "$lib/inbox.svelte";
 	import { composer } from "$lib/composer.svelte";
 	import IconButton from "./IconButton.svelte";
@@ -9,7 +10,13 @@
 
 	let { chatId }: { chatId: string } = $props();
 
-	const CHIPS = ["Riassumi", "Cosa mi chiede?", "Proponi risposta", "Perché è da rispondere?"];
+	const CHIPS: { label: string; intent: AssistantIntent }[] = [
+		{ label: "Riassumi", intent: "answer" },
+		{ label: "Di cosa hanno parlato?", intent: "answer" },
+		{ label: "Cosa mi chiede?", intent: "answer" },
+		{ label: "Proponi risposta", intent: "draft" },
+		{ label: "Perché è da rispondere?", intent: "answer" },
+	];
 
 	let question = $state("");
 	let copied = $state(false);
@@ -17,26 +24,17 @@
 	/** a draft waiting on "Sostituire o accodare?" before entering the composer */
 	let pendingUse = $state<string | null>(null);
 	let thread = $derived(assistant.thread(chatId));
-	const lastDraft = $derived(findDraft(thread.turns));
 	const excluded = $derived(inbox.chat?.id === chatId && Boolean(inbox.chat.modelPrivacy?.chatExcluded || inbox.chat.modelPrivacy?.networkExcluded));
 	const available = $derived(inbox.chat?.id === chatId && inbox.state?.assistant.status === "ok" && !excluded && !inbox.modelPrivacyBusy && !inbox.degraded);
-
-	function findDraft(turns: Turn[]): Turn["draft"] {
-		for (let i = turns.length - 1; i >= 0; i--) {
-			const d = turns[i]!.draft;
-			if (d) return d;
-		}
-		return null;
-	}
 
 	function languageName(code: string): string {
 		return code.toLowerCase().startsWith("it") ? "italiano" : code;
 	}
 
-	function send(text: string) {
-		if (!available) return;
+	function send(text: string, intent: AssistantIntent = "answer") {
+		if (!available || thread.busy || !text.trim()) return;
 		question = "";
-		void assistant.ask(chatId, text);
+		void assistant.ask(chatId, text, intent);
 	}
 
 	/**
@@ -100,6 +98,27 @@
 	$effect(() => {
 		if (assistant.open && !assistant.columns) void tick().then(() => panel?.querySelector<HTMLElement>("button")?.focus());
 	});
+
+	$effect(() => {
+		if (!assistant.open || assistant.columns || !panel || !window.visualViewport) return;
+		const viewport = window.visualViewport;
+		const sheet = panel;
+		// Mobile keyboards can shrink only the visual viewport, leaving fixed sheets behind them.
+		const resize = () => {
+			if (viewport.scale !== 1) return;
+			sheet.style.setProperty("--sheet-height", `${viewport.height * 0.9}px`);
+			sheet.style.setProperty("--sheet-bottom", `${Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop)}px`);
+		};
+		resize();
+		viewport.addEventListener("resize", resize);
+		viewport.addEventListener("scroll", resize);
+		return () => {
+			viewport.removeEventListener("resize", resize);
+			viewport.removeEventListener("scroll", resize);
+			sheet.style.removeProperty("--sheet-height");
+			sheet.style.removeProperty("--sheet-bottom");
+		};
+	});
 </script>
 
 {#snippet body()}
@@ -108,76 +127,82 @@
 		<IconButton icon="x" label="Chiudi assistente" onclick={() => assistant.close()} />
 	</header>
 
-	<p class="scope">
-		{#if thread.contextMessages === null}
-			Conoscerà gli ultimi messaggi di questa chat. Nient'altro.
-		{:else}
-			Conosce gli ultimi {thread.contextMessages} messaggi di questa chat. Nient'altro.
-		{/if}
-	</p>
-
-	{#if inbox.chat?.id === chatId}
-		{#key chatId}<ModelControls chat={inbox.chat} />{/key}
-	{/if}
-
-	<div class="thread" aria-live="polite" aria-busy={thread.busy}>
-		{#each thread.turns as t, i (i)}
-			{#if t.role === "user"}
-				<p class="bubble me">{t.text}</p>
-			{:else if t.error}
-				<p class="error" role="alert">{assistantErrorText(t.error)}</p>
+	<div class="content">
+		<p class="scope">
+			{#if thread.contextMessages === null}
+				Conoscerà gli ultimi messaggi di questa chat. Nient'altro.
 			{:else}
-				<p class="bubble them">{t.text}</p>
-				{#if t.draft}
-					<section class="draft" aria-label="Bozza">
-						<p class="draft-head"><Icon name="sparkles" size={14} /> Bozza · {languageName(t.draft.language)}</p>
-						<p class="draft-text">{t.draft.text}</p>
-						<p class="draft-note">Non viene inviata da qui. Passa dal campo di scrittura e da «Rivedi e invia».</p>
-						{#if pendingUse !== null}
-							<div class="draft-confirm" role="group" aria-label="Il campo non è vuoto">
-								<p>Il campo di scrittura non è vuoto.</p>
-								<div class="draft-actions">
-									<button type="button" class="btn" onclick={() => applyDraft("replace")}>Sostituire</button>
-									<button type="button" class="btn ghost" onclick={() => applyDraft("append")}>Accodare</button>
-									<button type="button" class="btn ghost" onclick={() => (pendingUse = null)}>Annulla</button>
-								</div>
-							</div>
-						{:else}
-							<div class="draft-actions">
-								<button type="button" class="btn" onclick={() => useAsDraft(t.draft?.text ?? "")}>Usa come bozza</button>
-								<button type="button" class="btn ghost" onclick={() => copy(t.draft?.text ?? "")}>{copied ? "Copiata" : "Copia"}</button>
-								<button type="button" class="btn ghost" disabled={thread.busy} onclick={() => assistant.reformulate(chatId)}>Riformula</button>
-							</div>
-						{/if}
-					</section>
-				{/if}
+				Conosce gli ultimi {thread.contextMessages} messaggi di questa chat. Nient'altro.
 			{/if}
-		{/each}
-		{#if thread.busy}
-			<p class="thinking">Sto leggendo la chat…</p>
+		</p>
+
+		<div class="thread" aria-live="polite" aria-busy={thread.busy}>
+			{#if thread.turns.length === 0}
+				<p class="intro">Puoi chiedere di cosa hanno parlato ultimamente nel gruppo, un riassunto o un chiarimento, senza preparare né inviare risposte. Per una bozza scegli «Proponi risposta».</p>
+			{/if}
+			{#each thread.turns as t, i (i)}
+				{#if t.role === "user"}
+					<p class="bubble me">{t.text}</p>
+				{:else if t.error}
+					<p class="error" role="alert">{assistantErrorText(t.error)}</p>
+				{:else}
+					<p class="bubble them">{t.text}</p>
+					{#if t.draft}
+						<section class="draft" aria-label="Bozza">
+							<p class="draft-head"><Icon name="sparkles" size={14} /> Bozza · {languageName(t.draft.language)}</p>
+							<p class="draft-text">{t.draft.text}</p>
+							<p class="draft-note">Non viene inviata da qui. Passa dal campo di scrittura e da «Rivedi e invia».</p>
+							{#if pendingUse !== null}
+								<div class="draft-confirm" role="group" aria-label="Il campo non è vuoto">
+									<p>Il campo di scrittura non è vuoto.</p>
+									<div class="draft-actions">
+										<button type="button" class="btn" onclick={() => applyDraft("replace")}>Sostituire</button>
+										<button type="button" class="btn ghost" onclick={() => applyDraft("append")}>Accodare</button>
+										<button type="button" class="btn ghost" onclick={() => (pendingUse = null)}>Annulla</button>
+									</div>
+								</div>
+							{:else}
+								<div class="draft-actions">
+									<button type="button" class="btn" onclick={() => useAsDraft(t.draft?.text ?? "")}>Usa come bozza</button>
+									<button type="button" class="btn ghost" onclick={() => copy(t.draft?.text ?? "")}>{copied ? "Copiata" : "Copia"}</button>
+									<button type="button" class="btn ghost" disabled={thread.busy} onclick={() => assistant.reformulate(chatId)}>Riformula</button>
+								</div>
+							{/if}
+						</section>
+					{/if}
+				{/if}
+			{/each}
+			{#if thread.busy}
+				<p class="thinking">Sto leggendo la chat…</p>
+			{/if}
+		</div>
+		{#if inbox.chat?.id === chatId}
+			{#key chatId}<ModelControls chat={inbox.chat} />{/key}
 		{/if}
 	</div>
 
-	<div class="chips" role="group" aria-label="Suggerimenti">
-		{#each CHIPS as c (c)}
-			<button type="button" class="chip" disabled={thread.busy || !available} onclick={() => send(c)}>{c}</button>
-		{/each}
-	</div>
+	<footer class="footer">
+		<div class="chips" role="group" aria-label="Suggerimenti">
+			{#each CHIPS as c (c.label)}
+				<button type="button" class="chip" disabled={thread.busy || !available} onclick={() => send(c.label, c.intent)}>{c.label}</button>
+			{/each}
+		</div>
 
-	<form
-		class="ask"
-		onsubmit={(e) => {
-			e.preventDefault();
-			send(question);
-		}}
-	>
-		<label class="sr-only" for="ask-input">Chiedi all'assistente</label>
-		<input id="ask-input" type="text" placeholder="Chiedi all'assistente" bind:value={question} disabled={!available || thread.busy} />
-		<button type="submit" class="btn" disabled={!available || thread.busy || question.trim() === ""}>Chiedi</button>
-	</form>
-	{#if !available}
-		<p class="error">{excluded ? "Modello escluso: assistente e importanza sono disabilitati." : "Assistente non disponibile al momento."}</p>
-	{/if}
+		<form
+			class="ask"
+			onsubmit={(e) => {
+				e.preventDefault();
+				send(question);
+			}}
+		>
+			<label class="sr-only" for="ask-input">Chiedi all'assistente</label>
+			<input id="ask-input" type="text" placeholder="Chiedi all'assistente" bind:value={question} disabled={!available || thread.busy} />
+			<button type="submit" class="btn" disabled={!available || thread.busy || question.trim() === ""}>Chiedi</button>
+		</form>
+		{#if !available}
+			<p class="error">{excluded ? "Modello escluso: assistente e importanza sono disabilitati." : "Assistente non disponibile al momento."}</p>
+		{/if}
+	</footer>
 {/snippet}
 
 <svelte:window onkeydown={trap} />
@@ -206,21 +231,22 @@
 		background: var(--bg-surface);
 		color: var(--text-primary);
 		min-height: 0;
+		min-width: 0;
+		overflow: hidden;
 	}
 	.column {
 		flex: 0 0 400px;
 		border-left: 1px solid var(--border-subtle);
-		overflow-y: auto;
 	}
 	.sheet {
 		position: fixed;
 		left: 0;
 		right: 0;
-		bottom: 0;
-		height: 85vh;
+		bottom: var(--sheet-bottom, 0px);
+		height: 90vh;
+		height: var(--sheet-height, 90dvh);
 		border-radius: var(--radius-16) var(--radius-16) 0 0;
 		z-index: 20;
-		overflow-y: auto;
 		padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
 	}
 	.scrim {
@@ -230,6 +256,7 @@
 		z-index: 19;
 	}
 	.handle {
+		flex-shrink: 0;
 		align-self: center;
 		width: 40px;
 		height: 4px;
@@ -237,6 +264,7 @@
 		background: var(--border-strong);
 	}
 	.head {
+		flex-shrink: 0;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -256,11 +284,36 @@
 		color: var(--info);
 		font: var(--text-caption-12-medium);
 	}
+	.content {
+		flex: 1 1 0;
+		min-height: 0;
+		min-width: 0;
+		overflow-y: auto;
+		overscroll-behavior-y: contain;
+		scrollbar-gutter: stable;
+	}
 	.thread {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
-		min-height: 0;
+		padding-top: var(--space-3);
+	}
+	.thread > * {
+		flex-shrink: 0;
+	}
+	.intro {
+		margin: 0;
+		color: var(--text-secondary);
+		font: var(--text-body-15-regular);
+	}
+	.footer {
+		flex: 0 0 auto;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+		min-width: 0;
+		padding-top: var(--space-3);
+		border-top: 1px solid var(--border-subtle);
 	}
 	.bubble {
 		margin: 0;
@@ -348,10 +401,13 @@
 	}
 	.chips {
 		display: flex;
-		flex-wrap: wrap;
 		gap: var(--space-2);
+		overflow-x: auto;
+		overscroll-behavior-x: contain;
 	}
 	.chip {
+		flex: 0 0 auto;
+		white-space: nowrap;
 		min-height: var(--touch-min);
 		padding: 0 var(--space-3);
 		border-radius: var(--radius-full);
@@ -362,7 +418,6 @@
 	.ask {
 		display: flex;
 		gap: var(--space-2);
-		margin-top: auto;
 	}
 	.ask input {
 		flex: 1;

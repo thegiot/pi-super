@@ -1,4 +1,4 @@
-import { api, ApiError, type AssistantAnswer } from "./api";
+import { api, ApiError, type AssistantAnswer, type AssistantIntent } from "./api";
 import { inbox } from "./inbox.svelte";
 
 /*
@@ -48,7 +48,7 @@ class AssistantStore {
 		this.open = false;
 	}
 
-	async ask(chatID: string, prompt: string): Promise<void> {
+	async ask(chatID: string, prompt: string, intent: AssistantIntent = "answer"): Promise<void> {
 		const chat = inbox.chat;
 		if (chat?.id !== chatID || inbox.modelPrivacyBusy || chat.modelPrivacy?.chatExcluded || chat.modelPrivacy?.networkExcluded) return;
 		const generation = this.generation;
@@ -62,10 +62,11 @@ class AssistantStore {
 			.map((t) => ({ role: t.role, text: t.text }));
 		this.threads[chatID] = { ...current, turns: [...current.turns, { role: "user", text }], busy: true };
 		try {
-			const answer = await api.assistant(chatID, { prompt: text, history });
+			const answer = await api.assistant(chatID, { prompt: text, intent, history });
 			if (generation !== this.generation) return;
+			// An informational question never becomes a composer action, even if a model returns a draft.
 			this.patch(chatID, {
-				turns: [...this.threads[chatID]!.turns, { role: "assistant", text: answer.reply, draft: answer.draft }],
+				turns: [...this.threads[chatID]!.turns, { role: "assistant", text: answer.reply, draft: intent === "draft" ? answer.draft : null }],
 				contextMessages: answer.context.messages,
 			});
 		} catch (err) {
@@ -78,7 +79,7 @@ class AssistantStore {
 	}
 
 	reformulate(chatID: string): Promise<void> {
-		return this.ask(chatID, "Riformula la bozza in modo diverso.");
+		return this.ask(chatID, "Riformula la bozza in modo diverso.", "draft");
 	}
 
 	private patch(chatID: string, change: Partial<Thread>): void {

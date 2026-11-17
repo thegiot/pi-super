@@ -41,6 +41,8 @@ export function pairingPage(authed: boolean, advertisedOrigin?: string): string 
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<meta name="referrer" content="no-referrer">
+	<meta name="theme-color" content="#101216">
+	<link rel="manifest" href="/inbox/manifest.webmanifest">
 	<title>Collega un dispositivo · pi-super</title>
 	<script>
 	(() => {

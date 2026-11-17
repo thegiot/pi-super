@@ -408,6 +408,26 @@ async function main() {
 		if (!ok) inboxFailed++;
 	}
 
+	// Long informational replies must scroll behind a separate footer, never paint underneath it.
+	await inboxPage(chatId("!wc-reply:wc.test"));
+	await assistantOpen();
+	fakeLlm.respondWithAnswer({ reply: Array.from({ length: 35 }, (_, i) => `${i + 1}. Nel gruppo si è parlato di organizzare l'incontro: alcuni preferiscono sabato, altri devono confermare. Questa è una sintesi del solo contesto disponibile.`).join("\n\n"), draft_text: "QUESTA BOZZA NON DEVE COMPARIRE", draft_language: "it" });
+	await c.evaluate(`(() => { const input = document.querySelector('.sheet form input, .sheet form textarea'); const set = Object.getOwnPropertyDescriptor(input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set; set.call(input, 'Di cosa hanno parlato ultimamente nel gruppo?'); input.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()`);
+	await clickText("button", "/^Chiedi$/");
+	await wait(1800);
+	const longFacts = await c.evaluate(`(() => { const panel = document.querySelector('.sheet'); const content = panel.querySelector('.content'); const form = panel.querySelector('form'); const cr = content.getBoundingClientRect(); const fr = form.getBoundingClientRect(); const before = content.scrollTop; content.scrollTop = 0; return { noDraft: !panel.querySelector('section.draft'), scrollable: content.scrollHeight > content.clientHeight + 500, separate: cr.bottom <= fr.top + 1, formVisible: fr.bottom <= innerHeight + 1 && fr.top >= 0, noOverflow: document.documentElement.scrollWidth <= innerWidth, lastAnswer: panel.querySelector('.bubble.them')?.textContent.includes('35.') }; })()`);
+	await c.shot("inbox-28-assistant-long-answer-mobile");
+	console.log(`${Object.values(longFacts).every(Boolean) ? 'PASS' : 'FAIL'}  assistant long informational answer: scrollable, footer separate, no draft ${JSON.stringify(longFacts)}`);
+	if (!Object.values(longFacts).every(Boolean)) inboxFailed++;
+	// A short visual viewport approximates the area left above an Android keyboard.
+	await c.send("Emulation.setDeviceMetricsOverride", { ...DEVICE, height: 520, screenHeight: 520 });
+	await wait(400);
+	const shortFacts = await c.evaluate(`(() => { const p = document.querySelector('.sheet'); const f = p.querySelector('form').getBoundingClientRect(); const b = p.getBoundingClientRect(); return b.top >= 0 && b.bottom <= innerHeight + 1 && f.bottom <= innerHeight + 1 && f.height >= 40; })()`);
+	await c.shot("inbox-29-assistant-short-viewport");
+	console.log(`${shortFacts ? 'PASS' : 'FAIL'}  assistant short viewport keeps question field visible`);
+	if (!shortFacts) inboxFailed++;
+	phone();
+
 	// ---- controlled send (M3): composer, review sheet, outcome, desktop modal
 	const typeComposer = (text) =>
 		c.evaluate(`(() => {
@@ -564,6 +584,14 @@ async function main() {
 	for (const [name, ok] of [["Pair QR fits and image loads", pairFits], ["Pair fragment scrubbed before confirmation", fragmentScrubbed], ["Pair new browser cookie opens inbox", pairAuthed]]) {
 		console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}`); if (!ok) inboxFailed++;
 	}
+	const manifest = await c.send("Page.getAppManifest");
+	const installability = await c.send("Page.getInstallabilityErrors");
+	const pwaOk = manifest.errors?.length === 0 && JSON.parse(manifest.data || "{}").start_url === "/inbox/" && installability.installabilityErrors?.length === 0;
+	console.log(`${pwaOk ? 'PASS' : 'FAIL'}  PWA manifest and Chrome installability ${JSON.stringify(installability.installabilityErrors ?? [])}`);
+	if (!pwaOk) inboxFailed++;
+	await clickText("button", "/^Installa app$/");
+	await wait(200);
+	await c.shot("inbox-30-install-app-help");
 	if (INBOX_ONLY) {
 		console.log(`Inbox screenshot checks: ${inboxFailed ? 'FAIL' : 'PASS'}`);
 		if (!KEEP) await cleanup();

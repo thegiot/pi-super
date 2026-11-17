@@ -106,7 +106,7 @@ describe("assistant over HTTP", () => {
 		llm.requests.length = 0;
 		fake.calls.length = 0;
 		const out = await captureStdout(async () => {
-			const r = await post(port, path, { prompt: "Proponi una risposta" });
+			const r = await post(port, path, { prompt: "Proponi una risposta", intent: "draft" });
 			assert.equal(r.status, 200, r.body);
 			const body = JSON.parse(r.body);
 			assert.equal(body.reply, GOOD_ANSWER.reply);
@@ -169,6 +169,25 @@ describe("assistant over HTTP", () => {
 		assert.equal(logs.includes("CONTESTO-ANA"), false, "message text leaked to logs");
 		assert.equal(logs.includes("ALTRA-CHAT-SEGRETA"), false);
 		assert.match(logs, /inbox: assistant ok ms=\d+ in=\d+ out=\d+ ctx=\d+/);
+	});
+
+	test("informational group questions never produce a draft, even if provider returns one", async () => {
+		llm.respondWithAnswer(GOOD_ANSWER);
+		for (const intent of [undefined, "answer"]) {
+			const r = await post(port, path, { prompt: "Di cosa hanno parlato ultimamente nel gruppo?", ...(intent ? { intent } : {}) });
+			assert.equal(r.status, 200, r.body);
+			assert.equal(JSON.parse(r.body).reply, GOOD_ANSWER.reply);
+			assert.equal(JSON.parse(r.body).draft, null);
+			assert.match(llm.requests.at(-1).body.instructions, /domanda informativa/);
+			assert.match(llm.requests.at(-1).body.instructions, /non tutta la cronologia/);
+		}
+	});
+
+	test("invalid intent cannot reach the provider", async () => {
+		const count = llm.requests.length;
+		const r = await post(port, path, { prompt: "Riassumi", intent: "send" });
+		assert.equal(r.status, 400);
+		assert.equal(llm.requests.length, count);
 	});
 
 	test("an empty draft becomes draft null", async () => {

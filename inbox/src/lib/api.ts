@@ -121,6 +121,8 @@ export interface Counts {
 	all: number;
 }
 
+export type AssistantIntent = "answer" | "draft";
+
 export interface AssistantAnswer {
 	reply: string;
 	draft: { text: string; language: string } | null;
@@ -258,7 +260,7 @@ export const api = {
 		call<unknown>("POST", "/api/inbox/notifications/subscriptions", subscription),
 	unsubscribe: (endpoint: string) =>
 		call<unknown>("DELETE", "/api/inbox/notifications/subscriptions", { endpoint }),
-	assistant: (id: string, body: { prompt: string; history: { role: "user" | "assistant"; text: string }[] }) =>
+	assistant: (id: string, body: { prompt: string; intent?: AssistantIntent; history: { role: "user" | "assistant"; text: string }[] }) =>
 		call<AssistantAnswer>("POST", `${chatPath(id)}/assistant`, body),
 	createIntent: (body: { key: string; chatID: string; text: string; replyToMessageID?: string }) =>
 		call<OutboxCreated>("POST", "/api/inbox/outbox", body),

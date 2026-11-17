@@ -16,6 +16,7 @@ import { Assistant } from "./inbox/assistant.js";
 import { InboxService } from "./inbox/service.js";
 import { ImportanceBridge } from "./inbox/importance.js";
 import { InboxNotifications } from "./inbox/notifications.js";
+import { serveInboxPwaAsset } from "./inbox/pwa.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
 import { scrollBottomKey } from "./pi-keybindings.js";
 import { PromptLog } from "./prompts.js";
@@ -334,6 +335,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			return;
 		}
 
+		if (serveInboxPwaAsset(req, res, cfg.inboxDir, SECURITY_HEADERS)) return;
+
 		const auth = authenticate(req, url);
 		if (auth.ok && url.searchParams.has("token")) {
 			const clean = new URL(url);
@@ -346,7 +349,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		if (url.pathname === "/pair" && req.method === "GET") {
 			res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
 				"referrer-policy": "no-referrer", "x-frame-options": "DENY", "x-content-type-options": "nosniff",
-				"content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" });
+				"content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; manifest-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" });
 			res.end(pairingPage(auth.ok, cfg.pairOrigin));
 			return;
 		}
