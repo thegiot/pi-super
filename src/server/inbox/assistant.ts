@@ -173,7 +173,7 @@ export class Assistant {
 			};
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-			let parsed: unknown;
+			let answer: { reply: string; draftText: string; draftLanguage: string } | undefined;
 			let usage: { input_tokens?: number; output_tokens?: number } | undefined;
 			try {
 				const res = await fetch(`${this.opts.url.replace(/\/+$/, "")}/responses`, {
@@ -185,7 +185,7 @@ export class Assistant {
 				const raw = await res.text();
 				if (!res.ok) fail(new AssistantError("assistant_failed", `provider HTTP ${res.status}`));
 				const out = parseResponse(raw);
-				parsed = out.parsed;
+				answer = validate(out.parsed);
 				usage = out.usage;
 			} catch (err) {
 				if (err instanceof AssistantError) fail(err);
@@ -194,7 +194,7 @@ export class Assistant {
 			} finally {
 				clearTimeout(timer);
 			}
-			const answer = validate(parsed);
+			if (!answer) return fail(new AssistantError("assistant_failed"));
 			this.opts.log(
 				`inbox: assistant ok ms=${Date.now() - started} in=${usage?.input_tokens ?? "?"} out=${usage?.output_tokens ?? "?"} ctx=${args.context.messages}`,
 			);

@@ -110,13 +110,11 @@
 		{/if}
 	</div>
 
-	{#if thread.turns.length === 0}
-		<div class="chips" role="group" aria-label="Suggerimenti">
-			{#each CHIPS as c (c)}
-				<button type="button" class="chip" disabled={thread.busy || !available} onclick={() => send(c)}>{c}</button>
-			{/each}
-		</div>
-	{/if}
+	<div class="chips" role="group" aria-label="Suggerimenti">
+		{#each CHIPS as c (c)}
+			<button type="button" class="chip" disabled={thread.busy || !available} onclick={() => send(c)}>{c}</button>
+		{/each}
+	</div>
 
 	<form
 		class="ask"
