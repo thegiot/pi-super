@@ -20,9 +20,9 @@ Le tre scelte che reggono il resto:
 1. **pi-super parla con Beeper direttamente** (API HTTP/WebSocket locale) per lista, cronologia,
    allegati e invio. L'MCP di Beeper non espone contatti, bozze, allegati né lo stato di lettura,
    quindi non basta come unica via.
-2. **Hermes non ha modo di inviare.** L'assistente riceve da pi-super il contesto della chat
-   selezionata e restituisce testo; non gli servono né il token di scrittura né lo strumento
-   `send_message`.
+2. **L'assistente non ha modo di inviare.** Riceve da pi-super il contesto della chat selezionata e
+   restituisce testo; è una chiamata diretta al modello, senza strumenti, token di Beeper né Hermes
+   nel mezzo ([D12](#19-decisioni-per-il-proprietario)).
 3. **Un solo punto di invio**, nel server di pi-super, con conferma legata a destinatario e testo
    esatti, idempotenza e verifica dell'esito.
 
@@ -111,6 +111,20 @@ WhatsApp nome e telefono; LinkedIn e Matrix non ne restituiscono.
 | I8 | I messaggi di gruppo WeChat riportano menzioni e risposte in modo utilizzabile (`unreadMentionsCount` è valorizzato su 2 chat). | Ispezione di un gruppo con menzioni note. |
 
 Non provati per scelta: l'invio reale di un messaggio e l'invio di allegati.
+
+**Esito al 17 novembre 2026** (M1 in esercizio su K29):
+
+- **I1** aperta. L'interfaccia di Beeper (Impostazioni → Integrazioni → *Approved connections*) non
+  ha permesso di scegliere lo scope: il token di pi-super è `read write`. L'inbox non chiama
+  operazioni di scrittura e il server lo segnala nel log all'avvio.
+- **I2** parziale. La connessione WebSocket si stabilisce e la riconciliazione via HTTP funziona;
+  il formato degli `ids` negli eventi va ancora osservato con traffico reale.
+- **I4** smentita per la via a riga di comando. `chatassistant chat -t todo` toglie il terminale ma
+  lascia caricati gli MCP: con `tool_search`/`tool_call` l'agente ha chiamato `search_chats` e
+  `send_message` (su un ID inesistente, scelto da lui: 404), con le approvazioni scavalcate. Ogni
+  richiesta resta inoltre nelle sessioni di Hermes, contro D8. Da qui D12.
+- **I6** confermata: la SPA è servita su `/inbox/` con la stessa autenticazione.
+- **I8** parziale: due gruppi WeChat con menzioni risultano *Da rispondere* per menzione.
 
 ## 5. Personas e attori
 
@@ -370,7 +384,7 @@ Due livelli, introdotti in momenti diversi.
 **Livello 1 — segnali deterministici (MVP).** Chat fissata in Beeper; menzione diretta; persona
 segnata come prioritaria dall'utente nell'inbox. Il motivo mostrato è il segnale stesso.
 
-**Livello 2 — valutazione dell'assistente (M4).** Per le sole chat in *Da rispondere*, Hermes
+**Livello 2 — valutazione dell'assistente (M4).** Per le sole chat in *Da rispondere*, il modello
 restituisce `{ importanza: alta | normale | bassa, motivo, fiducia }`. Si mostra il motivo in una
 riga («chiede conferma entro venerdì»). Con fiducia bassa non si marca nulla. La valutazione non
 toglie mai una chat da *Da rispondere*: può solo ordinarla e evidenziarla.
@@ -393,7 +407,6 @@ flowchart LR
       AS["Ponte assistente"]
     end
     BP["Beeper Desktop: API locale"]
-    HM["Hermes: profilo chatassistant"]
   end
   NET["WhatsApp, WeChat, Telegram, ..."]
   LLM["Fornitore del modello"]
@@ -401,8 +414,7 @@ flowchart LR
   API -->|"token lettura"| BP
   OB -->|"token scrittura"| BP
   CL --> API
-  AS -->|"contesto della chat, nessuno strumento di invio"| HM
-  HM --> LLM
+  AS -->|"contesto della chat, nessuno strumento"| LLM
   BP --> NET
 ```
 
@@ -413,7 +425,7 @@ flowchart LR
 | Lista, filtri, ricerca, cronologia, allegati | Beeper API, direttamente | Dati strutturati, nessun modello nel mezzo, latenza prevedibile |
 | Aggiornamenti in tempo reale | Beeper WebSocket | Unica fonte di eventi; riconciliazione via HTTP dopo ogni riconnessione |
 | *Da rispondere*, *importante* livello 1 | Server pi-super | Regole deterministiche e verificabili con test |
-| Spiegazioni, riassunti, bozze, *importante* livello 2 | Hermes | Riusa prompt, memoria e modello del profilo esistente |
+| Spiegazioni, riassunti, bozze, *importante* livello 2 | Server pi-super → modello | Stesso modello di `chatassistant`, chiamato senza strumenti ([D12](#19-decisioni-per-il-proprietario)) |
 | Invio | Server pi-super → Beeper API | Unico punto in cui applicare conferma e idempotenza |
 
 ### 11.2 Server pi-super
@@ -440,8 +452,8 @@ viene riavviato, e un server vecchio ignora in silenzio i messaggi nuovi (`AGENT
 ### 11.3 Assistente
 
 pi-super costruisce il contesto (gli ultimi N messaggi della chat aperta, come dati delimitati) e lo
-passa a Hermes insieme alla richiesta dell'utente. Hermes risponde con testo e, quando serve, una
-bozza in un campo separato. Non usa strumenti con effetti: per le funzioni dell'inbox non gli serve
+passa al modello insieme alla richiesta dell'utente. Il modello risponde con testo e, quando serve,
+una bozza in un campo separato. Non usa strumenti con effetti: per le funzioni dell'inbox non gli serve
 nemmeno l'accesso a Beeper.
 
 Conseguenze volute:
@@ -450,14 +462,17 @@ Conseguenze volute:
 - non può leggere altre conversazioni e riportarle in una bozza;
 - l'interfaccia sa esattamente che cosa ha visto e può dichiararlo (RF12).
 
-Del profilo `chatassistant` si riusano prompt, memoria in lettura e modello. Il modo di invocarlo
-(I4) e di restringerne gli strumenti per questa via va deciso nello spike; la modalità one-shot è
-esclusa perché scavalca le approvazioni.
+Lo spike I4 ha escluso Hermes da questo percorso ([D12](#19-decisioni-per-il-proprietario)): il
+server di pi-super chiama direttamente il modello usato da `chatassistant` (`glm-5.3-flash`, API
+*Responses*), con una richiesta che non contiene alcuno strumento, `store: false` e uscita JSON
+vincolata da uno schema (`reply`, `draft_text`, `draft_language`). La chiave è in un file del server
+(`<state-dir>/llm-key`, 0600), letta a ogni richiesta e mai inviata al browser. Non si riusano
+`SOUL.md` né la memoria del profilo: con D7 l'assistente vede solo la chat aperta.
 
 L'uso attuale del profilo dalla riga di comando, con accesso a Beeper via MCP e `send_message`,
 resta com'è per decisione del proprietario ([D1](#19-decisioni-per-il-proprietario)): in quel
-percorso il controllo sull'invio dipende dal prompt. Il percorso dell'inbox è separato: l'invocazione
-usata da pi-super non riceve né lo strumento di invio né il token di scrittura.
+percorso il controllo sull'invio dipende dal prompt. Il percorso dell'inbox è separato e non ha né
+strumenti né token di Beeper.
 
 ### 11.4 Client
 
@@ -582,8 +597,9 @@ Tre punti escono dal perimetro di pi-super e vanno decisi:
 
 - **Fornitore del modello.** Ogni richiesta all'assistente invia a un servizio esterno il testo dei
   messaggi inclusi nel contesto ([D7](#19-decisioni-per-il-proprietario)).
-- **Log di Hermes.** Oggi registrano l'inizio di ogni richiesta; con l'inbox conterrebbero frammenti
-  di conversazioni.
+- **Conservazione presso il fornitore.** Le richieste chiedono `store: false`; che il fornitore lo
+  rispetti non è verificabile da qui. Hermes non è nel percorso, quindi i suoi log e le sue sessioni
+  non ricevono nulla dall'inbox.
 - **Repository pubblico.** Questo documento e il codice sono pubblici: niente identificativi di
   account, indirizzi o dati reali in test e fixture.
 
@@ -596,7 +612,7 @@ Tre punti escono dal perimetro di pi-super e vanno decisi:
 | Beeper lento | Risposta oltre 2 s | Si mostra la cache con l'indicazione «aggiornato N minuti fa» e un indicatore di caricamento; oltre 20 s la richiesta è abbandonata e si può riprovare |
 | Un account disconnesso | `status` dell'account diverso da `connected` | Segnalato sul filtro di rete e nelle chat di quella rete; invio disabilitato solo lì; la cronologia già nota resta leggibile |
 | Account in sincronizzazione | `status = backfilling` | Chat di quella rete marcate «dati incompleti» |
-| Hermes non raggiungibile o modello in errore | Il ponte non risponde entro il limite | L'assistente mostra l'errore; lettura, scrittura a mano e invio continuano a funzionare |
+| Modello non raggiungibile o in errore | Il ponte non risponde entro il limite | L'assistente mostra l'errore; lettura, scrittura a mano e invio continuano a funzionare |
 | Eventi persi | Riconnessione del WebSocket verso Beeper | Rilettura completa della lista; nessun avviso se i dati tornano coerenti |
 | Server riavviato durante un invio | Intento in stato *In invio* alla ripartenza | Passa a *Incerto* e segue la riconciliazione |
 
@@ -619,7 +635,7 @@ Tre punti escono dal perimetro di pi-super e vanno decisi:
 |---|---|---|
 | **M0 — Verifiche** | Ipotesi I1–I8. Prototipo SvelteKit servito dal server. Applicazione di D2 su K29 | Ogni ipotesi è confermata o smentita per iscritto; D2 è applicata |
 | **M1 — Inbox in sola lettura** | Lista, filtri deterministici, ricerca, cronologia, immagini, aggiornamenti in tempo reale, stati degradati, correzioni dell'utente | Il proprietario la usa per il triage quotidiano al posto dei contatori delle app |
-| **M2 — Assistente e bozze** | Ponte verso Hermes con strumenti ristretti, bozze, *Copia*; il testo si invia ancora dall'app nativa | Le bozze sono abbastanza buone da essere copiate più spesso che riscritte |
+| **M2 — Assistente e bozze** | Ponte verso il modello senza strumenti, bozze, *Copia*; il testo si invia ancora dall'app nativa | Le bozze sono abbastanza buone da essere copiate più spesso che riscritte |
 | **M3 — Invio controllato** | Outbox, *Rivedi e invia*, esito, riconciliazione | Criteri CA9–CA14 soddisfatti sulla chat di prova (WeChat, Poesi) |
 | **M4 — Importanza e notifiche** | Valutazione dell'assistente con motivo; notifiche per le sole chat importanti | Da definire dopo M3 |
 | **Dopo** | Allegati in invio, nuova chat da contatto, reazioni, *Segna come letto*, etichette, bozze sincronizzate con Beeper, estensione dello stile al resto di pi-super | — |
@@ -668,7 +684,7 @@ di una mancata. Nell'MVP c'è il conteggio sul pulsante dell'inbox.
   riavvio; un nuovo messaggio in arrivo la riporta.
 - **CA6** Un messaggio ricevuto compare in lista entro 5 s; dopo una disconnessione forzata dal
   WebSocket di Beeper la lista torna coerente senza intervento.
-- **CA7** Con Beeper spento, un account scollegato o Hermes spento, l'interfaccia mostra lo stato
+- **CA7** Con Beeper spento, un account scollegato o il modello non raggiungibile, l'interfaccia mostra lo stato
   corrispondente di §13 e nessuna funzione indipendente è bloccata.
 
 **Assistente (M2)**
@@ -685,8 +701,9 @@ di una mancata. Nell'MVP c'è il conteggio sul pulsante dell'inbox.
   produce una sola chiamata a Beeper.
 - **CA12** Con Beeper che non risponde alla chiamata di invio, il messaggio risulta *esito incerto*,
   non viene reinviato, e la riconciliazione lo porta a *inviato* o *non trovato*.
-- **CA13** Il processo Hermes usato dall'inbox non possiede un token di scrittura né uno strumento
-  di invio, verificato ispezionando la configurazione e con un test che tenta l'invio.
+- **CA13** Il percorso dell'assistente dell'inbox non possiede un token di scrittura né uno strumento
+  di invio: la richiesta al modello non contiene strumenti (verificato da test) e durante e dopo una
+  richiesta con messaggi ostili il server fa a Beeper solo letture.
 - **CA14** Nessun messaggio ostile dell'insieme di prova causa un invio o porta contenuto di un'altra
   chat in una bozza.
 
@@ -714,11 +731,11 @@ di una mancata. Nell'MVP c'è il conteggio sul pulsante dell'inbox.
 ## 19. Decisioni per il proprietario
 
 Esito del riesame con il proprietario (17 novembre 2026): tutte le proposte accettate tranne D1 (rifiutata), D3
-(rinviata) e D9 (cambiata); D11 indicata.
+(rinviata) e D9 (cambiata); D11 indicata. D12 aggiunta dopo lo spike I4.
 
 | # | Decisione | Proposta | Esito |
 |---|---|---|---|
-| **D1** | Togliere `send_message` e il token di scrittura al profilo `chatassistant`. È una modifica a un servizio esistente, che l'issue non autorizza | Sì, prima di M3. Finché non avviene, il divieto di invio per quel profilo resta affidato al prompt | Rifiutata: `chatassistant` mantiene `send_message` e il token di scrittura. L'assistente dell'inbox (M2) usa un'invocazione separata senza strumenti di invio, e CA13 vale per quella |
+| **D1** | Togliere `send_message` e il token di scrittura al profilo `chatassistant`. È una modifica a un servizio esistente, che l'issue non autorizza | Sì, prima di M3. Finché non avviene, il divieto di invio per quel profilo resta affidato al prompt | Rifiutata: `chatassistant` mantiene `send_message` e il token di scrittura. L'assistente dell'inbox (M2) non passa da Hermes ([D12](#19-decisioni-per-il-proprietario)), e CA13 vale per quel percorso |
 | **D2** | Togliere il toolset terminale e la scrittura in memoria senza approvazione al profilo che legge i messaggi | Sì: un profilo che legge testo di terzi non dovrebbe avere una shell | Accettata |
 | **D3** | Inoltro dell'API di Beeper sulla tailnet: mantenerlo o chiuderlo. Isolare Beeper e i token sotto un altro utente | Chiudere l'inoltro se nessun altro lo usa. Isolamento: da valutare dopo l'MVP | Rinviata: l'inoltro resta per ora, potrebbe servire ad altro. Il rischio di §12.1 resta aperto |
 | **D4** | Stack del client | Opzione A di §11.4: SvelteKit come SPA statica, sviluppata in worktree | Accettata |
@@ -729,6 +746,7 @@ Esito del riesame con il proprietario (17 novembre 2026): tutte le proposte acce
 | **D9** | Gestore dei pacchetti per la parte nuova (il repository usa npm) | Restare su npm per non avere due gestori nello stesso repository | Cambiata: la parte nuova (il progetto SvelteKit in una cartella propria) usa Bun; il resto del repository resta su npm |
 | **D10** | Finestra di attenzione di *Da rispondere* | 14 giorni, modificabile | Accettata |
 | **D11** | Chat di prova per l'invio reale in M3 | — | Chat WeChat con Poesi. WeChat non dichiara la lunghezza massima e non supporta modifica né reazioni: è anche il caso più severo per i controlli di capacità |
+| **D12** | Come invocare l'assistente dell'inbox, dopo lo spike I4 | Chiamata diretta dal server pi-super allo stesso modello di `chatassistant`, senza strumenti né sessioni salvate | Accettata (17 novembre 2026) |
 
 ## 20. Appendice — superfici verificate
 
