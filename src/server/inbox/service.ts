@@ -75,6 +75,8 @@ export interface InboxState {
 	accounts: { id: string; network: string; status: string }[];
 	updatedAt?: string;
 	loading: boolean;
+	/** the same numbers /api/inbox/chats reports, so the app's top bar needs one call */
+	counts: ChatCounts;
 }
 
 export type BeeperStatus = "ok" | "slow" | "unreachable" | "unauthorized" | "unconfigured";
@@ -166,6 +168,7 @@ export class InboxService extends EventEmitter {
 	private flushTimer: ReturnType<typeof setTimeout> | undefined;
 	/** summaries as last broadcast, to send only what changed */
 	private lastSent = new Map<string, string>();
+	private lastCounts: string | undefined;
 
 	constructor(private readonly opts: InboxServiceOptions) {
 		super();
@@ -214,6 +217,8 @@ export class InboxService extends EventEmitter {
 	}
 
 	state(): InboxState {
+		const now = this.clock();
+		const counts = countsOf([...this.chats.values()].map((c) => ({ c, s: this.summarize(c, now) })));
 		return {
 			beeper: {
 				status: this.status,
@@ -227,6 +232,7 @@ export class InboxService extends EventEmitter {
 			})),
 			updatedAt: this.lastOkAt,
 			loading: this.inflight !== undefined,
+			counts,
 		};
 	}
 
@@ -700,9 +706,14 @@ export class InboxService extends EventEmitter {
 		}
 		const removed = [...this.lastSent.keys()].filter((id) => !seen.has(id));
 		for (const id of removed) this.lastSent.delete(id);
+		const counts = countsOf(rows);
+		const countsJson = JSON.stringify(counts);
+		if (countsJson !== this.lastCounts) {
+			this.lastCounts = countsJson;
+			this.emit("state", this.state());
+		}
 		if (changed.length === 0 && removed.length === 0) return;
-		const update: ChatsUpdate = { changed, removed, counts: countsOf(rows) };
-		this.emit("chats", update);
+		this.emit("chats", { changed, removed, counts } satisfies ChatsUpdate);
 	}
 
 	private log(msg: string): void {

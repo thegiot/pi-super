@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
+import { startFakeBeeper } from "./fixtures/fake-beeper.mjs";
 
 const KEEP = process.argv.includes("--keep");
 const CHROME = process.env.CHROME_BIN ?? "google-chrome";
@@ -118,9 +119,28 @@ async function main() {
 
 	const fakeHerdr = new URL("./fixtures/fake-herdr.mjs", import.meta.url).pathname;
 	const herdrArgvLog = join(STATE_DIR, "herdr-argv.log");
+	// the inbox reads a synthetic Beeper, never a real account
+	const fakeBeeper = await startFakeBeeper();
+	cleanups.push(() => fakeBeeper.close());
+	const beeperTokenFile = join(STATE_DIR, "beeper-token");
+	writeFileSync(beeperTokenFile, `${fakeBeeper.token}\n`, { mode: 0o600 });
 	const server = spawn(
 		"node",
-		["dist/server/index.js", "-L", SOCKET, "-s", "phone", "--port", String(PORT), "--herdr-machines", "auto"],
+		[
+			"dist/server/index.js",
+			"-L",
+			SOCKET,
+			"-s",
+			"phone",
+			"--port",
+			String(PORT),
+			"--herdr-machines",
+			"auto",
+			"--beeper-url",
+			fakeBeeper.url,
+			"--beeper-token-file",
+			beeperTokenFile,
+		],
 		{
 			cwd: new URL("..", import.meta.url).pathname,
 			env: {
@@ -182,6 +202,137 @@ async function main() {
 		}
 	};
 	await c.shot("01-default-view");
+	// ---- inbox (M1): list, filters, chats, degraded states and the desktop split, on the fake Beeper
+	const phone = () => c.send("Emulation.setDeviceMetricsOverride", { ...DEVICE, screenWidth: DEVICE.width, screenHeight: DEVICE.height });
+	const desktop = (width, height) =>
+		c.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false, screenWidth: width, screenHeight: height });
+	const inboxPage = async (path, settle = 2200) => {
+		await c.send("Page.navigate", { url: `http://127.0.0.1:${PORT}${path}` });
+		await wait(settle);
+	};
+	const clickText = (sel, re) =>
+		c.evaluate(`(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find(e => ${re}.test(e.textContent.trim())); if (!el) return false; el.click(); return true; })()`);
+	const FACTS = `(() => {
+    const vis = (e) => !!e && !!(e.offsetWidth || e.offsetHeight);
+    const targets = [...document.querySelectorAll("button, a.row, a.icon-btn, a.back, [role=tab]")].filter(vis);
+    const small = targets.map(b => { const r = b.getBoundingClientRect(); return { t: (b.getAttribute("aria-label") || b.textContent).trim().slice(0, 24), w: Math.round(r.width), h: Math.round(r.height) }; }).filter(x => x.h < 48 || x.w < 48);
+    const sendLike = [...document.querySelectorAll("button, a")].map(b => b.textContent.trim()).filter(t => /invia|rivedi|send|segna come letto|mark as read/i.test(t));
+    const list = document.querySelector(".list-col");
+    const detail = document.querySelector(".detail-col");
+    return {
+      url: location.pathname,
+      rows: document.querySelectorAll("ul.list li").length,
+      tabs: [...document.querySelectorAll("[role=tab]")].map(t => ({ label: t.textContent.trim(), selected: t.getAttribute("aria-selected") === "true" })),
+      tabCounts: [...document.querySelectorAll("[role=tab] .count")].map(c => c.textContent),
+      banners: [...document.querySelectorAll(".banner")].map(b => b.textContent.replace(/\\s+/g, " ").trim()),
+      messages: document.querySelectorAll("article.bubble").length,
+      images: document.querySelectorAll("article.bubble img").length,
+      placeholders: [...document.querySelectorAll("article.bubble .placeholder")].map(p => p.textContent.trim()),
+      menuItems: [...document.querySelectorAll("[role=menuitem]")].map(m => m.textContent.trim()),
+      textareas: document.querySelectorAll("textarea").length,
+      sendLike,
+      smallTargets: small.slice(0, 5),
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      listWidth: list ? Math.round(list.getBoundingClientRect().width) : 0,
+      detailVisible: !!detail && vis(detail),
+      empty: (document.querySelector(".empty h2") || {}).textContent ?? null,
+      subtitle: (document.querySelector(".topbar .subtitle") || {}).textContent ?? null,
+    };
+  })()`;
+	const chatId = (id) => `/inbox/chat/${encodeURIComponent(id)}`;
+
+	phone();
+	await inboxPage("/inbox/");
+	const listReply = await c.evaluate(FACTS);
+	await c.shot("inbox-01-list-reply");
+	await clickText("[role=tab]", "/Non letti/");
+	await wait(900);
+	const listUnread = await c.evaluate(FACTS);
+	await c.shot("inbox-02-list-unread");
+	await clickText("[role=tab]", "/Tutte/");
+	await wait(900);
+	const listAll = await c.evaluate(FACTS);
+	await c.shot("inbox-03-list-all");
+	await clickText("[role=tab]", "/Da rispondere/");
+	await wait(900);
+
+	for (let t = 0; t < 30; t++) {
+		if (await c.evaluate(`!!document.querySelector('a.row[href*="wa-ana"]')`)) break;
+		await wait(200);
+	}
+	await c.evaluate(`document.querySelector('a.row[href*="wa-ana"]').click(); 1`);
+	await wait(1800);
+	const chatDm = await c.evaluate(FACTS);
+	await c.shot("inbox-04-chat-dm");
+
+	await inboxPage(chatId("!wc-reply:wc.test"));
+	const chatGroup = await c.evaluate(FACTS);
+	await c.shot("inbox-05-chat-group-media");
+
+	await clickText("button", "/^Rimanda$/");
+	await wait(400);
+	const snoozeMenu = await c.evaluate(FACTS);
+	await c.shot("inbox-06-snooze-menu");
+	await clickText("button", "/^Rimanda$/");
+
+	desktop(1440, 900);
+	await inboxPage(chatId("!wc-reply:wc.test"), 2000);
+	const desk1440 = await c.evaluate(FACTS);
+	await c.shot("inbox-07-desktop-1440");
+	desktop(1024, 768);
+	await inboxPage(chatId("!wc-reply:wc.test"), 2000);
+	const desk1024 = await c.evaluate(FACTS);
+	await c.shot("inbox-08-desktop-1024");
+	phone();
+
+	await inboxPage("/inbox/");
+	await fakeBeeper.down();
+	await c.evaluate(`fetch("/api/inbox/refresh", { method: "POST", credentials: "same-origin" }).then(r => r.status)`);
+	await wait(1500);
+	const unreach = await c.evaluate(FACTS);
+	await c.shot("inbox-09-unreachable");
+
+	await fakeBeeper.up();
+	fakeBeeper.setRejectAll(true);
+	await c.evaluate(`fetch("/api/inbox/refresh", { method: "POST", credentials: "same-origin" }).then(r => r.status)`);
+	await wait(1500);
+	const unauth = await c.evaluate(FACTS);
+	await c.shot("inbox-10-unauthorized");
+
+	fakeBeeper.setRejectAll(false);
+	await c.evaluate(`fetch("/api/inbox/refresh", { method: "POST", credentials: "same-origin" }).then(r => r.status)`);
+	await c.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/` });
+	await wait(3000);
+	const badge = await c.evaluate(`(() => ({ visible: !document.getElementById("btn-inbox").hidden, text: document.getElementById("inbox-badge").textContent }))()`);
+	await c.shot("inbox-11-main-badge");
+
+	// printed here, before the terminal section below: that section can stall on some Chromium builds
+	const inboxChecks = [
+		["inbox list: reply view is the default with its six chats", listReply.tabs[0].selected && listReply.rows === 6 && listReply.tabCounts.join(",") === "6,7,12"],
+		["inbox: the unread view lists the unread chats", listUnread.tabs[1].selected && listUnread.rows === 7],
+		["inbox: the all view lists every chat but the merged duplicate", listAll.tabs[2].selected && listAll.rows === 12],
+		["inbox: phone layouts have no horizontal overflow", [listReply, listUnread, listAll, chatDm, chatGroup].every(f => f.overflow <= 0)],
+		["inbox: every touch target is at least 48px", [listReply, listUnread, chatDm, chatGroup, snoozeMenu].every(f => f.smallTargets.length === 0)],
+		["inbox: no composer and no send or mark-as-read control", [listReply, chatDm, chatGroup, snoozeMenu].every(f => f.textareas === 0 && f.sendLike.length === 0)],
+		["inbox: a DM shows messages and the read-without-confirmation notice", chatDm.messages > 0 && chatDm.banners.some(b => /senza conferma/.test(b))],
+		["inbox: the group shows an image and a labelled placeholder for the PDF", chatGroup.images >= 1 && chatGroup.placeholders.some(p => /ricetta\.pdf/.test(p))],
+		["inbox: the snooze menu offers the four fixed times", snoozeMenu.menuItems.length === 4],
+		["inbox desktop 1440: two columns, list 360px wide", desk1440.listWidth === 360 && desk1440.detailVisible && desk1440.overflow <= 0],
+		["inbox desktop 1024: two columns still", desk1024.listWidth === 360 && desk1024.detailVisible && desk1024.overflow <= 0],
+		["inbox unreachable: banner, cloud-off state, dimmed counts", unreach.banners.some(b => /non è raggiungibile/.test(b)) && /non risponde su K29/.test(unreach.empty ?? "") && unreach.tabCounts.every(t => t === "–")],
+		["inbox unauthorized: the refused token is explained", unauth.banners.some(b => /rifiutato il token/.test(b))],
+		["the main app shows the reply count on the inbox button", badge.visible && badge.text === "6"],
+	];
+	let inboxFailed = 0;
+	for (const [name, ok] of inboxChecks) {
+		console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
+		if (!ok) inboxFailed++;
+	}
+	// back to the terminal app, from the same place the rest of the harness expects
+	phone();
+	await c.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?token=${token}&debug=1` });
+	await wait(4000);
+
 
 	// window tabs: switch to the wide git-log window
 	const windows = await c.evaluate(`[...document.querySelectorAll("#tabs .tab")].map(b => b.textContent)`);
@@ -488,7 +639,8 @@ async function main() {
 
 	// The same tap in the raw view, where there is no DOM text under the finger at all.
 	// A bare filename also proves the round trip through the pane's own cwd.
-	sh("tmux", ["-L", SOCKET, "send-keys", "-t", "phone:notes", `cd ${STATE_DIR}; clear; echo peek-me.png`, "Enter"]);
+	// the raw view shows the active window, which the swipes above leave on grand-endeavors
+	sh("tmux", ["-L", SOCKET, "send-keys", "-t", "phone:grand-endeavors", `cd ${STATE_DIR}; clear; echo peek-me.png`, "Enter"]);
 	await setView("raw");
 	await wait(2500);
 	// find the cell the filename occupies on the grid, then convert that back to pixels
@@ -867,7 +1019,7 @@ async function main() {
 	}
 	if (!KEEP) await cleanup();
 	else log(`kept: http://127.0.0.1:${PORT}/?token=${token} , cdp ${CDP_PORT}`);
-	process.exit(failed === 0 ? 0 : 1);
+	process.exit(failed + inboxFailed === 0 ? 0 : 1);
 }
 
 main().catch(async (e) => {

@@ -257,3 +257,12 @@ test("no messages at all is incomplete", () => {
 	const out = run({ preview: null });
 	assert.equal(out.incomplete, true);
 });
+
+test("a fetched history with no meaningful message is no_messages, not incomplete", () => {
+	const onlyReactions = [msg({ id: "m-1", timestamp: ago(HOUR), type: "REACTION" })];
+	const out = run({ history: onlyReactions });
+	assert.equal(out.excludedBy, "no_messages");
+	assert.equal(out.incomplete, false);
+	assert.equal(out.needsReply, false);
+	assert.equal(run({ history: [], preview: null }).excludedBy, "no_messages");
+});

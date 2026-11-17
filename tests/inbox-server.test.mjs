@@ -102,6 +102,25 @@ describe("inbox HTTP + WebSocket", () => {
 		assert.equal(body.includes(TOKEN), false);
 	});
 
+	test("POST /refresh re-reads Beeper now and answers with the state, counts included", async () => {
+		const r = await raw(env.port, "/api/inbox/refresh", { method: "POST", headers: auth });
+		assert.equal(r.status, 200);
+		const state = json(r);
+		assert.equal(state.beeper.status, "ok");
+		assert.equal(state.counts.reply, 6);
+		assert.equal((await raw(env.port, "/api/inbox/refresh", { headers: auth })).status, 404);
+	});
+
+	test("a chat's detail and its messages are answered for the id the browser sends", async () => {
+		const chat = encodeURIComponent("!wa-ana:wa.test");
+		const detail = await raw(env.port, `/api/inbox/chats/${chat}`, { headers: auth });
+		assert.equal(detail.status, 200);
+		assert.equal(json(detail).participants.some((p) => p.isSelf), true);
+		const messages = await raw(env.port, `/api/inbox/chats/${chat}/messages`, { headers: auth });
+		assert.equal(messages.status, 200);
+		assert.equal(json(messages).messages.length > 0, true);
+	});
+
 	test("bad filters and bodies are answered with 400, unknown chats with 404", async () => {
 		assert.equal((await raw(env.port, "/api/inbox/chats?filter=later", { headers: auth })).status, 400);
 		const chat = encodeURIComponent("!wa-ana:wa.test");

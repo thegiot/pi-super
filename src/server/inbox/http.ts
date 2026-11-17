@@ -36,6 +36,11 @@ export async function handleInboxApi(
 			json(res, 200, inbox.state());
 			return;
 		}
+		if (method === "POST" && path === "/refresh") {
+			await inbox.refreshNow();
+			json(res, 200, inbox.state());
+			return;
+		}
 		if (method === "GET" && path === "/chats") {
 			const filter = url.searchParams.get("filter") ?? "reply";
 			if (!FILTERS.has(filter)) {
@@ -60,7 +65,7 @@ export async function handleInboxApi(
 		}
 		const chat = /^\/chats\/([^/]+)(?:\/(.*))?$/.exec(path);
 		if (chat) {
-			await chatRoute(req, res, url, deps, decodeSegment(chat[1]!), `${method} ${chat[2] ?? ""}`);
+			await chatRoute(req, res, url, deps, decodeSegment(chat[1]!), `${method} ${chat[2] ?? ""}`.trim());
 			return;
 		}
 		json(res, 404, { error: "not found" });

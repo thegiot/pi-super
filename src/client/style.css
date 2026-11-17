@@ -736,8 +736,10 @@ a.primary {
 	background: var(--bg);
 }
 
-#btn-agents {
+#btn-agents,
+#btn-inbox {
 	position: relative;
+	text-decoration: none;
 }
 
 /* same contract as the call button: green means "this is what you are looking at" */
@@ -747,7 +749,8 @@ a.primary {
 	color: var(--accent);
 }
 
-#agents-badge {
+#agents-badge,
+#inbox-badge {
 	position: absolute;
 	top: -4px;
 	right: -4px;
@@ -761,7 +764,8 @@ a.primary {
 	font-weight: 600;
 }
 
-#agents-badge[hidden] {
+#agents-badge[hidden],
+#inbox-badge[hidden] {
 	display: none;
 }
 

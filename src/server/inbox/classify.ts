@@ -23,6 +23,7 @@ export type ExclusionCode =
 	| "last_is_mine"
 	| "group_without_mention"
 	| "muted_without_mention"
+	| "no_messages"
 	| "outside_window";
 
 export interface Labels {
@@ -150,7 +151,11 @@ export function classify(input: ClassifyInput): Labels {
 	// A group with nothing unread and nothing fetched can only be decided by its preview;
 	// that is enough, because it cannot be waiting on us without an unread counter.
 	const groupAtRest = chat.type === "group" && chat.unreadCount === 0 && chat.unreadMentionsCount === 0;
-	if (!last && !groupAtRest) return done(undefined, [], true);
+	if (!last) {
+		// Fetched and empty of conversation: there is nothing to answer, and waiting for more would never end.
+		if (input.history !== undefined) return done("no_messages");
+		if (!groupAtRest) return done(undefined, [], true);
+	}
 	if (last && mineOf(last)) return done("last_is_mine");
 
 	const reasons: Reason[] = [];

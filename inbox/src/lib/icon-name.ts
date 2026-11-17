@@ -1,0 +1,18 @@
+export type IconName =
+	| "arrow-left"
+	| "search"
+	| "x"
+	| "check"
+	| "clock"
+	| "alert-triangle"
+	| "cloud-off"
+	| "refresh-cw"
+	| "more-vertical"
+	| "eye-off"
+	| "terminal"
+	| "image"
+	| "paperclip"
+	| "users"
+	| "star"
+	| "pin"
+	| "corner-up-left";

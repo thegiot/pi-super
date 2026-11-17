@@ -1,0 +1,107 @@
+/* Design tokens from the Figma file, under the same names. The rest of pi-super can adopt them piece by piece. */
+:root {
+	--bg-base: #101216;
+	--bg-surface: #191d24;
+	--bg-raised: #232833;
+	--bg-scrim: #00000099;
+	--border-subtle: #2a303b;
+	--border-strong: #6e7789;
+	--text-primary: #d7dae0;
+	--text-secondary: #9aa1ad;
+	--text-on-accent: #0b1a0e;
+	--accent: #7ee787;
+	--accent-subtle: #7ee78729;
+	--warn: #ffa657;
+	--warn-subtle: #ffa65729;
+	--danger: #ff7b72;
+	--danger-subtle: #ff7b7229;
+	--info: #79c0ff;
+	--info-subtle: #79c0ff29;
+	--network-whatsapp: #25d366;
+	--network-telegram: #2aabee;
+	--network-wechat: #07c160;
+	--network-linkedin: #4c9be8;
+	--network-matrix: #8b7cf6;
+	--network-neutral: #9aa1ad;
+
+	--space-1: 4px;
+	--space-2: 8px;
+	--space-3: 12px;
+	--space-4: 16px;
+	--space-6: 24px;
+	--space-8: 32px;
+
+	--radius-8: 8px;
+	--radius-12: 12px;
+	--radius-16: 16px;
+	--radius-full: 999px;
+
+	--text-display-20-semibold: 600 20px/26px system-ui, sans-serif;
+	--text-title-17-medium: 500 17px/22px system-ui, sans-serif;
+	--text-body-15-regular: 400 15px/21px system-ui, sans-serif;
+	--text-body-15-medium: 500 15px/21px system-ui, sans-serif;
+	--text-label-13-medium: 500 13px/18px system-ui, sans-serif;
+	--text-label-13-regular: 400 13px/18px system-ui, sans-serif;
+	--text-caption-12-regular: 400 12px/16px system-ui, sans-serif;
+	--text-caption-12-medium: 500 12px/16px system-ui, sans-serif;
+	--text-mono-12-regular: 400 12px/16px ui-monospace, monospace;
+
+	--touch-min: 48px;
+	--focus-ring: 2px solid var(--accent);
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	height: 100%;
+	background: var(--bg-base);
+	color: var(--text-primary);
+	font: var(--text-body-15-regular);
+	-webkit-text-size-adjust: 100%;
+}
+
+button,
+input {
+	font: inherit;
+	color: inherit;
+}
+
+button {
+	cursor: pointer;
+	background: none;
+	border: 0;
+	padding: 0;
+}
+
+:focus-visible {
+	outline: var(--focus-ring);
+	outline-offset: 2px;
+}
+
+a {
+	color: inherit;
+}
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		transition-duration: 0.01ms !important;
+	}
+}

@@ -2,6 +2,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { createAgents, type FleetTarget } from "./agents.js";
+import { startInboxBadge } from "./inbox-badge.js";
 import { authState, enrollPasskey, gate, loginWithPasskey, logout } from "./auth.js";
 import { createDictation } from "./dictate.js";
 import { createMeta } from "./meta.js";
@@ -1024,6 +1025,7 @@ const agents = createAgents(el.agents, {
 	},
 	status,
 });
+startInboxBadge($("btn-inbox"), $("inbox-badge"));
 $("btn-agents").onclick = () => {
 	if (state.view === "agents") {
 		setView(state.lastTermView);

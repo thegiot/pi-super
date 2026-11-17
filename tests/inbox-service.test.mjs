@@ -154,7 +154,7 @@ describe("read-only views", () => {
 				"/api/inbox/attachments/!wa-media%3Awa.test/m-md-1/1",
 			],
 		);
-		assert.equal(m.attachments[0].width, 1);
+		assert.equal(m.attachments[0].width, 96);
 
 		const react = await env.svc.messages("!wa-react:wa.test");
 		assert.deepEqual(react.messages.map((x) => x.kind), ["text", "reaction"]);
@@ -270,6 +270,23 @@ describe("live updates", () => {
 			{ emit: true },
 		);
 		await until(() => env.svc.list({ filter: "reply" }).chats.some((c) => c.id === chat));
+	});
+
+	test("state carries the same counts as the list, and a correction pushes a new state", () => {
+		const before = env.svc.state().counts;
+		assert.deepEqual(before, {
+			reply: env.svc.list({ filter: "reply" }).counts.reply,
+			unread: env.svc.list({ filter: "unread" }).counts.unread,
+			all: env.svc.list({ filter: "all" }).counts.all,
+		});
+		const seen = [];
+		const onState = (st) => seen.push(st.counts.reply);
+		env.svc.on("state", onState);
+		env.svc.setNoReply("!wc-reply:wc.test", true);
+		env.svc.off("state", onState);
+		assert.equal(env.svc.state().counts.reply, before.reply - 1);
+		assert.deepEqual(seen, [before.reply - 1]);
+		env.svc.setNoReply("!wc-reply:wc.test", false);
 	});
 
 	test("priority is an important reason and does not change whether a chat needs a reply", () => {
