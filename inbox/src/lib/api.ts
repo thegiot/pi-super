@@ -48,6 +48,18 @@ export interface Corrections {
 	priority: boolean;
 }
 
+export interface ImportanceEvaluation {
+	importanza: "alta" | "normale" | "bassa";
+	motivo: string;
+	fiducia: "alta" | "media" | "bassa";
+	highlight: boolean;
+	context: { messages: number; from: string | null; to: string | null };
+	evaluatedAt: string;
+	expiresAt: string;
+	model: string;
+	cached: boolean;
+}
+
 export interface ChatSummary {
 	id: string;
 	accountID: string;
@@ -68,6 +80,8 @@ export interface ChatSummary {
 	labels: Labels;
 	corrections: Corrections;
 	accountStatus: string;
+	importance?: ImportanceEvaluation;
+	modelPrivacy: { chatExcluded: boolean; networkExcluded: boolean };
 }
 
 export interface ChatDetail extends ChatSummary {
@@ -209,7 +223,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 		}
 		throw new ApiError(res.status, message);
 	}
-	return (await res.json()) as T;
+	return res.status === 204 ? undefined as T : (await res.json()) as T;
 }
 
 const chatPath = (id: string) => `/api/inbox/chats/${encodeURIComponent(id)}`;
@@ -235,6 +249,15 @@ export const api = {
 			: call<ChatSummary>("POST", `${chatPath(id)}/snooze`, { until }),
 	mark: (id: string, on: boolean) => call<ChatSummary>("POST", `${chatPath(id)}/mark`, { on }),
 	priority: (id: string, on: boolean) => call<ChatSummary>("POST", `${chatPath(id)}/priority`, { on }),
+	importance: (id: string) =>
+		call<{ evaluation: ImportanceEvaluation; chat: ChatSummary }>("POST", `${chatPath(id)}/importance`),
+	modelExclusion: (id: string, scope: "chat" | "network", on: boolean) =>
+		call<ChatSummary>("POST", `${chatPath(id)}/model-exclusion`, { scope, on }),
+	notifications: () => call<{ publicKey: string }>("GET", "/api/inbox/notifications"),
+	subscribe: (subscription: PushSubscriptionJSON) =>
+		call<unknown>("POST", "/api/inbox/notifications/subscriptions", subscription),
+	unsubscribe: (endpoint: string) =>
+		call<unknown>("DELETE", "/api/inbox/notifications/subscriptions", { endpoint }),
 	assistant: (id: string, body: { prompt: string; history: { role: "user" | "assistant"; text: string }[] }) =>
 		call<AssistantAnswer>("POST", `${chatPath(id)}/assistant`, body),
 	createIntent: (body: { key: string; chatID: string; text: string; replyToMessageID?: string }) =>

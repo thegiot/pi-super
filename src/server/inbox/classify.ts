@@ -67,6 +67,8 @@ export interface Corrections {
 	snoozeUntil?: string;
 	marked: boolean;
 	priority: boolean;
+	/** Local privacy preference; never participates in needsReply classification. */
+	modelExcluded?: boolean;
 }
 
 export interface ClassifyInput {

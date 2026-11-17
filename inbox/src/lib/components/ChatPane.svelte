@@ -10,6 +10,7 @@
 	import MessageBubble from "./MessageBubble.svelte";
 	import ChatFooter from "./ChatFooter.svelte";
 	import SendReview from "./SendReview.svelte";
+	import ModelControls from "./ModelControls.svelte";
 	import OverflowMenu from "./OverflowMenu.svelte";
 	import IconButton from "./IconButton.svelte";
 	import Icon from "./Icon.svelte";
@@ -23,7 +24,7 @@
 		inbox.openChat(id);
 	});
 
-	const chat = $derived(inbox.chat);
+	const chat = $derived(inbox.chat?.id === id ? inbox.chat : null);
 	const replyLookup = $derived(new Map(inbox.messages.map((m) => [m.id, m])));
 	const sendable = $derived(chat !== null && chat !== undefined && !chat.readOnly && !chat.archived);
 	const outboxPending = $derived(chat ? outbox.pendingFor(chat.id) : []);
@@ -91,7 +92,7 @@
 					icon="sparkles"
 					label="Assistente"
 					pressed={assistant.open}
-					disabled={inbox.degraded}
+					disabled={inbox.degraded || inbox.modelPrivacyBusy || chat.modelPrivacy?.chatExcluded || chat.modelPrivacy?.networkExcluded}
 					onclick={() => assistant.toggle()}
 				/>
 			{/if}
@@ -99,7 +100,8 @@
 		{/snippet}
 	</TopBar>
 
-	{#if chat}
+	{#if chat && chat.id === id}
+		{#key chat.id}<ModelControls {chat} importance={false} />{/key}
 		<Banner tone="info" icon="eye-off">Lettura senza conferma: aprire la chat non la segna come letta.</Banner>
 		{#if chat.accountStatus !== "connected"}
 			<Banner tone="warn" icon="alert-triangle">

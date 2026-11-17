@@ -18,10 +18,11 @@ import { startFakeBeeper } from "./fixtures/fake-beeper.mjs";
 import { startFakeLlm } from "./fixtures/fake-llm.mjs";
 
 const KEEP = process.argv.includes("--keep");
+const INBOX_ONLY = process.argv.includes("--inbox-only");
 const CHROME = process.env.CHROME_BIN ?? "google-chrome";
-const PORT = 8796;
-const CDP_PORT = 9334;
-const SOCKET = "mobiletest";
+const PORT = Number(process.env.SHOTS_PORT ?? 8796);
+const CDP_PORT = Number(process.env.SHOTS_CDP_PORT ?? 9334);
+const SOCKET = `mobiletest-${process.pid}`;
 const STATE_DIR = mkdtempSync(join(tmpdir(), "pi-super-mobile-"));
 const SHOTS = "/tmp/pi-super-shots";
 
@@ -181,6 +182,7 @@ async function main() {
 		{ stdio: ["ignore", "pipe", "pipe"] },
 	);
 	cleanups.push(() => chrome.kill());
+	await new Promise((resolve, reject) => { chrome.once("spawn", resolve); chrome.once("error", reject); });
 	let target;
 	for (let i = 0; i < 60 && !target; i++) {
 		await wait(250);
@@ -486,6 +488,59 @@ async function main() {
 	for (const [name, ok] of sendChecks) {
 		console.log(`${ok ? "PASS" : "FAIL"}  ${name}`);
 		if (!ok) inboxFailed++;
+	}
+
+	// ---- M4: only explicit evaluation may read chat content; privacy and notifications fit.
+	await inboxPage(chatId("!wc-reply:wc.test"));
+	await assistantOpen();
+	const callsBeforeImportance = fakeLlm.requests.length;
+	fakeLlm.respondWithAnswer({ importanza: "alta", fiducia: "alta", motivo: "Chiede conferma entro venerdì." });
+	await clickText("button", "/^Perché è importante$/");
+	await wait(900);
+	const importancePhone = await c.evaluate(`(() => ({
+		text: document.querySelector('.sheet .evaluation')?.textContent ?? '',
+		overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+	}))()`);
+	await c.shot("inbox-19-importance-mobile");
+	await c.evaluate(`document.querySelector('.sheet .model-controls').open = true; 1`);
+	await wait(150);
+	await c.shot("inbox-20-model-privacy-mobile");
+	await c.evaluate(`document.querySelector('.sheet .model-controls input').click(); 1`);
+	await wait(500);
+	const privacyPhone = await c.evaluate(`(() => ({ disabled: !document.querySelector('.sheet') && !!document.querySelector('button[aria-label="Assistente"]:disabled'), notice: document.querySelector('.pane .model-controls')?.textContent.includes('Modello escluso') }))()`);
+	await c.evaluate(`document.querySelector('.pane .model-controls').open = true; 1`);
+	await c.shot("inbox-21-excluded-mobile");
+	await c.evaluate(`document.querySelector('.pane .model-controls input').click(); 1`);
+	await wait(400);
+	await inboxPage('/inbox/');
+	await c.evaluate(`document.querySelector('details.notifications').open = true; 1`);
+	await wait(300);
+	await c.shot("inbox-22-notifications-mobile");
+	const pushDisclosure = await c.evaluate(`document.querySelector('details.notifications').textContent.includes('schermata di blocco')`);
+	for (const width of [1440, 1024]) {
+		desktop(width, 900);
+		await inboxPage(chatId("!wc-reply:wc.test"), 1000);
+		await assistantOpen();
+		fakeLlm.respondWithAnswer({ importanza: "alta", fiducia: "alta", motivo: "Chiede conferma entro venerdì." });
+		await clickText("button", "/^Perché è importante$/");
+		await wait(500);
+		await c.evaluate(`document.querySelector('details.notifications').open = true; document.querySelector('.model-controls').open = true; 1`);
+		await c.shot(`inbox-23-m4-desktop-${width}`);
+		const fits = await c.evaluate(`(() => { const r = document.querySelector('.column, .sheet').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth; })()`);
+		console.log(`${fits ? 'PASS' : 'FAIL'}  M4 desktop ${width}: assistant fully inside viewport`);
+		if (!fits) inboxFailed++;
+	}
+	const m4Checks = [
+		["M4: explicit importance request and bounded reason rendered", fakeLlm.requests.length > callsBeforeImportance && /Importanza alta/.test(importancePhone.text) && /venerdì/.test(importancePhone.text)],
+		["M4: importance mobile no overflow", importancePhone.overflow <= 0],
+		["M4: chat privacy disables every model action", privacyPhone.disabled && privacyPhone.notice],
+		["M4: push lockscreen disclosure", pushDisclosure],
+	];
+	for (const [name, ok] of m4Checks) { console.log(`${ok ? "PASS" : "FAIL"}  ${name}`); if (!ok) inboxFailed++; }
+	if (INBOX_ONLY) {
+		console.log(`Inbox screenshot checks: ${inboxFailed ? 'FAIL' : 'PASS'}`);
+		if (!KEEP) await cleanup();
+		process.exit(inboxFailed ? 1 : 0);
 	}
 
 	// back to the terminal app, from the same place the rest of the harness expects

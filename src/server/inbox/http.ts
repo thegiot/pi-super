@@ -9,6 +9,8 @@ import { type ChatFilter, type ChatsUpdate, type InboxService, type InboxState, 
 import { readBody } from "../uploads.js";
 import { type Assistant, AssistantError, buildContext, type HistoryTurn } from "./assistant.js";
 import type { Outbox, OutboxIntentView } from "./outbox.js";
+import { ImportanceError } from "./importance.js";
+import { InboxNotificationsError, type InboxNotifications } from "./notifications.js";
 
 /*
  * HTTP and WebSocket surface of the inbox. Mounted by server.ts behind the same auth,
@@ -21,6 +23,8 @@ export interface InboxHttpDeps {
 	assistant?: Assistant;
 	/** the controlled-send journal; the /outbox routes 404 when it is not wired */
 	outbox?: Outbox;
+	notifications?: InboxNotifications;
+	notificationOwner?: string;
 	json: (res: ServerResponse, status: number, body: unknown) => void;
 	securityHeaders: Record<string, string>;
 }
@@ -74,6 +78,15 @@ export async function handleInboxApi(
 					q: url.searchParams.get("q") ?? undefined,
 				}),
 			);
+			return;
+		}
+		if (path === "/notifications" || path === "/notifications/subscriptions") {
+			const notifications = deps.notifications;
+			if (!notifications) throw new InboxError(503, "notifications_unavailable");
+			if (method === "GET" && path === "/notifications") json(res, 200, { publicKey: notifications.publicKey });
+			else if (path === "/notifications/subscriptions" && method === "POST") json(res, 200, notifications.subscribe(await jsonBody(req), deps.notificationOwner));
+			else if (path === "/notifications/subscriptions" && method === "DELETE") json(res, 200, notifications.unsubscribe(await jsonBody(req)));
+			else json(res, 404, { error: "not found" });
 			return;
 		}
 		if (path === "/outbox" || path.startsWith("/outbox/")) {
@@ -138,6 +151,15 @@ async function chatRoute(
 		case "DELETE snooze":
 			json(res, 200, inbox.snooze(chatID, null));
 			return;
+		case "POST importance":
+			json(res, 200, await inbox.evaluateImportance(chatID));
+			return;
+		case "POST model-exclusion": {
+			const body = await jsonBody(req);
+			if ((body.scope !== "chat" && body.scope !== "network") || typeof body.on !== "boolean") throw new InboxError(400, "invalid_model_exclusion");
+			json(res, 200, inbox.setModelExclusion(chatID, body.scope, body.on));
+			return;
+		}
 		case "POST assistant":
 			await askAssistant(req, res, deps, chatID);
 			return;
@@ -273,6 +295,7 @@ async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: Inb
 		json(res, 503, { error: "assistant_unconfigured" });
 		return;
 	}
+	inbox.assertModelAllowed(chatID);
 	const body = await jsonBody(req, ASSISTANT_BODY_LIMIT);
 	const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
 	if (prompt.length < 1 || prompt.length > PROMPT_MAX) {
@@ -288,6 +311,7 @@ async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: Inb
 		json(res, 404, { error: "chat not found" });
 		return;
 	}
+	const revision = inbox.modelRevision(chatID);
 	let source;
 	try {
 		source = await inbox.assistantSource(chatID);
@@ -296,9 +320,13 @@ async function askAssistant(req: IncomingMessage, res: ServerResponse, deps: Inb
 		json(res, 503, { error: "beeper_unavailable" });
 		return;
 	}
+	inbox.assertModelAllowed(chatID);
+	if (revision !== inbox.modelRevision(chatID)) throw new InboxError(409, "model_context_changed");
 	const context = buildContext(source);
 	try {
 		const answer = await assistant.ask({ prompt, history, context });
+		inbox.assertModelAllowed(chatID);
+		if (revision !== inbox.modelRevision(chatID)) throw new InboxError(409, "model_context_changed");
 		json(res, 200, {
 			reply: answer.reply,
 			draft: answer.draftText.trim() === "" ? null : { text: answer.draftText, language: answer.draftLanguage },
@@ -339,6 +367,16 @@ function decodeSegment(raw: string): string {
 function sendError(res: ServerResponse, err: unknown, json: InboxHttpDeps["json"]): void {
 	if (res.headersSent) {
 		res.destroy();
+		return;
+	}
+	if (err instanceof ImportanceError) {
+		const status = err.code === "importance_ineligible" ? 409 : err.code === "importance_unconfigured" ? 503 :
+			err.code === "importance_busy" || err.code === "importance_rate_limited" ? 429 : err.code === "importance_timeout" ? 504 : 502;
+		json(res, status, { error: err.code });
+		return;
+	}
+	if (err instanceof InboxNotificationsError) {
+		json(res, err.status, { error: "notifications_failed" });
 		return;
 	}
 	if (err instanceof InboxError) {

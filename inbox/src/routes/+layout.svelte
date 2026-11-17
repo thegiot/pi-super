@@ -13,7 +13,7 @@
 	const selectedId = $derived(page.params.id);
 
 	onMount(() => {
-		const columns = window.matchMedia("(min-width: 1024px)");
+		const columns = window.matchMedia("(min-width: 1280px)");
 		assistant.columns = columns.matches;
 		columns.addEventListener("change", (e) => (assistant.columns = e.matches));
 		inbox.start();
@@ -44,7 +44,7 @@
 	{/if}
 	{#if chatRoute}
 		<div class="detail-col">{@render children()}</div>
-		{#if selectedId}<AssistantPanel chatId={selectedId} />{/if}
+		{#if selectedId}{#key selectedId}<AssistantPanel chatId={selectedId} />{/key}{/if}
 	{:else if inbox.wide}
 		<div class="detail-col empty-detail">
 			<p>Seleziona una chat per leggerla.</p>
@@ -64,6 +64,7 @@
 	.detail-col {
 		flex: 1;
 		min-height: 0;
+		min-width: 0;
 		display: flex;
 		flex-direction: column;
 	}

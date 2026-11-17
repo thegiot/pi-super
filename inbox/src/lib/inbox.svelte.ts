@@ -40,6 +40,7 @@ class InboxStore {
 	messagesLoaded = $state(false);
 	loadingOlder = $state(false);
 	actionError = $state<string | null>(null);
+	modelPrivacyBusy = $state(false);
 
 	openId: string | undefined;
 	private started = false;
@@ -49,6 +50,7 @@ class InboxStore {
 	private pingTimer: ReturnType<typeof setInterval> | undefined;
 	private listTimer: ReturnType<typeof setTimeout> | undefined;
 	private listSeq = 0;
+	private summarySeq = 0;
 
 	get unreachable(): boolean {
 		return this.state?.beeper.status === "unreachable";
@@ -109,6 +111,7 @@ class InboxStore {
 	}
 
 	scheduleList(): void {
+		this.listSeq++;
 		clearTimeout(this.listTimer);
 		this.listTimer = setTimeout(() => void this.refreshList(), LIST_DEBOUNCE_MS);
 	}
@@ -137,6 +140,7 @@ class InboxStore {
 		this.messages = [];
 		this.nextCursor = null;
 		this.messagesLoaded = false;
+		this.actionError = null;
 		void this.loadChat(id);
 	}
 
@@ -147,10 +151,12 @@ class InboxStore {
 	}
 
 	private async loadChat(id: string): Promise<void> {
+		const seq = this.summarySeq;
 		try {
 			const [chat, page] = await Promise.all([api.chat(id), api.messages(id)]);
 			if (this.openId !== id) return;
-			this.chat = chat;
+			if (seq === this.summarySeq) this.chat = chat;
+			else if (!this.chat) { void this.loadChat(id); return; }
 			this.chatError = null;
 			this.messages = page.messages.slice().sort(byTime);
 			this.nextCursor = page.nextCursor;
@@ -196,8 +202,24 @@ class InboxStore {
 		}
 	}
 
-	private applySummary(summary: ChatSummary): void {
+	applySummary(summary: ChatSummary): void {
+		this.summarySeq++;
+		this.listSeq++;
 		if (this.chat && this.chat.id === summary.id) this.chat = { ...summary, participants: this.chat.participants };
+		// Replace in place; ordering and filtering are always decided by the next server list.
+		this.chats = this.chats.map((chat) => chat.id === summary.id ? summary : chat);
+	}
+
+	applyModelPrivacy(summary: ChatSummary, scope: "chat" | "network"): void {
+		this.applySummary(summary);
+		if (scope === "network") {
+			const update = (chat: ChatSummary): ChatSummary => chat.network === summary.network
+				? { ...chat, importance: undefined, modelPrivacy: { ...chat.modelPrivacy, networkExcluded: summary.modelPrivacy.networkExcluded } }
+				: chat;
+			this.chats = this.chats.map(update);
+			if (this.chat?.network === summary.network) this.chat = { ...this.chat, ...update(this.chat) };
+		}
+		this.scheduleList();
 	}
 
 	private connect(resetBackoff: boolean): void {

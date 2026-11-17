@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
+import { type ImportanceBridge, type ImportanceEvaluation } from "./importance.js";
+import { type InboxNotifications } from "./notifications.js";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { type BAccount, type BAttachment, type BChat, BeeperClient, BeeperError, BeeperEvents, type BeeperDomainEvent, type BMessage } from "./beeper.js";
@@ -41,6 +44,8 @@ export interface ChatSummary {
 	labels: Labels;
 	corrections: Corrections;
 	accountStatus: string;
+	importance?: ImportanceEvaluation;
+	modelPrivacy: { chatExcluded: boolean; networkExcluded: boolean };
 }
 
 export interface ChatDetail extends ChatSummary {
@@ -122,6 +127,8 @@ export interface InboxServiceOptions {
 	assistantConfigured?: () => boolean;
 	/** injectable outbox timings for tests */
 	outbox?: OutboxTunables;
+	importance?: ImportanceBridge;
+	notifications?: InboxNotifications;
 }
 
 /** A refresh slower than this is reported as `slow`; the cache keeps serving meanwhile. */
@@ -182,6 +189,9 @@ export class InboxService extends EventEmitter {
 	/** summaries as last broadcast, to send only what changed */
 	private lastSent = new Map<string, string>();
 	private lastCounts: string | undefined;
+	/** Derived reasons live only in RAM, bound to the exact local chat revision. */
+	private importance = new Map<string, { version: string; value: ImportanceEvaluation }>();
+	private revisions = new Map<string, number>();
 
 	constructor(private readonly opts: InboxServiceOptions) {
 		super();
@@ -283,7 +293,7 @@ export class InboxService extends EventEmitter {
 				return inUnreadView(c, s);
 			})
 			.map(({ s }) => s)
-			.sort(byActivityDesc);
+			.sort(query.filter === "reply" ? byImportance : byActivityDesc);
 		return { chats, counts, updatedAt: this.lastOkAt, stale: this.status !== "ok" };
 	}
 
@@ -340,6 +350,61 @@ export class InboxService extends EventEmitter {
 				attachments: (m.attachments ?? []).map((a) => ({ kind: attachmentKind(a), name: a.fileName })),
 			})),
 		};
+	}
+
+	/** Privacy exclusions prevail over every model entry point, not just level 2. */
+	assertModelAllowed(chatID: string): void {
+		const c = this.requireChat(chatID);
+		if (this.corrections.get(chatID).modelExcluded || this.corrections.networkExcluded(this.networkID(c))) {
+			throw new InboxError(403, "model_excluded");
+		}
+	}
+
+	modelRevision(chatID: string): number { return this.revisions.get(chatID) ?? 0; }
+
+	setModelExclusion(chatID: string, scope: "chat" | "network", on: boolean): ChatSummary {
+		const c = this.requireChat(chatID);
+		if (scope === "chat") this.corrections.update(chatID, { modelExcluded: on });
+		else this.corrections.excludeNetwork(this.networkID(c), on);
+		// A network exclusion also drops reasons from other open/listed chats immediately.
+		for (const chat of this.chats.values()) {
+			if (scope === "chat" ? chat.id === chatID : this.networkID(chat) === this.networkID(c)) this.invalidateImportance(chat.id);
+		}
+		return this.afterCorrection(chatID);
+	}
+
+	async evaluateImportance(chatID: string): Promise<{ evaluation: ImportanceEvaluation; chat: ChatSummary }> {
+		this.assertModelAllowed(chatID);
+		const bridge = this.opts.importance;
+		if (!bridge) throw new InboxError(503, "importance_unconfigured");
+		const before = this.chat(chatID)!;
+		if (!before.labels.needsReply) throw new InboxError(409, "importance_ineligible");
+		const revision = this.revisions.get(chatID) ?? 0;
+		const source = await this.assistantSource(chatID);
+		this.assertModelAllowed(chatID);
+		if (revision !== (this.revisions.get(chatID) ?? 0)) throw new InboxError(409, "importance_stale");
+		const version = this.importanceVersion(this.requireChat(chatID));
+		const evaluation = await bridge.evaluate({ chatID, source, version });
+		this.assertModelAllowed(chatID);
+		if (version !== this.importanceVersion(this.requireChat(chatID)) || !this.chat(chatID)?.labels.needsReply) throw new InboxError(409, "importance_stale");
+		this.importance.delete(chatID);
+		this.importance.set(chatID, { version, value: evaluation });
+		if (this.importance.size > 120) this.importance.delete(this.importance.keys().next().value as string);
+		return { evaluation, chat: this.afterCorrection(chatID) };
+	}
+
+	private networkID(c: BChat): string {
+		return c.network ?? this.accounts.get(c.accountID)?.network ?? c.accountID;
+	}
+
+	private importanceVersion(c: BChat): string {
+		return createHash("sha256").update(JSON.stringify([c, this.corrections.get(c.id), this.revisions.get(c.id) ?? 0])).digest("hex");
+	}
+
+	private invalidateImportance(chatID: string): void {
+		this.importance.delete(chatID);
+		this.opts.importance?.invalidate(chatID);
+		this.revisions.set(chatID, (this.revisions.get(chatID) ?? 0) + 1);
 	}
 
 	async messages(chatID: string, cursor?: string): Promise<{ messages: MessageView[]; nextCursor: string | null }> {
@@ -509,6 +574,14 @@ export class InboxService extends EventEmitter {
 
 	private onEvent(ev: BeeperDomainEvent): void {
 		this.log(`inbox: event ${ev.type} ids=${ev.ids.length}`);
+		if (ev.type === "chat.upserted" || ev.type === "chat.deleted") {
+			for (const id of ev.ids) this.invalidateImportance(id);
+		} else this.invalidateImportance(ev.chatID);
+		// The event precedes our batched HTTP reconciliation; old history is no longer a model source.
+		for (const id of ev.type === "chat.upserted" || ev.type === "chat.deleted" ? ev.ids : [ev.chatID]) {
+			const h = this.histories.get(id);
+			if (h) h.key = undefined;
+		}
 		if (ev.type === "chat.deleted") {
 			for (const id of ev.ids) this.removeChat(id);
 			this.broadcastChats();
@@ -569,6 +642,8 @@ export class InboxService extends EventEmitter {
 	private removeChat(id: string): void {
 		this.chats.delete(id);
 		this.histories.delete(id);
+		this.invalidateImportance(id);
+		this.revisions.delete(id);
 	}
 
 	// ---------------------------------------------------------------- history cache
@@ -586,7 +661,9 @@ export class InboxService extends EventEmitter {
 	private async fetchNewest(c: BChat): Promise<History> {
 		const page = await this.client.listMessages(c.id);
 		const sorted = sortMessages(page.items);
-		const h = this.histories.get(c.id) ?? this.newHistory(c.lastActivity);
+		const previous = this.histories.get(c.id);
+		if (previous && JSON.stringify(previous.newest) !== JSON.stringify(sorted)) this.invalidateImportance(c.id);
+		const h = previous ?? this.newHistory(c.lastActivity);
 		h.key = c.lastActivity;
 		h.newest = sorted;
 		h.hasMore = page.hasMore;
@@ -688,6 +765,11 @@ export class InboxService extends EventEmitter {
 			now,
 			windowDays: this.windowDays,
 		});
+		const modelPrivacy = { chatExcluded: corrections.modelExcluded === true, networkExcluded: this.corrections.networkExcluded(this.networkID(c)) };
+		const cached = this.importance.get(c.id);
+		const importance = !modelPrivacy.chatExcluded && !modelPrivacy.networkExcluded && labels.needsReply && cached &&
+			cached.version === this.importanceVersion(c) && Date.parse(cached.value.expiresAt) > now.getTime() ? cached.value : undefined;
+		if (cached && !importance) this.importance.delete(c.id);
 		return {
 			id: c.id,
 			accountID: c.accountID,
@@ -708,6 +790,8 @@ export class InboxService extends EventEmitter {
 			labels,
 			corrections,
 			accountStatus: account?.status ?? "unknown",
+			modelPrivacy,
+			...(importance ? { importance } : {}),
 		};
 	}
 
@@ -766,9 +850,22 @@ export class InboxService extends EventEmitter {
 		return this.summarize(this.requireChat(chatID), this.clock());
 	}
 
+	private inboundVersion(c: BChat): string | null {
+		const seen = this.freshHistory(c)?.newest ?? (c.preview ? [c.preview] : []);
+		const last = seen.findLast((m) => isMeaningful(this.toClassify(m)));
+		return last && !last.isSender && !this.selfIDs.has(last.senderID) ? `${last.id}:${last.timestamp}` : null;
+	}
+
 	private broadcastChats(): void {
 		const now = this.clock();
 		const rows = [...this.chats.values()].map((c) => ({ c, s: this.summarize(c, now) }));
+		if (this.lastOkAt && (this.status === "ok" || this.status === "slow")) {
+			void this.opts.notifications?.reconcile(rows.map(({ c, s }) => ({
+				id: s.id, title: s.title, needsReply: s.labels.needsReply,
+				important: s.labels.important.length > 0 || s.importance?.highlight === true,
+				lastInboundVersion: this.inboundVersion(c),
+			}))).catch(() => this.log("inbox: notifications reconcile_failed"));
+		}
 		const changed: ChatSummary[] = [];
 		const seen = new Set<string>();
 		for (const { s } of rows) {
@@ -816,6 +913,12 @@ function countsOf(rows: { c: BChat; s: ChatSummary }[]): ChatCounts {
 		if (inUnreadView(c, s)) unread++;
 	}
 	return { reply, unread, all: rows.length };
+}
+
+function byImportance(a: ChatSummary, b: ChatSummary): number {
+	const rank = (s: ChatSummary) => s.labels.important.length > 0 || s.importance?.highlight ? 2 :
+		s.importance?.fiducia !== "bassa" && s.importance?.importanza === "bassa" ? 0 : 1;
+	return rank(b) - rank(a) || byActivityDesc(a, b);
 }
 
 function byActivityDesc(a: ChatSummary, b: ChatSummary): number {

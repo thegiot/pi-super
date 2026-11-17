@@ -1,4 +1,5 @@
 import { api, ApiError, type AssistantAnswer } from "./api";
+import { inbox } from "./inbox.svelte";
 
 /*
  * The assistant's conversations, in page memory only (RF16): nothing is written to storage,
@@ -26,6 +27,14 @@ class AssistantStore {
 	/** three columns (≥1024 px) rather than a bottom sheet */
 	columns = $state(false);
 	threads = $state<Record<string, Thread>>({});
+	private generation = 0;
+
+	/** Privacy changes discard history and invalidate any answer already in flight. */
+	clear(): void {
+		this.generation++;
+		this.threads = {};
+		this.close();
+	}
 
 	thread(chatID: string | undefined): Thread {
 		return (chatID && this.threads[chatID]) || EMPTY;
@@ -40,6 +49,9 @@ class AssistantStore {
 	}
 
 	async ask(chatID: string, prompt: string): Promise<void> {
+		const chat = inbox.chat;
+		if (chat?.id !== chatID || inbox.modelPrivacyBusy || chat.modelPrivacy?.chatExcluded || chat.modelPrivacy?.networkExcluded) return;
+		const generation = this.generation;
 		const text = prompt.trim();
 		const current = this.threads[chatID] ?? { turns: [], contextMessages: null, busy: false };
 		if (!text || current.busy) return;
@@ -51,15 +63,17 @@ class AssistantStore {
 		this.threads[chatID] = { ...current, turns: [...current.turns, { role: "user", text }], busy: true };
 		try {
 			const answer = await api.assistant(chatID, { prompt: text, history });
+			if (generation !== this.generation) return;
 			this.patch(chatID, {
 				turns: [...this.threads[chatID]!.turns, { role: "assistant", text: answer.reply, draft: answer.draft }],
 				contextMessages: answer.context.messages,
 			});
 		} catch (err) {
+			if (generation !== this.generation) return;
 			const code = err instanceof ApiError ? err.message : "network";
 			this.patch(chatID, { turns: [...this.threads[chatID]!.turns, { role: "assistant", text: "", error: code }] });
 		} finally {
-			this.patch(chatID, { busy: false });
+			if (generation === this.generation) this.patch(chatID, { busy: false });
 		}
 	}
 

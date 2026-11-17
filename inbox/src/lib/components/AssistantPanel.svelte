@@ -5,6 +5,7 @@
 	import { composer } from "$lib/composer.svelte";
 	import IconButton from "./IconButton.svelte";
 	import Icon from "./Icon.svelte";
+	import ModelControls from "./ModelControls.svelte";
 
 	let { chatId }: { chatId: string } = $props();
 
@@ -17,7 +18,8 @@
 	let pendingUse = $state<string | null>(null);
 	let thread = $derived(assistant.thread(chatId));
 	const lastDraft = $derived(findDraft(thread.turns));
-	const available = $derived(inbox.state?.assistant.status === "ok");
+	const excluded = $derived(inbox.chat?.id === chatId && Boolean(inbox.chat.modelPrivacy?.chatExcluded || inbox.chat.modelPrivacy?.networkExcluded));
+	const available = $derived(inbox.chat?.id === chatId && inbox.state?.assistant.status === "ok" && !excluded && !inbox.modelPrivacyBusy && !inbox.degraded);
 
 	function findDraft(turns: Turn[]): Turn["draft"] {
 		for (let i = turns.length - 1; i >= 0; i--) {
@@ -32,6 +34,7 @@
 	}
 
 	function send(text: string) {
+		if (!available) return;
 		question = "";
 		void assistant.ask(chatId, text);
 	}
@@ -91,6 +94,10 @@
 	}
 
 	$effect(() => {
+		if (excluded) assistant.clear();
+	});
+
+	$effect(() => {
 		if (assistant.open && !assistant.columns) void tick().then(() => panel?.querySelector<HTMLElement>("button")?.focus());
 	});
 </script>
@@ -108,6 +115,10 @@
 			Conosce gli ultimi {thread.contextMessages} messaggi di questa chat. Nient'altro.
 		{/if}
 	</p>
+
+	{#if inbox.chat?.id === chatId}
+		{#key chatId}<ModelControls chat={inbox.chat} />{/key}
+	{/if}
 
 	<div class="thread" aria-live="polite" aria-busy={thread.busy}>
 		{#each thread.turns as t, i (i)}
@@ -165,7 +176,7 @@
 		<button type="submit" class="btn" disabled={!available || thread.busy || question.trim() === ""}>Chiedi</button>
 	</form>
 	{#if !available}
-		<p class="error">L'assistente non è configurato: manca la chiave del modello.</p>
+		<p class="error">{excluded ? "Modello escluso: assistente e importanza sono disabilitati." : "Assistente non disponibile al momento."}</p>
 	{/if}
 {/snippet}
 

@@ -10,10 +10,13 @@
 	let { chat, selected = false }: { chat: ChatSummary; selected?: boolean } = $props();
 	const chips = $derived(reasonChips(chat, inbox.now));
 	const preview = $derived(previewLine(chat));
+	const importance = $derived(chat.labels.needsReply && !chat.modelPrivacy?.chatExcluded && !chat.modelPrivacy?.networkExcluded && chat.importance?.fiducia !== "bassa" ? chat.importance : undefined);
+	const highlighted = $derived(Boolean(importance?.importanza === "alta" && importance.highlight));
 </script>
 
 <a
 	class="row"
+	class:highlighted
 	href="{base}/chat/{encodeURIComponent(chat.id)}"
 	aria-current={selected ? "true" : undefined}
 	aria-label="{chat.title}, {chat.network}{chat.unreadCount > 0 ? `, ${chat.unreadCount} non letti` : ''}"
@@ -28,6 +31,7 @@
 			{/if}
 		</div>
 		{#if preview}<p class="preview">{preview}</p>{/if}
+		{#if importance}<p class="importance">{highlighted ? "Importanza alta · " : ""}{importance.motivo}</p>{/if}
 		<div class="meta">
 			<NetworkBadge network={chat.network} />
 			{#each chips as c, i (i)}
@@ -53,6 +57,8 @@
 	.row[aria-current="true"] {
 		background: var(--bg-raised);
 	}
+	.row.highlighted { box-shadow: inset 3px 0 var(--warn); }
+	.importance { margin: var(--space-1) 0; color: var(--warn); font: var(--text-caption-12-regular); overflow-wrap: anywhere; }
 	.body {
 		flex: 1;
 		min-width: 0;

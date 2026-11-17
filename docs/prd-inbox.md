@@ -637,7 +637,7 @@ Tre punti escono dal perimetro di pi-super e vanno decisi:
 | **M1 — Inbox in sola lettura** | Lista, filtri deterministici, ricerca, cronologia, immagini, aggiornamenti in tempo reale, stati degradati, correzioni dell'utente | Il proprietario la usa per il triage quotidiano al posto dei contatori delle app |
 | **M2 — Assistente e bozze** | Ponte verso il modello senza strumenti, bozze, *Copia*; il testo si invia ancora dall'app nativa | Le bozze sono abbastanza buone da essere copiate più spesso che riscritte |
 | **M3 — Invio controllato** | Outbox, *Rivedi e invia*, esito, riconciliazione | Criteri CA9–CA14 soddisfatti sulla chat di prova (WeChat, Poesi) |
-| **M4 — Importanza e notifiche** | Valutazione dell'assistente con motivo; notifiche per le sole chat importanti | Da definire dopo M3 |
+| **M4 — Importanza e notifiche** | Valutazione solo su richiesta, esclusioni chat/rete; Web Push SPA opt-in, titoli autorizzati (D13–D15) | CA18–CA21; dettagli e limiti in [inbox-m4.md](inbox-m4.md) |
 | **Dopo** | Allegati in invio, nuova chat da contatto, reazioni, *Segna come letto*, etichette, bozze sincronizzate con Beeper, estensione dello stile al resto di pi-super | — |
 
 **MVP = M1 + M2 + M3**, consegnati in quest'ordine: ogni passo è utilizzabile da solo, e l'invio
@@ -667,8 +667,9 @@ di una mancata. Nell'MVP c'è il conteggio sul pulsante dell'inbox.
   schermo su ciascun flusso.
 - **Prova reale dell'invio.** Solo verso una chat di prova indicata dal proprietario (per esempio la
   chat con sé stessi), con autorizzazione esplicita.
-- **Istanza viva.** I test girano su un server proprio: dopo ogni modifica al server va verificato e
-  dichiarato che il servizio su K29 è stato riavviato.
+- **Istanza viva.** I test girano su un server proprio: per una consegna destinata all'istanza viva va verificato e
+  dichiarato che il servizio su K29 è stato riavviato. M4 è consegnata come commit da revisionare: su richiesta
+  esplicita del proprietario non si eseguono push, deploy né riavvii di K29.
 
 ## 17. Criteri di accettazione
 
@@ -706,6 +707,13 @@ di una mancata. Nell'MVP c'è il conteggio sul pulsante dell'inbox.
   richiesta con messaggi ostili il server fa a Beeper solo letture.
 - **CA14** Nessun messaggio ostile dell'insieme di prova causa un invio o porta contenuto di un'altra
   chat in una bozza.
+
+**Importanza e notifiche (M4, decisioni D13–D15)**
+
+- **CA18** Nessun refresh, apertura chat o evento contatta il modello. *Perché è importante* nel pannello assistente valuta solo la chat richiesta già in *Da rispondere*, con JSON convalidato, contesto delimitato e nessuno strumento.
+- **CA19** La valutazione ordina/evidenzia e mostra il motivo in lista senza cambiare l'appartenenza a *Da rispondere*. Fiducia bassa non evidenzia né penalizza. Cache e motivi sono limitati e solo in RAM; revisioni e scadenze invalidano risultati obsoleti.
+- **CA20** Le esclusioni chat/rete persistono senza contenuto e bloccano sia assistente sia importanza. Una revoca durante una richiesta impedisce di restituire o ripristinare il risultato, anche da un'altra scheda.
+- **CA21** Solo gesto esplicito attiva Web Push. Una nuova versione significativa in arrivo notifica solo chat importanti ancora *Da rispondere*; baseline iniziale silenziosa, deduplica e budget limitati. Payload solo conteggi/titoli autorizzati, mai testi o motivi; credenziali private solo sul server. Nessuna integrazione Android.
 
 **Trasversali**
 
@@ -747,6 +755,9 @@ Esito del riesame con il proprietario (17 novembre 2026): tutte le proposte acce
 | **D10** | Finestra di attenzione di *Da rispondere* | 14 giorni, modificabile | Accettata |
 | **D11** | Chat di prova per l'invio reale in M3 | — | Chat WeChat con Poesi. WeChat non dichiara la lunghezza massima e non supporta modifica né reazioni: è anche il caso più severo per i controlli di capacità |
 | **D12** | Come invocare l'assistente dell'inbox, dopo lo spike I4 | Chiamata diretta dal server pi-super allo stesso modello di `chatassistant`, senza strumenti né sessioni salvate | Accettata (17 novembre 2026) |
+| **D13** | Ambito livello 2 M4: tutte le chat da rispondere, alcune reti o solo richiesta | Solo on-demand per la chat aperta; esclusione per chat e rete | Scelta dal proprietario (17 novembre 2026): nessuna valutazione in background o batch automatico |
+| **D14** | Canale notifiche M4: Web Push SPA, wrapper Android o entrambi | Service worker notifiche + Web Push nella sola SPA | Scelta dal proprietario (17 novembre 2026): Web Push SPA, nessun lavoro Android |
+| **D15** | Contenuto notifiche: solo conteggi o anche titoli chat | Conteggi e titoli, mai testi di messaggi o motivi | Titoli approvati esplicitamente (17 novembre 2026), inclusi payload push e schermata di blocco |
 
 ## 20. Appendice — superfici verificate
 

@@ -9,6 +9,7 @@
 	import FilterTabs from "./FilterTabs.svelte";
 	import NetworkFilter from "./NetworkFilter.svelte";
 	import ConversationRow from "./ConversationRow.svelte";
+	import NotificationControls from "./NotificationControls.svelte";
 
 	let { selectedId }: { selectedId?: string } = $props();
 
@@ -59,6 +60,7 @@
 			/>
 		{/snippet}
 	</TopBar>
+	<NotificationControls />
 
 	{#if searchOpen}
 		<div class="search">

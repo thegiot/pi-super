@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
@@ -11,6 +12,8 @@ import { HerdrError, herdrRun } from "./herdr.js";
 import { handleInboxApi, isInboxPath, serveInboxSocket, serveInboxStatic } from "./inbox/http.js";
 import { Assistant } from "./inbox/assistant.js";
 import { InboxService } from "./inbox/service.js";
+import { ImportanceBridge } from "./inbox/importance.js";
+import { InboxNotifications } from "./inbox/notifications.js";
 import { type ChatItem, MetaAgent } from "./meta.js";
 import { scrollBottomKey } from "./pi-keybindings.js";
 import { PromptLog } from "./prompts.js";
@@ -125,6 +128,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 	const assistant = cfg.inbox
 		? new Assistant({ url: cfg.llmUrl, model: cfg.llmModel, keyFile: cfg.llmKeyFile, log })
 		: undefined;
+	const importance = cfg.inbox ? new ImportanceBridge({ url: cfg.llmUrl, model: cfg.llmModel, keyFile: cfg.llmKeyFile, log }) : undefined;
+	const pushTokenOwner = `token:${createHash("sha256").update(token).digest("hex")}`;
+	const notifications = cfg.inbox ? new InboxNotifications({ stateDir: cfg.stateDir,
+		ownerAlive: (owner) => owner.startsWith("session:") ? passkeys.sessionAlive(owner.slice(8)) :
+			owner === pushTokenOwner && (!passkeyRequired() || cfg.allowToken),
+	}) : undefined;
 	const inbox = cfg.inbox
 		? new InboxService({
 				baseUrl: cfg.beeperUrl,
@@ -133,6 +142,8 @@ export function createServer(cfg: Config, token: string): SuperServer {
 				log,
 				assistantConfigured: () => assistant?.configured() === true,
 				outbox: cfg.inboxOutbox,
+				importance,
+				notifications,
 			})
 		: undefined;
 	const metaClients = new Set<WebSocket>();
@@ -744,7 +755,12 @@ export function createServer(cfg: Config, token: string): SuperServer {
 			}
 			default:
 				if (inbox && url.pathname.startsWith("/api/inbox/")) {
-					await handleInboxApi(req, res, url, { inbox, assistant, outbox: inbox.outbox, json: sendJson, securityHeaders: SECURITY_HEADERS });
+					if (req.method !== "GET" && !originAllowed(req, cfg.allowedOrigins)) {
+						sendJson(res, 403, { error: "bad origin" });
+						return;
+					}
+					await handleInboxApi(req, res, url, { inbox, assistant, notifications, notificationOwner: passkeys.sessionFor(req) ? `session:${passkeys.sessionFor(req)!.id}` : pushTokenOwner,
+						outbox: inbox.outbox, json: sendJson, securityHeaders: SECURITY_HEADERS });
 					return;
 				}
 				sendJson(res, 404, { error: "not found" });
@@ -1140,6 +1156,7 @@ export function createServer(cfg: Config, token: string): SuperServer {
 		inbox,
 		async close() {
 			inbox?.stop();
+			await notifications?.close();
 			fleet?.stop();
 			clearInterval(revalidate);
 			socketAuth.clear();
